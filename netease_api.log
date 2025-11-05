@@ -1,0 +1,172 @@
+2025-11-04 23:55:01,666 - netease_api - INFO - 🎯 正在获取游客cookie...
+2025-11-04 23:55:01,791 - netease_api - INFO - ✅ 成功获取Cookie，共 5 个项
+2025-11-04 23:55:01,792 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-04 23:55:01,931 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-04 23:55:16,615 - netease_api - INFO - 🎯 正在获取游客cookie...
+2025-11-04 23:55:16,727 - netease_api - INFO - ✅ 成功获取Cookie，共 5 个项
+2025-11-04 23:55:16,728 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-04 23:55:16,923 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 00:04:10,644 - netease_api - INFO - 🎯 正在获取游客cookie...
+2025-11-05 00:04:10,785 - netease_api - INFO - ✅ 成功获取Cookie，共 5 个项
+2025-11-05 00:04:10,786 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 00:04:11,041 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 00:04:27,876 - netease_api - INFO - 🎵 获取歌单 9725310628 歌曲列表...
+2025-11-05 00:04:27,878 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 00:04:28,056 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 00:04:28,056 - netease_api - INFO - ✅ 成功获取6首歌曲
+2025-11-05 00:05:03,831 - netease_api - INFO - 🎯 正在获取游客cookie...
+2025-11-05 00:05:03,979 - netease_api - INFO - ✅ 成功获取Cookie，共 5 个项
+2025-11-05 00:05:03,980 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 00:05:04,148 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 00:11:11,637 - netease_api - INFO - 🎵 获取歌单 9725310628 歌曲列表...
+2025-11-05 00:11:11,639 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 00:11:11,816 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 00:11:11,816 - netease_api - INFO - ✅ 成功获取6首歌曲
+2025-11-05 00:11:11,818 - netease_api - INFO - 🎵 获取歌曲URL: ID=2756019215, 音质=standard
+2025-11-05 00:11:11,974 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:12,080 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:12,193 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:12,303 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:12,304 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2756019215
+2025-11-05 00:11:13,311 - netease_api - INFO - 🎵 获取歌曲URL: ID=2156613007, 音质=standard
+2025-11-05 00:11:13,426 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:13,533 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:13,636 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:13,744 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:13,745 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2156613007
+2025-11-05 00:11:14,848 - netease_api - INFO - 🎵 获取歌曲URL: ID=2750878526, 音质=standard
+2025-11-05 00:11:14,956 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:15,073 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:15,182 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:15,294 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:15,295 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2750878526
+2025-11-05 00:11:16,547 - netease_api - INFO - 🎵 获取歌曲URL: ID=2160455331, 音质=standard
+2025-11-05 00:11:16,652 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:16,751 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:16,864 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:17,083 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:17,085 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2160455331
+2025-11-05 00:11:18,595 - netease_api - INFO - 🎵 获取歌曲URL: ID=2684510360, 音质=standard
+2025-11-05 00:11:18,702 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:18,805 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:18,903 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:19,010 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:19,011 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2684510360
+2025-11-05 00:11:21,017 - netease_api - INFO - 🎵 获取歌曲URL: ID=1863436183, 音质=standard
+2025-11-05 00:11:21,128 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:21,236 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:21,338 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:21,448 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:11:21,449 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=1863436183
+2025-11-05 00:12:56,400 - netease_api - INFO - 🎯 正在获取游客cookie...
+2025-11-05 00:12:56,548 - netease_api - INFO - ✅ 成功获取Cookie，共 5 个项
+2025-11-05 00:12:56,549 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 00:12:56,772 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 00:13:19,549 - netease_api - INFO - 🎵 获取歌单 9725310628 歌曲列表...
+2025-11-05 00:13:19,552 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 00:13:19,816 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 00:13:19,816 - netease_api - INFO - ✅ 成功获取6首歌曲
+2025-11-05 00:13:19,817 - netease_api - INFO - 🎵 获取歌曲URL: ID=2756019215, 音质=standard
+2025-11-05 00:13:19,920 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:20,025 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:20,126 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:20,227 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:20,228 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2756019215
+2025-11-05 00:13:21,236 - netease_api - INFO - 🎵 获取歌曲URL: ID=2156613007, 音质=standard
+2025-11-05 00:13:21,343 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:21,450 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:21,555 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:21,662 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:21,663 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2156613007
+2025-11-05 00:13:22,772 - netease_api - INFO - 🎵 获取歌曲URL: ID=2750878526, 音质=standard
+2025-11-05 00:13:22,887 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:22,988 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:23,091 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:23,248 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:23,250 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2750878526
+2025-11-05 00:13:24,507 - netease_api - INFO - 🎵 获取歌曲URL: ID=2160455331, 音质=standard
+2025-11-05 00:13:24,622 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:24,728 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:24,835 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:24,935 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:24,936 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2160455331
+2025-11-05 00:13:26,442 - netease_api - INFO - 🎵 获取歌曲URL: ID=2684510360, 音质=standard
+2025-11-05 00:13:26,559 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:26,665 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:26,778 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:26,900 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:26,901 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2684510360
+2025-11-05 00:13:28,907 - netease_api - INFO - 🎵 获取歌曲URL: ID=1863436183, 音质=standard
+2025-11-05 00:13:29,013 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:29,116 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:29,224 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:29,328 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:13:29,329 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=1863436183
+2025-11-05 00:14:12,291 - netease_api - INFO - 🎯 正在获取游客cookie...
+2025-11-05 00:14:12,420 - netease_api - INFO - ✅ 成功获取Cookie，共 5 个项
+2025-11-05 00:14:12,421 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 00:14:12,565 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 00:15:10,623 - netease_api - INFO - 🎵 获取歌单 9725310628 歌曲列表...
+2025-11-05 00:15:10,626 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 00:15:10,817 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 00:15:10,817 - netease_api - INFO - ✅ 成功获取6首歌曲
+2025-11-05 00:15:10,818 - netease_api - INFO - 🎵 获取歌曲URL: ID=2756019215, 音质=standard
+2025-11-05 00:15:10,936 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:11,052 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:11,171 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:11,283 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:11,283 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2756019215
+2025-11-05 00:15:12,294 - netease_api - INFO - 🎵 获取歌曲URL: ID=2156613007, 音质=standard
+2025-11-05 00:15:12,404 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:12,515 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:12,620 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:12,730 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:12,731 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2156613007
+2025-11-05 00:15:13,841 - netease_api - INFO - 🎵 获取歌曲URL: ID=2750878526, 音质=standard
+2025-11-05 00:15:13,968 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:14,087 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:14,197 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:14,310 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:14,311 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2750878526
+2025-11-05 00:15:15,567 - netease_api - INFO - 🎵 获取歌曲URL: ID=2160455331, 音质=standard
+2025-11-05 00:15:15,674 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:15,781 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:15,895 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:16,012 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:16,013 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2160455331
+2025-11-05 00:15:17,523 - netease_api - INFO - 🎵 获取歌曲URL: ID=2684510360, 音质=standard
+2025-11-05 00:15:17,646 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:17,744 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:17,851 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:17,958 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:17,959 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=2684510360
+2025-11-05 00:15:19,967 - netease_api - INFO - 🎵 获取歌曲URL: ID=1863436183, 音质=standard
+2025-11-05 00:15:20,091 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:20,212 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:20,329 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:20,449 - netease_api - ERROR - ❌ API返回错误: 资源不存在
+2025-11-05 00:15:20,450 - netease_api - ERROR - ❌ 获取歌曲URL失败: 歌曲ID=1863436183
+2025-11-05 18:31:51,412 - netease_api - INFO - 🎯 正在获取游客cookie...
+2025-11-05 18:31:51,550 - netease_api - INFO - ✅ 成功获取Cookie，共 5 个项
+2025-11-05 18:31:51,551 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 18:31:51,698 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 18:31:55,211 - netease_api - INFO - 🎵 获取歌单 9725310628 歌曲列表...
+2025-11-05 18:31:55,211 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 18:31:55,342 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
+2025-11-05 18:31:55,342 - netease_api - INFO - ✅ 成功获取6首歌曲
+2025-11-05 18:31:55,342 - netease_api - INFO - 🎵 获取歌曲URL: ID=2756019215, 音质=standard
+2025-11-05 18:31:55,445 - netease_api - INFO - ✅ 成功通过播放器API获取音频链接: http://m801.music.126.net/20251105185655/7fbe7d52e...
+2025-11-05 18:31:56,620 - netease_api - INFO - 🎵 获取歌曲URL: ID=2156613007, 音质=standard
+2025-11-05 18:31:56,734 - netease_api - INFO - ✅ 成功通过播放器API获取音频链接: http://m701.music.126.net/20251105185656/92b0a35f3...
+2025-11-05 18:31:57,894 - netease_api - INFO - 🎵 获取歌曲URL: ID=2750878526, 音质=standard
+2025-11-05 18:31:57,994 - netease_api - INFO - ✅ 成功通过播放器API获取音频链接: http://m701.music.126.net/20251105185658/15e736594...
+2025-11-05 18:31:58,942 - netease_api - INFO - 🎵 获取歌曲URL: ID=2160455331, 音质=standard
+2025-11-05 18:31:59,053 - netease_api - INFO - ✅ 成功通过播放器API获取音频链接: http://m701.music.126.net/20251105185659/47fb87f10...
+2025-11-05 18:32:00,244 - netease_api - INFO - 🎵 获取歌曲URL: ID=2684510360, 音质=standard
+2025-11-05 18:32:00,341 - netease_api - INFO - ✅ 成功通过播放器API获取音频链接: http://m801.music.126.net/20251105185700/5c5e5429c...
+2025-11-05 18:32:02,031 - netease_api - INFO - 🎵 获取歌曲URL: ID=1863436183, 音质=standard
+2025-11-05 18:32:02,196 - netease_api - INFO - ✅ 成功通过播放器API获取音频链接: http://m701.music.126.net/20251105185702/a37708a9c...
+2025-11-05 19:55:24,128 - netease_api - INFO - 🎯 正在获取游客cookie...
+2025-11-05 19:55:24,383 - netease_api - INFO - ✅ 成功获取Cookie，共 5 个项
+2025-11-05 19:55:24,385 - netease_api - INFO - 🎵 获取歌单 9725310628 信息...
+2025-11-05 19:55:24,537 - netease_api - INFO - ✅ 歌单信息获取成功: 深空遗尘喜欢的音乐 (6首歌曲)
