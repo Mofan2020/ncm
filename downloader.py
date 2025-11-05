@@ -165,6 +165,9 @@ class SongDownloader:
             print(f"❌ 歌曲URL不存在")
             return False
         
+        # 初始化为None，确保在finally块中可以访问
+        temp_file = None
+        
         # 重试机制
         for retry in range(self.max_retries):
             try:
@@ -290,7 +293,7 @@ class SongDownloader:
                     time.sleep(1)
             finally:
                 # 清理临时文件
-                if os.path.exists(temp_file):
+                if temp_file and os.path.exists(temp_file):
                     try:
                         os.remove(temp_file)
                     except Exception:

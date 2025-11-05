@@ -318,9 +318,23 @@ def main():
             songs = None
             
             for retry in range(max_retries):
-                songs = get_songs_method(playlist_id)
+                # 优先使用get_playlist_songs方法，这是我们已经修复的方法
+                if hasattr(api, 'get_playlist_songs'):
+                    print(f"DEBUG: 调用api.get_playlist_songs方法")
+                    songs = api.get_playlist_songs(playlist_id)
+                else:
+                    # 回退到之前的方法
+                    songs = get_songs_method(playlist_id)
+                    
                 if songs:
-                    break
+                    # 验证获取的歌曲数量
+                    fetched_count = len(songs)
+                    print(f"DEBUG: 获取到{fetched_count}首歌曲")
+                    if fetched_count < track_count:
+                        print(f"⚠️ 获取到的歌曲数量({fetched_count})少于歌单总数量({track_count})，尝试重试...")
+                        songs = None
+                    else:
+                        break
                 print(f"⚠️ 获取歌曲列表失败，{retry + 1}/{max_retries}，尝试重试...")
                 time.sleep(1)
             
@@ -330,6 +344,29 @@ def main():
             
             total_songs = len(songs)
             print(f"✅ 成功获取 {total_songs} 首歌曲")
+            if total_songs != track_count:
+                print(f"📊 注意: 获取到的歌曲数量({total_songs})与歌单信息中显示的数量({track_count})不一致")
+                # 尝试再次获取完整歌曲列表
+                if hasattr(api, 'get_playlist_info') and total_songs < track_count:
+                    print(f"🔄 尝试直接从歌单详情中获取完整歌曲列表...")
+                    playlist = api.get_playlist_info(playlist_id)
+                    if playlist and 'trackIds' in playlist:
+                        track_ids = [str(track['id']) for track in playlist['trackIds']]
+                        if len(track_ids) > total_songs:
+                            print(f"📋 发现{len(track_ids)}首歌曲ID，尝试批量获取详情...")
+                            # 分批获取歌曲详情
+                            batch_size = 50
+                            all_tracks = []
+                            for i in range(0, len(track_ids), batch_size):
+                                batch_ids = track_ids[i:i+batch_size]
+                                print(f"🔄 获取第{i+1}-{min(i+batch_size, len(track_ids))}首歌曲信息...")
+                                tracks_batch = api.get_songs_detail(",".join(batch_ids))
+                                if tracks_batch:
+                                    all_tracks.extend(tracks_batch)
+                                time.sleep(0.5)
+                            songs = all_tracks
+                            total_songs = len(songs)
+                            print(f"✅ 成功获取完整歌曲列表，共{total_songs}首歌曲")
             print(f"🎯 音质设置: {args.quality}")
             print(f"🔄 覆盖已存在文件: {'是' if args.overwrite else '否'}")
             

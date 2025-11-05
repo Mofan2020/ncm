@@ -406,7 +406,8 @@ class NeteaseAPI:
                     if 'playlist' in result:
                         playlist = result.get('playlist', {})
                         name = playlist.get('name', '未知歌单')
-                        track_count = len(playlist.get('tracks', [])) or playlist.get('trackCount', 0)
+                        # 优先使用trackCount字段，这是API返回的完整歌曲数量
+                        track_count = playlist.get('trackCount', len(playlist.get('tracks', [])))
                         self._log(f"✅ 歌单信息获取成功: {name} ({track_count}首歌曲)", 'info')
                         return playlist
                     elif 'result' in result and 'name' in result['result']:
@@ -438,8 +439,12 @@ class NeteaseAPI:
             # 从歌单信息中提取歌曲列表
             tracks = playlist.get('tracks', [])
             
-            # 如果tracks为空但有trackIds，尝试获取完整歌曲信息
-            if not tracks and 'trackIds' in playlist:
+            # 获取实际歌曲总数
+            total_count = playlist.get('trackCount', len(tracks))
+            self._log(f"📊 歌单应有{total_count}首歌曲，当前tracks中有{len(tracks)}首", 'info')
+            
+            # 如果tracks中的歌曲数量少于总数，或者tracks为空但有trackIds，尝试获取完整歌曲信息
+            if len(tracks) < total_count or (not tracks and 'trackIds' in playlist):
                 track_ids = [str(track['id']) for track in playlist['trackIds']]
                 if track_ids:
                     self._log(f"📋 发现{len(track_ids)}首歌曲，尝试获取详细信息...", 'info')
@@ -498,26 +503,68 @@ class NeteaseAPI:
         if isinstance(song_ids, list):
             song_ids = ",".join(map(str, song_ids))
         
+        # 限制单次请求的歌曲数量，避免参数过长导致API错误
+        song_id_list = song_ids.split(',')
+        if len(song_id_list) > 50:
+            self._log(f"📋 歌曲数量过多({len(song_id_list)}首)，将分批处理", 'info')
+            all_songs = []
+            # 分批处理，每批最多30首
+            for i in range(0, len(song_id_list), 30):
+                batch_ids = ",".join(song_id_list[i:i+30])
+                self._log(f"🔄 获取第{i+1}-{min(i+30, len(song_id_list))}首歌曲详情...", 'debug')
+                batch_songs = self._get_songs_detail_batch(batch_ids)
+                if batch_songs:
+                    all_songs.extend(batch_songs)
+                # 避免请求过快
+                time.sleep(random.uniform(0.3, 0.7))
+            return all_songs
+        
+        return self._get_songs_detail_batch(song_ids)
+    
+    def _get_songs_detail_batch(self, song_ids):
+        """获取一批歌曲的详细信息（内部方法）
+        
+        Args:
+            song_ids: 一批歌曲ID（逗号分隔的字符串，数量限制在合理范围内）
+            
+        Returns:
+            list: 歌曲详情列表
+        """
         self._log(f"🎵 获取歌曲详情: {song_ids[:50]}...", 'debug')
         
-        # 尝试多种获取歌曲详情的方法
+        # 尝试多种获取歌曲详情的方法，优化参数格式
         methods = [
-            # 方法1: 标准接口
+            # 方法1: 标准接口，使用正确的参数格式
+            {"endpoint": "/song/detail", "params": {'ids': f'[{song_ids}]'}},
+            # 方法2: 不使用数组格式
             {"endpoint": "/song/detail", "params": {'ids': song_ids}},
-            # 方法2: 备用参数格式
-            {"endpoint": "/song/detail", "params": {'ids': song_ids, 'timestamp': self._get_timestamp()}},
-            # 方法3: v3接口
+            # 方法3: 添加时间戳参数
+            {"endpoint": "/song/detail", "params": {'ids': song_ids, 'timestamp': str(int(time.time() * 1000))}},
+            # 方法4: v3接口
             {"endpoint": "/v3/song/detail", "params": {'ids': song_ids}}
         ]
         
         for method in methods:
-            result = self._request(method["endpoint"], method["params"])
-            
-            if result and result.get('code') == 200:
-                songs = result.get('songs', [])
-                if songs:
-                    self._log(f"✅ 成功获取{len(songs)}首歌曲详情", 'debug')
-                    return songs
+            try:
+                # 为这个请求临时使用更严格的错误处理
+                temp_max_retries = 2
+                original_max_retries = self.max_retries
+                self.max_retries = temp_max_retries
+                
+                # 发送请求
+                result = self._request(method["endpoint"], method["params"])
+                
+                # 恢复原始重试次数
+                self.max_retries = original_max_retries
+                
+                if result and result.get('code') == 200:
+                    songs = result.get('songs', [])
+                    if songs:
+                        self._log(f"✅ 成功获取{len(songs)}首歌曲详情", 'debug')
+                        return songs
+            except Exception as e:
+                self._log(f"⚠️ 获取歌曲详情时出错: {str(e)}", 'warning')
+                continue
         
         self._log(f"❌ 无法获取歌曲详情", 'error')
         return None
