@@ -44,6 +44,7 @@ bundle can never reach a release.
 | `main.py` | Window creation, geometry/theme bootstrap, logging, `--self-test` |
 | `src/version.py` | Single source of truth: name, version, bundle id, author |
 | `src/resources.py` | `resource_path()` — resolves bundled data from source **and** PyInstaller |
+| `src/core/aes.py` | AES-128-ECB in pure Python (no native/OpenSSL dependency) |
 | `src/core/crypto.py` | eapi request signing (AES-ECB + MD5 digest) |
 | `src/core/api.py` | `NeteaseAPI` — eapi + legacy endpoints, pacing, retries, quality fallback |
 | `src/core/downloader.py` | `SongDownloader` — thread pool (≤3), `.part` + atomic move, pause/cancel |

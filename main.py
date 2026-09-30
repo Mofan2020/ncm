@@ -91,6 +91,14 @@ def _self_test(report_path: str | None = None) -> int:
     Deliberately headless: this is the smoke test CI runs against the packaged
     binary on Windows and macOS, where a GUI window cannot be opened.
     """
+    # Windows consoles default to cp1252/cp936: the app name is Chinese, so
+    # printing the report would raise UnicodeEncodeError before CI ever saw it.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):  # pragma: no cover
+            pass
+
     checks: list[tuple[str, bool, str]] = []
 
     assets = resource_path("src", "gui", "assets")

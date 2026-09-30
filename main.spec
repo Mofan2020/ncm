@@ -49,7 +49,6 @@ hiddenimports = [
     "PIL",
     "PIL.Image",
     "yaml",
-    "cryptography",
 ]
 if sys.platform == "win32":
     hiddenimports += ["webview.platforms.winforms", "webview.platforms.edgechromium"]
@@ -72,6 +71,13 @@ a = Analysis(
         "cefpython3",
         "PyQt5", "PyQt6", "PySide2", "PySide6", "qtpy", "gi",
         "tkinter",
+        # pywebview only imports cryptography inside its optional HTTPS-server
+        # path (webview.start(ssl=True)), which this app never uses.  Leaving it
+        # in dragged libssl/libcrypto into the bundle, and on the Intel macOS
+        # runner the stale copy shadowed the one the extension needed:
+        # "Symbol not found: _SSL_get0_group_name".  Our own AES-128-ECB is pure
+        # Python (src/core/aes.py), so nothing here needs OpenSSL.
+        "cryptography",
         "pytest", "ruff", "setuptools", "pip",
     ],
     win_no_prefer_redirects=False,

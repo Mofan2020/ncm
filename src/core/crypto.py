@@ -16,20 +16,20 @@ Verified live on 2026-09-30 (mainland-CN network):
   never call weapi and rely on eapi + the still-served legacy ``/api/*`` routes
   (see :mod:`src.core.api`).
 
-The module is intentionally dependency-light: it uses ``cryptography`` (already a
-runtime requirement) and nothing else.
+The module has **no native dependencies**: AES-128-ECB lives in
+:mod:`src.core.aes`, and the rest is the standard library.  Shipping a native
+crypto extension would drag OpenSSL into the PyInstaller bundle, which broke the
+Intel macOS build (see ``docs/notes.md``).
 """
 from __future__ import annotations
 
-import binascii
 import hashlib
 import json
 import os
 import time
 from typing import Any
 
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from src.core.aes import aes_ecb_encrypt
 
 __all__ = [
     "EAPI_KEY",
@@ -42,9 +42,6 @@ __all__ = [
 
 EAPI_KEY = b"e82ckenh8dichen8"
 EAPI_SEPARATOR = "-36cd479b6b5-"
-
-#: AES block size in bits (PKCS7 pads to this).
-_BLOCK_BITS = 128
 
 #: Quality level -> container the API should hand back.
 _LEVEL_ENCODE_TYPE = {
@@ -103,12 +100,8 @@ def sign_eapi(path: str, payload: dict[str, Any]) -> str:
     text = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     digest = hashlib.md5(f"nobody{path}use{text}md5forencrypt".encode()).hexdigest()
     message = f"{path}{EAPI_SEPARATOR}{text}{EAPI_SEPARATOR}{digest}".encode()
-    # AES-ECB has no IV and no built-in padding -- PKCS7 is applied by hand.
-    padder = padding.PKCS7(_BLOCK_BITS).padder()
-    padded = padder.update(message) + padder.finalize()
-    encryptor = Cipher(algorithms.AES(EAPI_KEY), modes.ECB()).encryptor()
-    encrypted = encryptor.update(padded) + encryptor.finalize()
-    return binascii.hexlify(encrypted).decode("ascii").upper()
+    # AES-ECB has no IV; PKCS7 padding is applied inside aes_ecb_encrypt().
+    return aes_ecb_encrypt(message, EAPI_KEY).hex().upper()
 
 
 def eapi_body(

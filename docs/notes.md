@@ -133,3 +133,27 @@ python3 main.py --self-test                    # 资源与依赖自检
 pyinstaller --clean --noconfirm main.spec      # 打包
 dist/NeteaseMusicDownloader.app/Contents/MacOS/NeteaseMusicDownloader --self-test
 ```
+
+## 7. CI 首轮失败与修复（首次推送后由"打包产物自检"抓出）
+
+首轮 CI（run `36704638395`）lint + 单测通过，两个平台构建失败 —— 都是真问题：
+
+1. **Windows：`UnicodeEncodeError: 'charmap' codec can't encode characters`**
+   应用名是中文，而 windowed 打包产物的 stdout 是 cp1252/cp936 控制台，
+   自检在打印报告时直接抛异常。
+   → 修复：`_self_test()` 先把 `sys.stdout/stderr` 重设为 UTF-8（`errors="replace"`）。
+   同时把 PowerShell 冒烟改成 `Start-Process -Wait -PassThru` 取 `ExitCode`：
+   GUI 子系统的 .exe 不会阻塞 PowerShell 也不设置 `$LASTEXITCODE`，用 `& $exe` 会误判失败。
+
+2. **macOS x64：`ImportError: Symbol not found: _SSL_get0_group_name`**
+   `src/core/crypto.py` 依赖 `cryptography`，其原生扩展在 Intel runner 上加载到了
+   被打包进来的**版本不匹配的 `libssl.3.dylib`**（arm64 恰好自洽，所以只在 x64 暴露）。
+   → 修复：eapi 只用到 AES-128-ECB，改为**纯 Python 实现** `src/core/aes.py`，
+   从 `requirements.txt` 移除 `cryptography`，并在 `main.spec` 的 `excludes` 里排除它
+   （pywebview 仅在其可选 `ssl=True` 服务器路径里才 import 它，本项目不使用）。
+   顺带把 bundle 从 50 MB 降到 **38 MB**，并彻底消除各平台 OpenSSL 错配的可能。
+
+正确性保证：`tests/test_aes.py` 同时验证 FIPS-197 官方向量（AES-128：
+`000102…0f` / `001122…ff` → `69c4e0d86a7b0430d8cdb78070b4c55a`）**与**
+对同一批输入逐字节比对 `cryptography` 的输出，两者完全一致；真实接口冒烟
+（`NCM_LIVE=1 pytest tests/test_live_api.py`）在换用纯 Python AES 后依然全绿。

@@ -137,8 +137,16 @@ jobs:
         run: |
           $exe = "dist/NeteaseMusicDownloader.exe"
           if (-not (Test-Path $exe)) { Write-Error "the executable was not produced"; exit 1 }
-          & $exe --self-test --report "dist/selftest-windows.txt"
-          if ($LASTEXITCODE -ne 0) { Write-Error "self-test failed with exit code $LASTEXITCODE"; exit 1 }
+          # The .exe is a GUI-subsystem binary, so PowerShell neither waits for
+          # it nor sets $LASTEXITCODE -- Start-Process -Wait -PassThru is the
+          # only way to get a real exit code.
+          $proc = Start-Process -FilePath $exe `
+            -ArgumentList "--self-test", "--report", "dist/selftest-windows.txt" `
+            -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "self-test failed with exit code $($proc.ExitCode)"
+            exit 1
+          }
           Get-Content "dist/selftest-windows.txt"
 
       - name: Package (zip)
