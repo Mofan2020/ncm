@@ -9,6 +9,7 @@ Need                   Endpoint                                 Channel
 playlist detail        ``/api/v6/playlist/detail``              eapi
 song detail (batch)    ``/api/v3/song/detail``                  eapi
 song play url          ``/api/song/enhance/player/url/v1``      eapi
+song lyrics            ``/api/song/lyric``                       eapi
 account / login status ``/api/w/nuser/account/get``              eapi
 QR key                 ``/api/login/qrcode/unikey``             legacy
 QR poll                ``/api/login/qrcode/client/login``       legacy
@@ -20,7 +21,8 @@ logout                 ``/api/logout``                          legacy
 Endpoints that **do not exist any more** (all answer ``404 接口未找到``) and must
 never be reintroduced: ``/api/song/url``, ``/api/song/url/v1``,
 ``/api/v3/song/url``, ``/api/login/status``, ``/api/sent/verificationcode``,
-``/api/homepage/block/page``.
+``/api/homepage/block/page``, ``GET /api/song/lyric`` (the eapi route above is the
+one that works).  ``/api/song/lyric/v1`` exists but always answers ``code 400``.
 
 ``/weapi/*`` is blackholed on many networks (HTTP 200 + empty body for every
 request) -- see :mod:`src.core.crypto`.
@@ -40,6 +42,7 @@ import requests
 from src.auth import get_login_manager
 from src.config import get_settings
 from src.core.crypto import eapi_body, encode_type_for_level
+from src.core.lyrics import LYRIC_ENDPOINT
 
 __all__ = ["NeteaseAPI", "get_api", "QUALITY_ORDER", "quality_fallbacks"]
 
@@ -357,6 +360,36 @@ class NeteaseAPI:
         return info["url"] if info else None
 
     # ------------------------------------------------------------------- misc
+    def get_lyrics(self, song_id: str) -> dict[str, Any] | None:
+        """Fetch the raw lyrics of ``song_id``.
+
+        Returns ``{"lyric": str, "translation": str, "code": 200}`` or ``None``
+        when the song has none / the call failed.  Merging and writing is done by
+        :mod:`src.core.lyrics`.
+        """
+        song_id = str(song_id)
+        payload = {
+            "id": int(song_id) if song_id.isdigit() else song_id,
+            "lv": -1, "kv": -1, "tv": -1,
+        }
+        result = self._eapi(LYRIC_ENDPOINT, payload)
+        if not result:
+            # Kept for networks where the plain route still answers.
+            result = self._legacy("/song/lyric", {"id": song_id, "lv": -1, "kv": -1, "tv": -1})
+        if not result or result.get("code") != 200:
+            self._log(f"no lyrics for {song_id}: {(result or {}).get('code')}", "debug")
+            return None
+
+        translation = ""
+        tlyric = result.get("tlyric")
+        if isinstance(tlyric, dict):
+            translation = tlyric.get("lyric") or ""
+        return {
+            "lyric": ((result.get("lrc") or {}).get("lyric") or ""),
+            "translation": translation,
+            "code": 200,
+        }
+
     def get_user_detail(self, user_id: str) -> dict[str, Any] | None:
         result = self._legacy(f"/v1/user/detail/{user_id}")
         if result and not result.get("code"):

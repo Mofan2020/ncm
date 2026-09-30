@@ -43,6 +43,8 @@ class DownloadSettings:
     quality: str = "standard"        # standard|higher|exhigh|lossless|hires
     max_concurrent: int = 2          # 1-3
     overwrite: bool = False
+    download_lyrics: bool = True      # write a .lrc next to every song
+    lyrics_translation: bool = True   # merge the translation into that .lrc
     download_dir: str = ""
 
 
@@ -80,6 +82,13 @@ def _filtered(cls: Any, data: dict[str, Any] | None) -> dict[str, Any]:
     """Drop keys the dataclass does not know about."""
     known = {f.name for f in fields(cls)}
     return {k: v for k, v in (data or {}).items() if k in known}
+
+
+def _as_bool(value: Any) -> bool:
+    """Tolerant truthiness for values that may come from JSON or YAML."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
 
 
 class Settings:
@@ -187,6 +196,9 @@ class Settings:
     def update_download(self, **kwargs: Any) -> None:
         for key, value in _filtered(DownloadSettings, kwargs).items():
             setattr(self._data.download, key, value)
+        # The UI sends JSON, so booleans may arrive as "true"/"false" strings.
+        for flag in ("overwrite", "download_lyrics", "lyrics_translation"):
+            setattr(self._data.download, flag, _as_bool(getattr(self._data.download, flag)))
         self._data.download.max_concurrent = self._clamp_concurrency(
             self._data.download.max_concurrent)
         self.save()

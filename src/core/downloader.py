@@ -14,6 +14,10 @@ Design notes (why it looks like this):
   returns an mp3, and we must not save it as ``.flac``.
 * Downloads go to ``<name>.part`` and are moved into place atomically only after
   the byte count matches what the API announced.
+* **Lyrics are a sidecar, never a blocker.**  When enabled, a ``<name>.lrc`` is
+  written next to the audio file (atomically, same temp-file trick).  A song
+  without lyrics, or a failed lyrics request, must never fail the download, so
+  the whole lyrics path is wrapped and only recorded on the task.
 """
 from __future__ import annotations
 
@@ -31,6 +35,8 @@ from typing import Any
 
 import requests
 from requests.adapters import HTTPAdapter
+
+from src.core.lyrics import build_lyrics, lyrics_path_for, write_lyrics
 
 __all__ = ["DownloadTask", "DownloadStats", "SongDownloader", "MAX_CONCURRENT"]
 
@@ -65,6 +71,9 @@ class DownloadTask:
     level: str | None = None   # level actually delivered by the API
     error: str | None = None
     error_code: str | None = None
+    lyrics_path: str | None = None
+    lyrics_status: str = "disabled"   # disabled|saved|exists|none|failed
+    lyrics_error: str | None = None
     retries: int = 0
     start_time: float = 0.0
     finish_time: float = 0.0
@@ -88,6 +97,9 @@ class DownloadTask:
             "quality": self.requested_quality,
             "error": self.error,
             "error_code": self.error_code,
+            "lyrics_path": self.lyrics_path,
+            "lyrics_status": self.lyrics_status,
+            "lyrics_error": self.lyrics_error,
             "retries": self.retries,
         }
 
@@ -104,6 +116,8 @@ class DownloadStats:
     time_elapsed: float = 0.0
     total_bytes: int = 0
     speed: float = 0.0                 # bytes / second (whole batch)
+    lyrics_saved: int = 0
+    lyrics_missing: int = 0
     failed_songs: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -121,6 +135,8 @@ class DownloadStats:
             "time_elapsed": round(self.time_elapsed, 2),
             "total_bytes": self.total_bytes,
             "speed": self.speed,
+            "lyrics_saved": self.lyrics_saved,
+            "lyrics_missing": self.lyrics_missing,
         }
 
 
@@ -133,6 +149,8 @@ class SongDownloader:
         quality: str = "standard",
         overwrite: bool = False,
         max_concurrent: int = DEFAULT_CONCURRENT,
+        download_lyrics: bool = True,
+        lyrics_translation: bool = True,
         timeout: int = 60,
         max_retries: int = 3,
     ) -> None:
@@ -140,6 +158,8 @@ class SongDownloader:
         self.quality = quality
         self.overwrite = overwrite
         self.max_concurrent = max(1, min(int(max_concurrent), MAX_CONCURRENT))
+        self.download_lyrics = bool(download_lyrics)
+        self.lyrics_translation = bool(lyrics_translation)
         self.timeout = timeout
         self.max_retries = max(1, int(max_retries))
 
@@ -358,6 +378,40 @@ class SongDownloader:
         except OSError:
             pass
 
+    # ------------------------------------------------------------------ lyrics
+    def _save_lyrics(self, task: DownloadTask, destination: Path, api_client: Any = None) -> None:
+        """Write the ``.lrc`` sidecar for ``destination``; never raises.
+
+        Runs for downloaded *and* already-existing audio files, so enabling
+        lyrics later backfills a library that was downloaded without them.
+        """
+        if not self.download_lyrics:
+            task.lyrics_status = "disabled"
+            return
+        if api_client is None:
+            task.lyrics_status = "failed"
+            task.lyrics_error = "no api client"
+            return
+
+        path = lyrics_path_for(destination)
+        try:
+            if not self.overwrite and path.exists() and path.stat().st_size > 0:
+                task.lyrics_status = "exists"
+                task.lyrics_path = str(path)
+                return
+            text = build_lyrics(api_client, task.song_id, translation=self.lyrics_translation)
+            if not text:
+                task.lyrics_status = "none"
+                self.logger.debug("no lyrics available for %s", task.song_id)
+                return
+            write_lyrics(path, text)
+            task.lyrics_path = str(path)
+            task.lyrics_status = "saved"
+        except Exception as exc:  # a missing lyric must never fail the song
+            task.lyrics_status = "failed"
+            task.lyrics_error = str(exc)
+            self.logger.debug("lyrics failed for %s: %s", task.song_id, exc)
+
     def download_single(self, task: DownloadTask, api_client: Any = None) -> bool:
         """Resolve + download one task. Returns ``True`` when the file is on disk."""
         if self._cancelled.is_set():
@@ -397,6 +451,7 @@ class SongDownloader:
                         task.progress = 100.0
                         task.total_size = task.total_size or destination.stat().st_size
                         task.downloaded_size = destination.stat().st_size
+                        self._save_lyrics(task, destination, api_client)
                         self._mark(task, "skipped")
                         self._notify_complete(task)
                         return True
@@ -408,6 +463,7 @@ class SongDownloader:
                 task.total_size = task.total_size or written
                 task.progress = 100.0
                 task.speed = 0.0
+                self._save_lyrics(task, destination, api_client)
                 self._mark(task, "completed")
                 self._notify_complete(task)
                 return True
@@ -462,6 +518,8 @@ class SongDownloader:
                 stats.skipped = sum(1 for t in tasks if t.status == "skipped")
                 stats.cancelled = sum(1 for t in tasks if t.status == "cancelled")
                 stats.total_bytes = sum(t.downloaded_size for t in tasks)
+                stats.lyrics_saved = sum(1 for t in tasks if t.lyrics_status == "saved")
+                stats.lyrics_missing = sum(1 for t in tasks if t.lyrics_status == "none")
                 stats.time_elapsed = time.time() - start
                 stats.speed = stats.total_bytes / stats.time_elapsed if stats.time_elapsed > 0 else 0
                 stats.failed_songs = [

@@ -78,6 +78,7 @@ so `tests/test_bridge.py` asserts the payload shapes.
 | Playlist detail | eapi `/api/v6/playlist/detail` | legacy `/api/v3/playlist/detail` as fallback |
 | Missing tracks | eapi `/api/v3/song/detail` (`c=[{id}]`) | for playlists with `trackCount > len(tracks)` |
 | Play URL | eapi `/api/song/enhance/player/url/v1` | `ids`/`level`/`encodeType`, per-level retry |
+| Lyrics | eapi `/api/song/lyric` | `id`/`lv=-1`/`kv=-1`/`tv=-1`; `/v1` answers 400, the legacy GET route is dead |
 | Account state | `/api/w/nuser/account/get` | anonymous ⇒ `account: null` ⇒ "not signed in" |
 | QR login | `/api/login/qrcode/unikey` + `/api/login/qrcode/client/login` | `type=1` |
 | SMS code | `/api/sms/captcha/sent` | parameter is **`cellphone`**, not `phone` |

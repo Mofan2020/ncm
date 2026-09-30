@@ -306,3 +306,115 @@ def test_filename_collision_same_artist_title(cdn, tmp_path):
     assert stats.success == 2
     assert (tmp_path / "A - Same.mp3").exists()
     assert not list(tmp_path.glob("*.part"))
+
+
+# ---------------------------------------------------------------------- lyrics
+
+class LyricsAPI(FakeAPI):
+    """FakeAPI plus lyrics, so one stub covers both halves of a download."""
+
+    def __init__(self, base, lyrics=None, error=None, **kwargs):
+        super().__init__(base, **kwargs)
+        self.lyrics = lyrics
+        self.error = error
+        self.lyrics_calls = []
+
+    def get_lyrics(self, song_id):
+        self.lyrics_calls.append(str(song_id))
+        if self.error:
+            raise self.error
+        return self.lyrics
+
+
+LRC_TEXT = {"lyric": "[00:01.00] line one\n[00:05.00] line two\n",
+            "translation": "[00:01.00] 第一行\n", "code": 200}
+
+
+def test_lyrics_are_written_next_to_the_audio(cdn, tmp_path):
+    api = LyricsAPI(cdn.base, lyrics=LRC_TEXT)
+    dl = SongDownloader(tmp_path, overwrite=True, max_concurrent=2)
+    stats = dl.batch_download(songs(1), api)
+    assert stats.success == 1
+    assert stats.lyrics_saved == 1
+    assert (tmp_path / "Artist 1 - Song 1.mp3").exists()
+    lyrics = tmp_path / "Artist 1 - Song 1.lrc"
+    text = lyrics.read_text(encoding="utf-8")
+    assert "[00:01.00]line one" in text
+    assert "[00:01.00]第一行" in text      # translation merged in place
+    assert not list(tmp_path.glob("*.part"))
+    task = dl.get_tasks()[0]
+    assert task.lyrics_status == "saved"
+    assert task.to_dict()["lyrics_path"] == str(lyrics)
+    assert api.lyrics_calls == ["1"]
+
+
+def test_lyrics_disabled_downloads_no_lyrics(cdn, tmp_path):
+    api = LyricsAPI(cdn.base, lyrics=LRC_TEXT)
+    dl = SongDownloader(tmp_path, overwrite=True, max_concurrent=1, download_lyrics=False)
+    stats = dl.batch_download(songs(1), api)
+    assert stats.success == 1 and stats.lyrics_saved == 0
+    assert api.lyrics_calls == []
+    assert dl.get_tasks()[0].lyrics_status == "disabled"
+    assert not list(tmp_path.glob("*.lrc"))
+
+
+def test_translation_can_be_excluded(cdn, tmp_path):
+    api = LyricsAPI(cdn.base, lyrics=LRC_TEXT)
+    dl = SongDownloader(tmp_path, overwrite=True, max_concurrent=1, lyrics_translation=False)
+    dl.batch_download(songs(1), api)
+    text = (tmp_path / "Artist 1 - Song 1.lrc").read_text(encoding="utf-8")
+    assert "line one" in text and "第一行" not in text
+
+
+def test_a_song_without_lyrics_still_downloads(cdn, tmp_path):
+    api = LyricsAPI(cdn.base, lyrics=None)
+    dl = SongDownloader(tmp_path, overwrite=True, max_concurrent=1)
+    stats = dl.batch_download(songs(1, 2), api)
+    assert stats.success == 2 and stats.failed == 0
+    assert stats.lyrics_missing == 2 and stats.lyrics_saved == 0
+    assert not list(tmp_path.glob("*.lrc"))
+
+
+def test_lyrics_failure_never_fails_the_song(cdn, tmp_path):
+    api = LyricsAPI(cdn.base, error=RuntimeError("lyrics backend down"))
+    dl = SongDownloader(tmp_path, overwrite=True, max_concurrent=1)
+    stats = dl.batch_download(songs(1), api)
+    assert stats.success == 1 and stats.failed == 0
+    task = dl.get_tasks()[0]
+    assert task.status == "completed"
+    assert task.lyrics_status == "failed"
+    assert "lyrics backend down" in (task.lyrics_error or "")
+
+
+def test_existing_lyrics_are_kept(cdn, tmp_path):
+    existing = tmp_path / "Artist 1 - Song 1.lrc"
+    existing.write_text("my own lyrics\n", encoding="utf-8")
+    api = LyricsAPI(cdn.base, lyrics=LRC_TEXT)
+    dl = SongDownloader(tmp_path, max_concurrent=1)   # overwrite=False
+    stats = dl.batch_download(songs(1), api)
+    assert stats.lyrics_saved == 0
+    assert existing.read_text(encoding="utf-8") == "my own lyrics\n"
+    assert dl.get_tasks()[0].lyrics_status == "exists"
+    assert api.lyrics_calls == []
+
+
+def test_overwrite_rewrites_existing_lyrics(cdn, tmp_path):
+    existing = tmp_path / "Artist 1 - Song 1.lrc"
+    existing.write_text("stale\n", encoding="utf-8")
+    api = LyricsAPI(cdn.base, lyrics=LRC_TEXT)
+    dl = SongDownloader(tmp_path, overwrite=True, max_concurrent=1, download_lyrics=True)
+    dl.overwrite = True                      # overwrite=True already set above
+    stats = dl.batch_download(songs(1), api)
+    assert stats.lyrics_saved == 1
+    assert "line one" in existing.read_text(encoding="utf-8")
+
+
+def test_lyrics_are_backfilled_for_an_already_downloaded_song(cdn, tmp_path):
+    """Audio exists, lyrics do not: enabling lyrics later must fetch them."""
+    (tmp_path / "Artist 1 - Song 1.mp3").write_bytes(PAYLOAD)
+    api = LyricsAPI(cdn.base, lyrics=LRC_TEXT)
+    dl = SongDownloader(tmp_path, max_concurrent=1)   # overwrite=False -> audio skipped
+    stats = dl.batch_download(songs(1), api)
+    assert stats.skipped == 1 and stats.lyrics_saved == 1
+    assert (tmp_path / "Artist 1 - Song 1.lrc").exists()
+    assert not list(tmp_path.glob("*.part"))

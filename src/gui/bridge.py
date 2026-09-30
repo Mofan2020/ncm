@@ -111,6 +111,8 @@ class GuiBridge:
                 "quality": self.settings.download.quality,
                 "max_concurrent": self.settings.download.max_concurrent,
                 "overwrite": self.settings.download.overwrite,
+                "download_lyrics": self.settings.download.download_lyrics,
+                "lyrics_translation": self.settings.download.lyrics_translation,
                 "download_dir": self._download_dir(),
             },
             "ui": {
@@ -152,7 +154,8 @@ class GuiBridge:
         return {k: v for k, v in (data or {}).items() if k in allowed}
 
     def _clean_download(self, data: dict[str, Any]) -> dict[str, Any]:
-        cleaned = self._clean(data, {"quality", "max_concurrent", "overwrite", "download_dir"})
+        cleaned = self._clean(data, {"quality", "max_concurrent", "overwrite", "download_dir",
+                                     "download_lyrics", "lyrics_translation"})
         if "max_concurrent" in cleaned:
             try:
                 cleaned["max_concurrent"] = max(1, min(int(cleaned["max_concurrent"]), MAX_CONCURRENT))
@@ -418,12 +421,18 @@ class GuiBridge:
             quality = options.get("quality") or self.settings.download.quality
             overwrite = bool(options.get("overwrite", self.settings.download.overwrite))
             max_concurrent = options.get("max_concurrent", self.settings.download.max_concurrent)
+            download_lyrics = bool(options.get("download_lyrics",
+                                               self.settings.download.download_lyrics))
+            lyrics_translation = bool(options.get("lyrics_translation",
+                                                  self.settings.download.lyrics_translation))
 
             self.downloader = SongDownloader(
                 download_dir=download_dir,
                 quality=quality,
                 overwrite=overwrite,
                 max_concurrent=max_concurrent,
+                download_lyrics=download_lyrics,
+                lyrics_translation=lyrics_translation,
             )
             self.downloader.set_progress_callback(self._on_download_progress)
             self.downloader.set_stats_callback(self._on_download_stats)
@@ -431,6 +440,8 @@ class GuiBridge:
             # Persist the choices so the next session starts where we left off.
             self.settings.update_download(quality=quality, overwrite=overwrite,
                                           max_concurrent=max_concurrent,
+                                          download_lyrics=download_lyrics,
+                                          lyrics_translation=lyrics_translation,
                                           download_dir=str(self.downloader.download_dir))
 
             DownloadStats(total=len(songs))

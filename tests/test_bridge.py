@@ -135,9 +135,11 @@ def test_start_download_accepts_ui_selection(bridge, monkeypatch):
     started = {}
 
     class FakeDownloader:
-        def __init__(self, download_dir, quality, overwrite, max_concurrent):
+        def __init__(self, download_dir, quality, overwrite, max_concurrent,
+                     download_lyrics=True, lyrics_translation=True):
             started.update(download_dir=download_dir, quality=quality, overwrite=overwrite,
-                           max_concurrent=max_concurrent)
+                           max_concurrent=max_concurrent, download_lyrics=download_lyrics,
+                           lyrics_translation=lyrics_translation)
             self.download_dir = download_dir
 
         def set_progress_callback(self, cb):
@@ -153,12 +155,18 @@ def test_start_download_accepts_ui_selection(bridge, monkeypatch):
 
     monkeypatch.setattr("src.gui.bridge.SongDownloader", FakeDownloader)
     result = bridge.start_download({"indices": [1], "quality": "exhigh",
-                                   "max_concurrent": 7, "overwrite": True})
+                                   "max_concurrent": 7, "overwrite": True,
+                                   "download_lyrics": False, "lyrics_translation": True})
     assert result["success"] is True and result["total"] == 1
     bridge._download_thread.join(timeout=5)
     assert started["songs"] == [2]
     assert started["quality"] == "exhigh"
     assert started["overwrite"] is True
+    # the lyrics switches travel from the UI into the downloader ...
+    assert started["download_lyrics"] is False
+    assert started["lyrics_translation"] is True
+    # ... and are persisted for the next session
+    assert bridge.get_settings()["download"]["download_lyrics"] is False
 
 
 def test_hint_login_only_when_signed_out(bridge):

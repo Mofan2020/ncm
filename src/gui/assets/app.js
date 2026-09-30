@@ -248,6 +248,9 @@ function fillSettingsForm() {
     setValue('max-concurrent-select', String(s.download.max_concurrent));
     setValue('theme-select', s.ui.theme);
     setChecked('overwrite-files-check', s.download.overwrite);
+    setChecked('download-lyrics-check', s.download.download_lyrics);
+    setChecked('lyrics-translation-check', s.download.lyrics_translation);
+    setChecked('lyrics-check', s.download.download_lyrics);
     setChecked('remember-login-check', s.auth.remember_login);
     setChecked('debug-check', !!s.debug);
     document.getElementById('download-dir-input').value = s.download.download_dir || '';
@@ -329,6 +332,8 @@ async function saveSettings() {
             quality: document.getElementById('default-quality-select').value,
             max_concurrent: parseInt(document.getElementById('max-concurrent-select').value, 10),
             overwrite: document.getElementById('overwrite-files-check').checked,
+            download_lyrics: document.getElementById('download-lyrics-check').checked,
+            lyrics_translation: document.getElementById('lyrics-translation-check').checked,
             download_dir: document.getElementById('download-dir-input').value,
         },
         ui: {
@@ -647,6 +652,9 @@ async function startDownload() {
         quality: document.getElementById('quality-select').value,
         max_concurrent: parseInt(document.getElementById('concurrent-select').value, 10),
         overwrite: document.getElementById('overwrite-check').checked,
+        download_lyrics: document.getElementById('lyrics-check').checked,
+        lyrics_translation:
+            (state.settings && state.settings.download.lyrics_translation) !== false,
         download_dir: (state.settings && state.settings.download.download_dir) || '',
         indices: Array.from(state.selected).sort((a, b) => a - b),
     };
@@ -894,6 +902,12 @@ function onDownloadComplete(payload) {
     }), 6000);
     if (payload && payload.hint_login) {
         showToast('info', t('login.login_needed'), 6000);
+    }
+    if (stats.lyrics_saved) {
+        showToast('info', t('status.lyrics_saved', { count: stats.lyrics_saved }), 6000);
+    }
+    if (stats.lyrics_missing) {
+        showToast('info', t('status.lyrics_none', { count: stats.lyrics_missing }), 6000);
     }
     updateStatus('ready');
     document.querySelectorAll('.pill[data-status="waiting"]').forEach((pill) => {

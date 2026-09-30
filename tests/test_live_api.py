@@ -78,3 +78,36 @@ def test_account_status_endpoint(api):
     assert isinstance(logged_in, bool), "the account endpoint must answer (200 + JSON)"
     if logged_in:
         assert account.get("id") and profile.get("nickname") is not None
+
+
+def test_real_lyrics(api):
+    """The lyrics endpoint must answer with timestamps for real songs."""
+    songs = api.get_playlist_songs(PLAYLIST_ID)
+    assert songs
+    found = 0
+    for song in songs[:5]:
+        lyrics = api.get_lyrics(str(song["id"]))
+        if lyrics and lyrics.get("lyric", "").strip():
+            found += 1
+            assert "[00:" in lyrics["lyric"], "LRC timestamps expected"
+    assert found, "not one lyric in the first five tracks -- did the route change?"
+
+
+def test_real_download_writes_lyrics(tmp_path: Path, api):
+    songs = [song for song in api.get_playlist_songs(PLAYLIST_ID) if song.get("fee") == 0][:1]
+    if not songs:
+        pytest.skip("no royalty free track in this playlist")
+    downloader = SongDownloader(download_dir=str(tmp_path), quality="standard",
+                                overwrite=True, max_concurrent=1, download_lyrics=True)
+    stats = downloader.batch_download(songs, api)
+    assert stats.success == 1, stats.failed_songs
+
+    sidecars = list(tmp_path.glob("*.lrc"))
+    if sidecars:
+        assert stats.lyrics_saved == 1
+        assert "[00:" in sidecars[0].read_text(encoding="utf-8")
+        assert not list(tmp_path.glob("*.part"))
+    else:
+        # A song may genuinely have no lyrics -- then it must be reported as such
+        # rather than silently pretending success.
+        assert stats.lyrics_missing == 1

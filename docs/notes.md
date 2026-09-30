@@ -117,7 +117,7 @@
    的结论自行加回。
 6. **没有断点续传（HTTP Range）。** 播放地址是短时效签名 URL，续传要先重新取地址，
    收益有限；当前策略是"失败即重试整首"。如需，可在 `_download()` 里加 Range + 校验。
-7. **没写歌词/封面到文件。** 目前只在界面显示歌单封面，未把歌词/专辑图落盘。
+7. **专辑封面仍未落盘**（v2.2.0 起歌词已落盘，见第 8 节）。封面只在界面显示，不写文件。
 8. **Linux 不支持。** pywebview 在 Linux 需要 GTK/Qt 依赖，与"Windows + macOS"的范围不符。
 9. **并发数上限固定 3。** 这是需求明确要求的范围，刻意没做更高并发（风控 + 收益低）。
 
@@ -157,3 +157,47 @@ dist/NeteaseMusicDownloader.app/Contents/MacOS/NeteaseMusicDownloader --self-tes
 `000102…0f` / `001122…ff` → `69c4e0d86a7b0430d8cdb78070b4c55a`）**与**
 对同一批输入逐字节比对 `cryptography` 的输出，两者完全一致；真实接口冒烟
 （`NCM_LIVE=1 pytest tests/test_live_api.py`）在换用纯 Python AES 后依然全绿。
+
+---
+
+## 8. 歌词下载（v2.2.0 新增）
+
+### 接口选择（2026-09-30 实测）
+
+| 端点 | 实测结果 |
+|------|----------|
+| `eapi /api/song/lyric`（POST，`id`/`lv=-1`/`kv=-1`/`tv=-1`） | **code 200**，热歌榜 40/40 首都有 `lrc.lyric` ✅ 采用 |
+| `eapi /api/song/lyric/v1` | code 400，不可用 |
+| `GET /api/song/lyric`（legacy） | 已死（该网络下 legacy 只剩登录流程的几条） |
+
+响应里 `tlyric`（翻译）字段存在但中文歌为空；`klyric`/`yrc`（逐字歌词）为空，
+且**没有** `romalrc`（罗马音）字段，所以这三类不做（见第 5 节未做清单）。
+
+### 行为
+
+* 音频落地后在**同目录**写 `<歌手 - 歌名>.lrc`，同样走 `.part` + 原子改名。
+* 翻译按**时间戳就地合并**：原句一行、翻译一行、同一个时间戳（绝大多数播放器都会两行都显示）。
+  多时间戳行（`[00:10][01:20]副歌`）的翻译会在每个时间戳下都出现。
+* 已存在的 `.lrc` 默认不动（`lyrics_status=exists`）；打开「覆盖已存在文件」才重写。
+* 已下载过音频的歌再跑一次会**补歌词**（音频跳过的分支也会取歌词）。
+* 取不到歌词、或歌词请求报错，**绝不**影响歌曲本身的成功状态，只记在任务上
+  （`lyrics_status = none | failed`，附 `lyrics_error`）。
+* 统计里单列 `lyrics_saved` / `lyrics_missing`，界面在下载完成后提示。
+
+### 真机验证（真网络、真文件）
+
+* 下载「芮恩 - 讨厌」：音频 4,126,555 字节 + `.lrc` 2,407 字节 / 79 行，含真实时间戳；
+  关闭歌词时同批任务不产生任何 `.lrc`；清掉 `.lrc` 只留音频再跑，音频 `skipped` 且歌词补回。
+* 翻译合并用真实外文歌验证通过，例如 Michael Jackson《Whatever Happens》：
+  `[00:20.730]He gives another smile tries to understand her side`
+  紧接 `[00:20.730]他再次微笑，试图站在她的角度去理解她`。
+* 单元测试 `tests/test_lyrics.py`（解析/合并/原子写/边界）、`tests/test_api_lyrics.py`
+  （端点与回退）、`tests/test_downloader.py`（落盘、回填、失败不影响歌曲、统计）全覆盖；
+  `NCM_LIVE=1` 的真实用例包含歌词取回与「下载即带歌词」。
+
+### 代价与取舍
+
+* 每首歌多一次 API 请求（受 `MIN_REQUEST_INTERVAL=0.3s` 限速），200 首歌大约多花 1 分钟
+  的接口时间，和下载并行进行。不想要可以在界面关掉。
+* 不做逐字（yrc/klyric）与罗马音：接口没给可用数据，硬做只能自己造轮子。
+* 不往音频文件里写 ID3/FLAC 内嵌歌词：那会改动音频字节与校验（见第 5 节）。
