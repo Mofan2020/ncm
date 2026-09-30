@@ -142,7 +142,15 @@ jobs:
           # only way to get a real exit code.
           $proc = Start-Process -FilePath $exe `
             -ArgumentList "--self-test", "--report", "dist/selftest-windows.txt" `
-            -Wait -PassThru
+            -PassThru
+          # Never wait forever: a hung GUI binary would block the runner until
+          # the 6 hour job timeout.
+          if (-not $proc.WaitForExit(180000)) {
+            $proc.Kill()
+            if (Test-Path "dist/selftest-windows.txt") { Get-Content "dist/selftest-windows.txt" }
+            Write-Error "the self-test did not finish within 180s"
+            exit 1
+          }
           if ($proc.ExitCode -ne 0) {
             Write-Error "self-test failed with exit code $($proc.ExitCode)"
             exit 1

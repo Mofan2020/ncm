@@ -90,15 +90,19 @@ def _self_test(report_path: str | None = None) -> int:
 
     Deliberately headless: this is the smoke test CI runs against the packaged
     binary on Windows and macOS, where a GUI window cannot be opened.
-    """
-    # Windows consoles default to cp1252/cp936: the app name is Chinese, so
-    # printing the report would raise UnicodeEncodeError before CI ever saw it.
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError, OSError):  # pragma: no cover
-            pass
 
+    It must never raise: a windowed build with an unhandled exception pops a
+    modal dialog and hangs an unattended runner forever (observed on Windows).
+    """
+    try:
+        return _run_self_test(report_path)
+    except BaseException as exc:  # pragma: no cover - guard against CI hangs
+        _emit_report([("self-test crashed", False, f"{type(exc).__name__}: {exc}")],
+                     report_path)
+        return 1
+
+
+def _run_self_test(report_path: str | None = None) -> int:
     checks: list[tuple[str, bool, str]] = []
 
     assets = resource_path("src", "gui", "assets")
@@ -159,25 +163,46 @@ def _self_test(report_path: str | None = None) -> int:
     except Exception as exc:  # pragma: no cover
         checks.append(("qrcode", False, f"{type(exc).__name__}: {exc}"))
 
+    failed = [name for name, passed, _ in checks if not passed]
+    _emit_report(checks, report_path)
+    return 0 if not failed else 1
+
+
+def _emit_report(checks: list[tuple[str, bool, str]], report_path: str | None) -> None:
+    """Print the report and write it to ``report_path`` -- never raise.
+
+    A windowed (``console=False``) build has ``sys.stdout is None`` and its
+    console defaults to a legacy code page (the app name is Chinese), so both
+    the print and the write have to be fully guarded.
+    """
     import platform
 
     lines = [f"{APP_DISPLAY_NAME} {__version__} self-test",
              f"python {platform.python_version()} on {platform.system()} {platform.machine()}",
              f"frozen: {bool(getattr(sys, 'frozen', False))}",
              ""]
-    for name, passed, detail in checks:
-        lines.append(f"[{'PASS' if passed else 'FAIL'}] {name}: {detail}")
+    lines += [f"[{'PASS' if passed else 'FAIL'}] {name}: {detail}" for name, passed, detail in checks]
     failed = [name for name, passed, _ in checks if not passed]
-    lines.append("")
-    lines.append(f"result: {'OK' if not failed else 'FAILED (' + ', '.join(failed) + ')'}")
+    lines += ["", f"result: {'OK' if not failed else 'FAILED (' + ', '.join(failed) + ')'}"]
     report = "\n".join(lines)
-    print(report, flush=True)
+
     if report_path:
         try:
             Path(report_path).write_text(report + "\n", encoding="utf-8")
-        except OSError as exc:
-            print(f"warning: cannot write report: {exc}", file=sys.stderr)
-    return 0 if not failed else 1
+        except OSError:
+            pass
+    try:
+        for stream in (sys.stdout, sys.stderr):
+            if stream is None:
+                continue
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError, OSError):
+                pass
+        if sys.stdout is not None:
+            print(report, flush=True)
+    except BaseException:
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
