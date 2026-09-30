@@ -2,109 +2,227 @@ name: Build and Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  build-macos:
-    runs-on: macos-latest
-    permissions:
-      contents: read
-    strategy:
-      matrix:
-        arch: [x64, arm64]
+  # ---------------------------------------------------------------- tests
+  test:
+    name: Lint & tests (ubuntu)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          architecture: ${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}
-      
+          cache: pip
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-      
+          pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Unit tests
+        run: pytest -q
+
+  # --------------------------------------------------------------- macOS
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-15 is Apple silicon, macos-15-intel is the x64 runner.
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Check the runner architecture matches the target
+        run: |
+          python -c "import platform, sys; m = platform.machine(); n = {'x86_64': 'x64', 'amd64': 'x64', 'aarch64': 'arm64'}.get(m, m); print(f'runner {m} -> {n}, target ${{ matrix.arch }}'); sys.exit(0 if n == '${{ matrix.arch }}' else 1)"
+
       - name: Build .app bundle
+        run: pyinstaller --clean --noconfirm main.spec
+
+      - name: Smoke test the bundled app
         run: |
-          pyinstaller --clean --noconfirm main.spec
-      
-      - name: Create DMG
+          BIN="dist/NeteaseMusicDownloader.app/Contents/MacOS/NeteaseMusicDownloader"
+          test -x "$BIN" || { echo "::error::the executable is missing from the bundle"; exit 1; }
+          "$BIN" --self-test --report dist/selftest-${{ matrix.arch }}.txt
+          cat dist/selftest-${{ matrix.arch }}.txt
+
+      - name: Package (zip + dmg)
         run: |
-          brew install create-dmg || true
-          create-dmg \
-            --volname "NeteaseMusicDownloader" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 100 \
-            --app-drop-link 450 185 \
-            "dist/NeteaseMusicDownloader-macOS-${{ matrix.arch }}.dmg" \
-            "dist/NeteaseMusicDownloader.app" || true
-      
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          set -euo pipefail
+          APP="dist/NeteaseMusicDownloader.app"
+          NAME="NeteaseMusicDownloader-macOS-${{ matrix.arch }}"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/$NAME.zip"
+          hdiutil create -volname "NeteaseMusicDownloader" -srcfolder "$APP" \
+            -ov -format UDZO "dist/$NAME.dmg"
+          ls -lh dist/
+
+      - name: Verify the artifacts are real
+        run: |
+          set -euo pipefail
+          for f in dist/NeteaseMusicDownloader-macOS-${{ matrix.arch }}.zip \
+                   dist/NeteaseMusicDownloader-macOS-${{ matrix.arch }}.dmg; do
+            size=$(stat -f%z "$f")
+            echo "$f -> $size bytes"
+            # a real bundle is tens of MB; anything tiny means the build broke
+            test "$size" -gt 5000000 || { echo "::error::$f looks truncated"; exit 1; }
+          done
+
+      - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
           path: |
-            dist/*.dmg
-            dist/*.app
-          if-no-files-found: warn
+            dist/NeteaseMusicDownloader-macOS-${{ matrix.arch }}.zip
+            dist/NeteaseMusicDownloader-macOS-${{ matrix.arch }}.dmg
+            dist/selftest-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          retention-days: 14
 
+  # ------------------------------------------------------------- windows
   build-windows:
+    name: Build Windows (x64)
+    needs: test
     runs-on: windows-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           architecture: 'x64'
-      
+          cache: pip
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-      
+          pip install -r requirements-dev.txt
+
       - name: Build single .exe
+        run: pyinstaller --clean --noconfirm main.spec
+
+      - name: Smoke test the .exe
+        shell: pwsh
         run: |
-          pyinstaller --clean --noconfirm main.spec
-      
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          $exe = "dist/NeteaseMusicDownloader.exe"
+          if (-not (Test-Path $exe)) { Write-Error "the executable was not produced"; exit 1 }
+          & $exe --self-test --report "dist/selftest-windows.txt"
+          if ($LASTEXITCODE -ne 0) { Write-Error "self-test failed with exit code $LASTEXITCODE"; exit 1 }
+          Get-Content "dist/selftest-windows.txt"
+
+      - name: Package (zip)
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/NeteaseMusicDownloader.exe" `
+            -DestinationPath "dist/NeteaseMusicDownloader-Windows-x64.zip" -Force
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - name: Verify the artifacts are real
+        shell: pwsh
+        run: |
+          $zip = Get-Item "dist/NeteaseMusicDownloader-Windows-x64.zip"
+          Write-Host "$($zip.Name) -> $($zip.Length) bytes"
+          if ($zip.Length -lt 5000000) { Write-Error "the zip looks truncated"; exit 1 }
+
+      - uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: dist/*.exe
+          path: |
+            dist/NeteaseMusicDownloader.exe
+            dist/NeteaseMusicDownloader-Windows-x64.zip
+            dist/selftest-windows.txt
+          if-no-files-found: error
+          retention-days: 14
 
+  # ------------------------------------------------------------- release
   release:
+    name: Publish release
     needs: [build-macos, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      
-      - name: Display structure
-        run: find artifacts -type f
-      
-      - name: Create Release with gh CLI
+          merge-multiple: true
+
+      - name: Check the collected artifacts
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "NeteaseMusicDownloader ${GITHUB_REF_NAME}" \
-            --generate-notes \
-            artifacts/macos-x64/*.dmg \
-            artifacts/macos-arm64/*.dmg \
-            artifacts/windows-x64/*.exe
+          set -euo pipefail
+          ls -lh artifacts
+          expected="
+          NeteaseMusicDownloader-Windows-x64.zip
+          NeteaseMusicDownloader-macOS-arm64.zip
+          NeteaseMusicDownloader-macOS-arm64.dmg
+          NeteaseMusicDownloader-macOS-x64.zip
+          NeteaseMusicDownloader-macOS-x64.dmg
+          NeteaseMusicDownloader.exe
+          "
+          missing=0
+          for name in $expected; do
+            if [ ! -f "artifacts/$name" ]; then echo "::error::missing artifact $name"; missing=1; fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          cat artifacts/selftest-*.txt
+
+      - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag exists - uploading the assets again"
+            gh release upload "$tag" artifacts/*.exe artifacts/*.zip artifacts/*.dmg --clobber
+          else
+            gh release create "$tag" \
+              --title "NeteaseMusicDownloader $tag" \
+              --generate-notes \
+              --latest \
+              artifacts/NeteaseMusicDownloader.exe \
+              artifacts/NeteaseMusicDownloader-Windows-x64.zip \
+              artifacts/NeteaseMusicDownloader-macOS-arm64.zip \
+              artifacts/NeteaseMusicDownloader-macOS-arm64.dmg \
+              artifacts/NeteaseMusicDownloader-macOS-x64.zip \
+              artifacts/NeteaseMusicDownloader-macOS-x64.dmg
+          fi
+
+      - name: Verify the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release view "$GITHUB_REF_NAME" --json tagName,isPrerelease,assets

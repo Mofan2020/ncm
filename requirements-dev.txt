@@ -1,0 +1,7 @@
+# Development / build dependencies.
+-r requirements.txt
+
+pyinstaller>=6.6
+pytest>=8.0
+ruff>=0.12,<0.13
+pillow>=10.0      # scripts/make_icon.py

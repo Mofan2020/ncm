@@ -1,4 +1,5 @@
-"""Configuration management module."""
-from .settings import Settings, get_settings
+"""Configuration package."""
 
-__all__ = ['Settings', 'get_settings']
+from src.config.settings import Settings, default_download_dir, get_settings
+
+__all__ = ["Settings", "get_settings", "default_download_dir"]

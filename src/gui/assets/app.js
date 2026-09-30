@@ -1,683 +1,335 @@
 /**
- * NetEase Music Downloader - Frontend Application
- * Handles UI interactions and communicates with Python backend via pywebview bridge
+ * NetEase Music Playlist Downloader - frontend logic.
+ *
+ * Talks to the Python side through `window.pywebview.api` (see src/gui/bridge.py).
+ * The backend pushes updates into the `on*` functions declared at the bottom of
+ * this file, so they must stay global.
+ *
+ * Every user visible string comes from the i18n catalogue: static markup uses
+ * `data-i18n` / `data-i18n-placeholder` / `data-i18n-title`, dynamic values go
+ * through `t(key, params)`.  Switching language re-renders everything in place.
  */
+'use strict';
 
-// ===== State =====
 const state = {
-    translations: {},
-    currentPlaylist: null,
-    playlistSongs: [],
-    selectedSongs: new Set(),
-    downloadTasks: new Map(),
-    isDownloading: false,
-    isPaused: false,
+    api: null,
+    appInfo: null,
     settings: null,
+    translations: {},
+    themeMode: (document.documentElement.dataset.themeMode || 'system'),
+    playlist: null,
+    tracks: [],
+    selected: new Set(),
+    tasks: new Map(),
+    downloading: false,
+    paused: false,
+    completed: 0,
+    total: 0,
+    phoneTimer: null,
+    confirmResolve: null,
 };
 
-// ===== Initialization =====
-document.addEventListener('DOMContentLoaded', () => {
-    initializeApp();
-});
+/* --------------------------------------------------------------- bootstrap */
 
-async function initializeApp() {
+document.addEventListener('DOMContentLoaded', boot);
+
+async function boot() {
+    bindStaticEvents();
+    state.api = await waitForApi();
+
+    if (!state.api) {
+        showToast('error', 'pywebview bridge unavailable');
+        return;
+    }
+
     try {
-        // Load translations
-        state.translations = await getTranslations();
-        applyTranslations();
-        
-        // Load settings
-        state.settings = await getSettings();
-        applySettings();
-        
-        // Check login status
-        await checkLoginStatus();
-        
-        // Setup event listeners
-        setupEventListeners();
-        
-        showToast('success', '应用已就绪');
-    } catch (error) {
-        console.error('Initialization error:', error);
-        showToast('error', '初始化失败: ' + error.message);
+        await loadTranslations();
+        state.appInfo = await state.api.get_app_info();
+        await loadSettings();
+        await refreshLoginStatus();
+        watchSystemTheme();
+        updateStatus('ready');
+        renderAbout();
+    } catch (err) {
+        console.error(err);
+        showToast('error', t('app.init_failed', { message: err.message || err }));
     }
 }
 
-// ===== Translation System =====
-async function getTranslations() {
-    if (window.pywebview) {
-        return await window.pywebview.api.get_translations();
-    }
-    return {};
+/** Resolve once the pywebview API object exists (or null after a timeout). */
+function apiReady() {
+    return !!(window.pywebview && window.pywebview.api
+        && typeof window.pywebview.api.get_settings === 'function');
 }
 
-function t(key) {
-    return state.translations[key] || key;
+/**
+ * Wait until the exposed Python API is actually callable.
+ *
+ * `window.pywebview.api` exists before pywebview has injected the methods, so
+ * polling for the object alone makes the first calls silently resolve to
+ * undefined (empty translations, no settings).  We listen for the documented
+ * `pywebviewready` event and additionally poll for a known method.
+ */
+function waitForApi(timeoutMs = 15000) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled || !apiReady()) return;
+            settled = true;
+            resolve(window.pywebview.api);
+        };
+        window.addEventListener('pywebviewready', finish);
+        const started = Date.now();
+        (function check() {
+            finish();
+            if (settled) return;
+            if (Date.now() - started > timeoutMs) {
+                settled = true;
+                return resolve(null);
+            }
+            setTimeout(check, 50);
+        })();
+    });
+}
+
+/* -------------------------------------------------------------------- i18n */
+
+async function loadTranslations() {
+    let translations = await state.api.get_translations();
+    if (!translations || !Object.keys(translations).length) {
+        // The bridge is up but answered with nothing: retry once before giving
+        // up, then surface the problem instead of showing raw translation keys.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        translations = await state.api.get_translations();
+    }
+    state.translations = translations || {};
+    if (!Object.keys(state.translations).length) {
+        console.error('i18n catalogue is empty');
+        showToast('error', 'i18n catalogue unavailable');
+    }
+    applyTranslations();
+}
+
+function t(key, params) {
+    let text = state.translations[key];
+    if (text === undefined || text === null) text = key;
+    if (params) {
+        text = text.replace(/\{(\w+)\}/g, (match, name) =>
+            (params[name] !== undefined && params[name] !== null) ? params[name] : match);
+    }
+    return text;
 }
 
 function applyTranslations() {
-    // Update all elements with data-i18n attribute
-    document.querySelectorAll('[data-i18n]').forEach(el => {
-        const key = el.getAttribute('data-i18n');
-        el.textContent = t(key);
+    document.querySelectorAll('[data-i18n]').forEach((el) => {
+        el.textContent = t(el.dataset.i18n);
     });
-    
-    // Update placeholders
-    document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
-        const key = el.getAttribute('data-i18n-placeholder');
-        el.placeholder = t(key);
+    document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+        el.placeholder = t(el.dataset.i18nPlaceholder);
     });
-    
-    // Update specific elements
-    const elements = {
-        'app-title': 'app.title',
-        'app-subtitle': 'app.subtitle',
-        'download-title': 'download.title',
-        'playlist-input': 'download.playlist_placeholder',
-        'btn-fetch': 'download.fetch_btn',
-        'quality-label': 'download.quality_label',
-        'concurrent-label': 'download.concurrent_label',
-        'overwrite-label': 'download.overwrite_label',
-        'skip-check-label': 'download.skip_check_label',
-        'btn-start': 'download.start_btn',
-        'btn-pause': 'download.pause_btn',
-        'btn-cancel': 'download.cancel_btn',
-        'btn-open-folder': 'download.open_folder',
-        'playlist-title': 'playlist.title',
-        'tracks-title': 'playlist.tracks',
-        'download-queue-title': 'download.title',
-        'status-text': 'status.ready',
+    document.querySelectorAll('[data-i18n-title]').forEach((el) => {
+        el.title = t(el.dataset.i18nTitle);
+    });
+    document.documentElement.lang = (state.settings && state.settings.ui.language === 'en_us')
+        ? 'en' : 'zh-CN';
+    refreshDynamicTexts();
+    renderAbout();
+    updateThemeButton();
+}
+
+/** Re-render everything that was generated by JS (not static markup). */
+function refreshDynamicTexts() {
+    document.querySelectorAll('.pill[data-status]').forEach((pill) => {
+        pill.textContent = t('download.status_' + pill.dataset.status);
+    });
+    document.querySelectorAll('.queue-item').forEach((item) => {
+        const statusEl = item.querySelector('.queue-status');
+        if (statusEl && statusEl.dataset.status) {
+            statusEl.textContent = t('download.status_' + statusEl.dataset.status);
+        }
+        const reasonEl = item.querySelector('.reason');
+        if (reasonEl && reasonEl.dataset.reason) {
+            reasonEl.textContent = failureReason(reasonEl.dataset.reason);
+        }
+    });
+    updateSelectionCount();
+    if (state.playlist) renderPlaylist(state.playlist);
+    updateStatusPill();
+}
+
+function failureReason(code) {
+    if (!code) return '';
+    const short = String(code).split(':').pop();
+    const key = 'error.reason.' + short;
+    const text = t(key);
+    return text === key ? String(code) : text;
+}
+
+/* ------------------------------------------------------------------- utils */
+
+function fmtBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+    return `${value.toFixed(value >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function fmtSpeed(bytesPerSecond) {
+    return bytesPerSecond > 0 ? `${fmtBytes(bytesPerSecond)}/s` : '';
+}
+
+function fmtDuration(ms) {
+    if (!ms) return '';
+    const total = Math.round(ms / 1000);
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+function showToast(type, message, timeoutMs = 3200) {
+    if (!message) return;
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(6px)';
+        setTimeout(() => toast.remove(), 220);
+    }, timeoutMs);
+}
+
+function showError(payload, fallbackKey) {
+    if (!payload) return;
+    let message = payload.error_key ? t(payload.error_key) : '';
+    if (payload.message && payload.message !== payload.error_key) {
+        message = message ? `${message}: ${payload.message}` : payload.message;
+    }
+    showToast('error', message || t(fallbackKey || 'common.error'));
+}
+
+function openModal(id) { document.getElementById(id).hidden = false; }
+function closeModal(id) {
+    document.getElementById(id).hidden = true;
+    if (id === 'login-modal' && state.api) state.api.cancel_login();
+}
+
+function confirmDialog(messageKey) {
+    return new Promise((resolve) => {
+        document.getElementById('confirm-message').textContent = t(messageKey);
+        state.confirmResolve = resolve;
+        openModal('confirm-modal');
+    });
+}
+
+function resolveConfirm(result) {
+    closeModal('confirm-modal');
+    if (state.confirmResolve) {
+        state.confirmResolve(result);
+        state.confirmResolve = null;
+    }
+}
+
+/* ---------------------------------------------------------------- settings */
+
+async function loadSettings() {
+    state.settings = await state.api.get_settings();
+    fillSettingsForm();
+}
+
+function fillSettingsForm() {
+    const s = state.settings;
+    if (!s) return;
+    setValue('quality-select', s.download.quality);
+    setValue('concurrent-select', String(s.download.max_concurrent));
+    setChecked('overwrite-check', s.download.overwrite);
+    setValue('default-quality-select', s.download.quality);
+    setValue('max-concurrent-select', String(s.download.max_concurrent));
+    setValue('theme-select', s.ui.theme);
+    setChecked('overwrite-files-check', s.download.overwrite);
+    setChecked('remember-login-check', s.auth.remember_login);
+    setChecked('debug-check', !!s.debug);
+    document.getElementById('download-dir-input').value = s.download.download_dir || '';
+    fillLanguageSelect(s.ui.language);
+    setTheme(s.ui.theme);
+}
+
+function fillLanguageSelect(current) {
+    const select = document.getElementById('language-select');
+    const languages = { zh_cn: '简体中文', en_us: 'English' };
+    select.innerHTML = '';
+    Object.keys(languages).forEach((code) => {
+        const option = document.createElement('option');
+        option.value = code;
+        option.textContent = languages[code];
+        select.appendChild(option);
+    });
+    select.value = current || 'zh_cn';
+}
+
+function setValue(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+}
+
+function setChecked(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.checked = !!value;
+}
+
+const THEME_MODES = ['light', 'dark', 'system'];
+const THEME_ICONS = { light: '☀', dark: '☾', system: '◐' };
+
+/**
+ * Apply a theme mode to the page, the header toggle and (when persisting) the
+ * OS window chrome via the bridge, so the title bar never lags behind.
+ */
+function setTheme(theme, persist) {
+    const mode = THEME_MODES.indexOf(theme) >= 0 ? theme : 'system';
+    state.themeMode = mode;
+    const applied = mode === 'system'
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : mode;
+    document.documentElement.setAttribute('data-theme', applied === 'dark' ? 'dark' : 'light');
+    document.documentElement.dataset.themeMode = mode;
+    const select = document.getElementById('theme-select');
+    if (select && select.value !== mode) select.value = mode;
+    updateThemeButton();
+    if (persist && state.api) state.api.set_theme(mode);
+}
+
+function updateThemeButton() {
+    const button = document.getElementById('btn-theme');
+    if (!button) return;
+    button.textContent = THEME_ICONS[state.themeMode] || THEME_ICONS.system;
+    const label = `${t('settings.theme')}: ${t('settings.theme_' + state.themeMode)}`;
+    button.title = label;
+    button.setAttribute('aria-label', label);
+}
+
+function cycleTheme() {
+    const next = THEME_MODES[(THEME_MODES.indexOf(state.themeMode) + 1) % THEME_MODES.length];
+    setTheme(next, true);
+}
+
+function watchSystemTheme() {
+    const query = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = () => {
+        // Only `system` follows the OS; an explicit light/dark choice wins.
+        if (state.themeMode === 'system') setTheme('system', true);
     };
-    
-    for (const [id, key] of Object.entries(elements)) {
-        const el = document.getElementById(id);
-        if (el) el.textContent = t(key);
-    }
-    
-    // Update quality options
-    const qualitySelect = document.getElementById('quality-select');
-    if (qualitySelect) {
-        const options = qualitySelect.querySelectorAll('option');
-        const keys = ['download.quality_standard', 'download.quality_higher', 'download.quality_exhigh', 'download.quality_lossless', 'download.quality_hires'];
-        options.forEach((opt, i) => {
-            if (keys[i]) opt.textContent = t(keys[i]);
-        });
-    }
-}
-
-// ===== Settings =====
-async function getSettings() {
-    if (window.pywebview) {
-        return await window.pywebview.api.get_settings();
-    }
-    return null;
-}
-
-function applySettings() {
-    if (!state.settings) return;
-    
-    // Apply download settings
-    const qualitySelect = document.getElementById('quality-select');
-    if (qualitySelect) qualitySelect.value = state.settings.download.quality;
-    
-    const concurrentSelect = document.getElementById('concurrent-select');
-    if (concurrentSelect) concurrentSelect.value = state.settings.download.max_concurrent;
-    
-    const overwriteCheck = document.getElementById('overwrite-check');
-    if (overwriteCheck) overwriteCheck.checked = state.settings.download.overwrite;
-    
-    const skipCheckCheck = document.getElementById('skip-check-check');
-    if (skipCheckCheck) skipCheckCheck.checked = state.settings.download.skip_url_check;
-    
-    // Apply UI settings
-    const languageSelect = document.getElementById('language-select');
-    if (languageSelect) languageSelect.value = state.settings.ui.language;
-    
-    const themeSelect = document.getElementById('theme-select');
-    if (themeSelect) themeSelect.value = state.settings.ui.theme;
-    
-    // Apply theme
-    applyTheme(state.settings.ui.theme);
-    
-    // Apply advanced settings
-    const debugCheck = document.getElementById('debug-check');
-    if (debugCheck) debugCheck.checked = state.settings.debug;
-    
-    const rememberLoginCheck = document.getElementById('remember-login-check');
-    if (rememberLoginCheck) rememberLoginCheck.checked = state.settings.auth.remember_login;
-}
-
-function applyTheme(theme) {
-    if (theme === 'system') {
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
-    } else {
-        document.documentElement.setAttribute('data-theme', theme);
-    }
-}
-
-// ===== Login System =====
-async function checkLoginStatus() {
-    if (!window.pywebview) return;
-    
-    try {
-        const status = await window.pywebview.api.get_login_status();
-        updateLoginUI(status);
-    } catch (error) {
-        console.error('Check login status error:', error);
-    }
-}
-
-function updateLoginUI(status) {
-    const btnLogin = document.getElementById('btn-login');
-    if (!btnLogin) return;
-    
-    if (status.is_logged_in && status.user) {
-        btnLogin.innerHTML = `
-            <img src="${status.user.avatar_url || ''}" class="user-avatar" alt="">
-            <span class="user-name">${status.user.nickname}</span>
-            ${status.user.vip_type > 0 ? '<span class="vip-badge">VIP</span>' : ''}
-        `;
-        btnLogin.onclick = showLoginModal;
-    } else {
-        btnLogin.textContent = t('login.title');
-        btnLogin.onclick = showLoginModal;
-    }
-}
-
-function showLoginModal() {
-    const modal = document.getElementById('login-modal');
-    if (modal) modal.style.display = 'flex';
-    
-    // Start QR code login by default
-    switchLoginTab('qrcode');
-}
-
-function hideLoginModal() {
-    const modal = document.getElementById('login-modal');
-    if (modal) modal.style.display = 'none';
-    
-    if (window.pywebview) {
-        window.pywebview.api.cancel_login();
-    }
-}
-
-function switchLoginTab(tab) {
-    // Update tab buttons
-    document.querySelectorAll('#login-modal .tab').forEach(t => {
-        t.classList.toggle('active', t.dataset.tab === tab);
-    });
-    
-    // Update tab content
-    document.querySelectorAll('#login-modal .tab-content').forEach(c => {
-        c.classList.toggle('active', c.id === `tab-${tab}`);
-    });
-    
-    // Start QR code login if QR tab selected
-    if (tab === 'qrcode' && window.pywebview) {
-        window.pywebview.api.login_qrcode();
-    }
-}
-
-// QR Code Login
-function onQrcodeUpdate(data) {
-    const img = document.getElementById('qrcode-image');
-    const status = document.getElementById('qrcode-status');
-    
-    if (img && data.image) {
-        img.src = data.image;
-    }
-    
-    if (status) {
-        status.textContent = t('login.qrcode_waiting');
-        status.className = 'qrcode-status';
-    }
-}
-
-function onLoginStatusChange(data) {
-    const statusEl = document.getElementById('qrcode-status');
-    if (!statusEl) return;
-    
-    switch (data.status) {
-        case 'pending':
-            statusEl.textContent = t('login.qrcode_waiting');
-            statusEl.className = 'qrcode-status';
-            break;
-        case 'scanned':
-            statusEl.textContent = t('login.qrcode_scanned');
-            statusEl.className = 'qrcode-status scanned';
-            break;
-        case 'expired':
-            statusEl.textContent = t('login.qrcode_expired');
-            statusEl.className = 'qrcode-status expired';
-            break;
-    }
-}
-
-function onLoginSuccess(user) {
-    showToast('success', t('login.login_success'));
-    hideLoginModal();
-    checkLoginStatus();
-}
-
-function onLoginFailed(error) {
-    showToast('error', error || t('login.login_failed'));
-}
-
-function refreshQrcode() {
-    if (window.pywebview) {
-        window.pywebview.api.refresh_qrcode();
-    }
-}
-
-// Phone Login
-let phoneCodeTimer = null;
-
-async function sendPhoneCode() {
-    const phoneInput = document.getElementById('phone-input');
-    const phone = phoneInput.value.trim();
-    
-    if (!phone || !/^1\d{10}$/.test(phone)) {
-        showToast('warning', '请输入正确的手机号');
-        return;
-    }
-    
-    try {
-        const result = await window.pywebview.api.send_phone_code(phone);
-        if (result) {
-            showToast('success', '验证码已发送');
-            startCountdown();
-        } else {
-            showToast('error', '发送失败，请重试');
-        }
-    } catch (error) {
-        showToast('error', '发送失败: ' + error.message);
-    }
-}
-
-function startCountdown() {
-    const btn = document.getElementById('btn-send-code');
-    let seconds = 60;
-    
-    btn.disabled = true;
-    btn.textContent = `${seconds}s`;
-    
-    phoneCodeTimer = setInterval(() => {
-        seconds--;
-        btn.textContent = `${seconds}s`;
-        
-        if (seconds <= 0) {
-            clearInterval(phoneCodeTimer);
-            btn.disabled = false;
-            btn.textContent = t('login.send_code');
-        }
-    }, 1000);
-}
-
-async function loginPhone() {
-    const phone = document.getElementById('phone-input').value.trim();
-    const code = document.getElementById('code-input').value.trim();
-    
-    if (!phone || !code) {
-        showToast('warning', '请输入手机号和验证码');
-        return;
-    }
-    
-    try {
-        const result = await window.pywebview.api.login_phone(phone, code);
-        if (!result) {
-            showToast('error', t('login.login_failed'));
-        }
-    } catch (error) {
-        showToast('error', t('login.login_error'));
-    }
-}
-
-// Cookie Login
-async function loginCookie() {
-    const cookie = document.getElementById('cookie-input').value.trim();
-    
-    if (!cookie) {
-        showToast('warning', '请输入Cookie');
-        return;
-    }
-    
-    try {
-        const result = await window.pywebview.api.login_cookie(cookie);
-        if (!result) {
-            showToast('error', t('login.cookie_invalid'));
-        }
-    } catch (error) {
-        showToast('error', t('login.login_error'));
-    }
-}
-
-// ===== Playlist =====
-async function fetchPlaylist() {
-    const input = document.getElementById('playlist-input');
-    const playlistInput = input.value.trim();
-    
-    if (!playlistInput) {
-        showToast('warning', '请输入歌单ID或链接');
-        return;
-    }
-    
-    setLoading(true);
-    updateStatus('fetching_playlist');
-    
-    try {
-        const result = await window.pywebview.api.fetch_playlist(playlistInput);
-        
-        if (result.success) {
-            state.currentPlaylist = result.playlist;
-            state.playlist_songs = result.tracks;
-            state.selectedSongs.clear();
-            
-            renderPlaylistInfo(result.playlist);
-            renderSongList(result.tracks);
-            
-            document.getElementById('playlist-card').style.display = 'block';
-            document.getElementById('song-list-card').style.display = 'block';
-            document.getElementById('btn-start').disabled = false;
-            
-            showToast('success', `成功获取 ${result.tracks.length} 首歌曲`);
-        } else {
-            showToast('error', result.error || '获取歌单失败');
-        }
-    } catch (error) {
-        showToast('error', '获取歌单失败: ' + error.message);
-    } finally {
-        setLoading(false);
-        updateStatus('ready');
-    }
-}
-
-function renderPlaylistInfo(playlist) {
-    document.getElementById('playlist-name').textContent = playlist.name;
-    document.getElementById('playlist-creator').textContent = `${t('playlist.creator')}: ${playlist.creator}`;
-    document.getElementById('playlist-count').textContent = `${t('playlist.track_count')}: ${playlist.track_count}`;
-    
-    const cover = document.getElementById('playlist-cover');
-    if (cover && playlist.cover_url) {
-        cover.src = playlist.cover_url;
-        cover.onerror = () => { cover.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80"><rect fill="%23ddd" width="80" height="80"/><text x="40" y="45" text-anchor="middle" fill="%23999" font-size="12">No Image</text></svg>'; };
-    }
-}
-
-function renderSongList(tracks) {
-    const container = document.getElementById('song-list');
-    container.innerHTML = '';
-    
-    tracks.forEach((track, index) => {
-        const item = document.createElement('div');
-        item.className = 'song-item';
-        item.dataset.index = index;
-        
-        const isVip = track.fee > 0;
-        const vipBadge = isVip ? '<span class="vip-badge">VIP</span>' : '';
-        
-        item.innerHTML = `
-            <input type="checkbox" id="song-check-${index}" onchange="toggleSong(${index}, this.checked)">
-            <span class="song-index">${index + 1}</span>
-            <div class="song-info">
-                <div class="song-name">${track.name} ${vipBadge}</div>
-                <div class="song-artist">${track.artists}</div>
-            </div>
-            <span class="song-status waiting" id="song-status-${index}">${t('download.waiting')}</span>
-        `;
-        
-        container.appendChild(item);
-    });
-}
-
-function toggleSong(index, checked) {
-    if (checked) {
-        state.selectedSongs.add(index);
-    } else {
-        state.selectedSongs.delete(index);
-    }
-    updateSelectionCount();
-}
-
-function selectAll() {
-    state.selectedSongs = new Set(state.playlistSongs.map((_, i) => i));
-    document.querySelectorAll('#song-list input[type="checkbox"]').forEach(cb => cb.checked = true);
-    updateSelectionCount();
-}
-
-function deselectAll() {
-    state.selectedSongs.clear();
-    document.querySelectorAll('#song-list input[type="checkbox"]').forEach(cb => cb.checked = false);
-    updateSelectionCount();
-}
-
-function updateSelectionCount() {
-    // Could add a counter display here
-}
-
-// ===== Download =====
-async function startDownload() {
-    if (state.selectedSongs.size === 0) {
-        showToast('warning', t('status.no_songs_selected'));
-        return;
-    }
-    
-    const options = {
-        quality: document.getElementById('quality-select').value,
-        max_concurrent: parseInt(document.getElementById('concurrent-select').value),
-        overwrite: document.getElementById('overwrite-check').checked,
-        download_dir: state.settings?.download?.download_dir || '',
-    };
-    
-    try {
-        const result = await window.pywebview.api.start_download(options);
-        
-        if (result.success) {
-            state.isDownloading = true;
-            state.isPaused = false;
-            updateDownloadControls();
-            updateStatus('downloading', { current: 0, total: state.selectedSongs.size });
-        } else if (result.need_login) {
-            showToast('warning', t('status.login_required'));
-            showLoginModal();
-        } else {
-            showToast('error', result.error || '启动下载失败');
-        }
-    } catch (error) {
-        showToast('error', '启动下载失败: ' + error.message);
-    }
-}
-
-function pauseDownload() {
-    if (state.isPaused) {
-        window.pywebview.api.resume_download();
-        state.isPaused = false;
-    } else {
-        window.pywebview.api.pause_download();
-        state.isPaused = true;
-    }
-    updateDownloadControls();
-}
-
-function cancelDownload() {
-    if (confirm(t('messages.confirm_cancel_download'))) {
-        window.pywebview.api.cancel_download();
-        state.isDownloading = false;
-        state.isPaused = false;
-        updateDownloadControls();
-        updateStatus('ready');
-    }
-}
-
-function updateDownloadControls() {
-    const btnStart = document.getElementById('btn-start');
-    const btnPause = document.getElementById('btn-pause');
-    const btnCancel = document.getElementById('btn-cancel');
-    const btnOpenFolder = document.getElementById('btn-open-folder');
-    
-    btnStart.disabled = state.isDownloading;
-    btnPause.disabled = !state.isDownloading;
-    btnCancel.disabled = !state.isDownloading;
-    btnOpenFolder.disabled = !state.isDownloading;
-    
-    btnPause.textContent = state.isPaused ? t('download.resume_btn') : t('download.pause_btn');
-}
-
-function onDownloadProgress(data) {
-    // Update song list status
-    const statusEl = document.getElementById(`song-status-${data.index}`);
-    if (statusEl) {
-        statusEl.textContent = `${data.status === 'downloading' ? t('download.downloading') : t('download.' + data.status)}`;
-        statusEl.className = `song-status ${data.status}`;
-    }
-    
-    // Update queue item
-    updateQueueItem(data);
-    
-    // Update progress bar
-    updateProgressBar(data);
-}
-
-function onDownloadStats(data) {
-    const progressContainer = document.getElementById('progress-container');
-    const progressBar = document.getElementById('progress-bar');
-    const progressText = document.getElementById('progress-text');
-    
-    progressContainer.style.display = 'block';
-    
-    const completed = data.success + data.failed + data.skipped;
-    const percent = data.total > 0 ? (completed / data.total * 100) : 0;
-    
-    progressBar.style.width = `${percent}%`;
-    progressText.textContent = `${percent.toFixed(1)}% (${completed}/${data.total})`;
-    
-    updateStatus('downloading', { current: completed, total: data.total });
-}
-
-function onDownloadComplete(data) {
-    state.isDownloading = false;
-    state.isPaused = false;
-    updateDownloadControls();
-    
-    const stats = data.stats;
-    showToast('success', t('status.download_complete', { success: stats.success, fail: stats.failed }));
-    updateStatus('ready');
-    
-    // Show failed list if any
-    if (stats.failed > 0) {
-        console.log('Failed songs:', stats.failed);
-    }
-}
-
-function updateQueueItem(data) {
-    const queue = document.getElementById('download-queue');
-    let item = document.getElementById(`queue-${data.song_id}`);
-    
-    if (!item) {
-        item = document.createElement('div');
-        item.className = 'queue-item';
-        item.id = `queue-${data.song_id}`;
-        item.innerHTML = `
-            <div class="queue-item-header">
-                <span class="queue-item-name">${data.artists} - ${data.name}</span>
-                <span class="queue-item-status ${data.status}">${t('download.' + data.status)}</span>
-            </div>
-            <div class="queue-item-progress">
-                <div class="queue-item-progress-bar" style="width: 0%"></div>
-            </div>
-            <div class="queue-item-info">
-                <span class="queue-speed"></span>
-                <span class="queue-size"></span>
-            </div>
-        `;
-        queue.appendChild(item);
-        
-        // Remove empty state
-        const empty = document.getElementById('empty-queue');
-        if (empty) empty.style.display = 'none';
-    }
-    
-    // Update progress
-    const progressBar = item.querySelector('.queue-item-progress-bar');
-    const statusEl = item.querySelector('.queue-item-status');
-    const speedEl = item.querySelector('.queue-speed');
-    const sizeEl = item.querySelector('.queue-size');
-    
-    if (progressBar) progressBar.style.width = `${data.progress || 0}%`;
-    if (statusEl) {
-        statusEl.textContent = t('download.' + data.status);
-        statusEl.className = `queue-item-status ${data.status}`;
-    }
-    if (speedEl && data.speed) {
-        speedEl.textContent = `${(data.speed / 1024).toFixed(1)} MB/s`;
-    }
-    if (sizeEl && data.total_size) {
-        const downloaded = (data.downloaded_size / 1024 / 1024).toFixed(1);
-        const total = (data.total_size / 1024 / 1024).toFixed(1);
-        sizeEl.textContent = `${downloaded} / ${total} MB`;
-    }
-}
-
-function updateProgressBar(data) {
-    const container = document.getElementById('progress-container');
-    const bar = document.getElementById('progress-bar');
-    const text = document.getElementById('progress-text');
-    
-    container.style.display = 'block';
-    bar.style.width = `${data.progress || 0}%`;
-    text.textContent = `${(data.progress || 0).toFixed(1)}%`;
-}
-
-function openFolder() {
-    if (window.pywebview) {
-        window.pywebview.api.open_download_folder();
-    }
-}
-
-// ===== Settings Modal =====
-function showSettingsModal() {
-    const modal = document.getElementById('settings-modal');
-    if (modal) modal.style.display = 'flex';
-}
-
-function hideSettingsModal() {
-    const modal = document.getElementById('settings-modal');
-    if (modal) modal.style.display = 'none';
-}
-
-function switchSettingsTab(tab) {
-    document.querySelectorAll('#settings-modal .tab').forEach(t => {
-        t.classList.toggle('active', t.dataset.tab === tab);
-    });
-    document.querySelectorAll('#settings-modal .tab-content').forEach(c => {
-        c.classList.toggle('active', c.id === `settings-${tab}`);
-    });
-}
-
-async function changeLanguage(lang) {
-    if (window.pywebview) {
-        await window.pywebview.api.set_language(lang);
-        showToast('info', t('messages.language_changed'));
-    }
-}
-
-async function chooseDirectory() {
-    if (window.pywebview) {
-        const dir = await window.pywebview.api.choose_directory();
-        if (dir) {
-            document.getElementById('download-dir-input').value = dir;
-        }
-    }
+    if (query.addEventListener) query.addEventListener('change', handler);
+    else if (query.addListener) query.addListener(handler);
 }
 
 async function saveSettings() {
-    const settings = {
+    const payload = {
         download: {
             quality: document.getElementById('default-quality-select').value,
-            max_concurrent: parseInt(document.getElementById('max-concurrent-select').value),
-            overwrite: document.getElementById('overwrite-check').checked,
+            max_concurrent: parseInt(document.getElementById('max-concurrent-select').value, 10),
+            overwrite: document.getElementById('overwrite-files-check').checked,
             download_dir: document.getElementById('download-dir-input').value,
-            skip_url_check: document.getElementById('skip-check-check').checked,
         },
         ui: {
             language: document.getElementById('language-select').value,
@@ -688,113 +340,605 @@ async function saveSettings() {
         },
         debug: document.getElementById('debug-check').checked,
     };
-    
-    if (window.pywebview) {
-        await window.pywebview.api.update_settings('download', settings.download);
-        await window.pywebview.api.update_settings('ui', settings.ui);
-        await window.pywebview.api.update_settings('auth', settings.auth);
-        await window.pywebview.api.update_settings('debug', { debug: settings.debug });
-        
-        state.settings = await getSettings();
-        applySettings();
-        showToast('success', t('messages.settings_saved'));
+
+    for (const category of ['download', 'ui', 'auth']) {
+        const result = await state.api.update_settings(category, payload[category]);
+        if (result && result.success) state.settings = result.settings;
     }
-    
-    hideSettingsModal();
+    const debugResult = await state.api.update_settings('debug', { debug: payload.debug });
+    if (debugResult && debugResult.success) state.settings = debugResult.settings;
+
+    fillSettingsForm();
+    setValue('quality-select', payload.download.quality);
+    setValue('concurrent-select', String(payload.download.max_concurrent));
+    setChecked('overwrite-check', payload.download.overwrite);
+    showToast('success', t('settings.saved'));
+    closeModal('settings-modal');
 }
 
 async function resetSettings() {
-    if (confirm('确定要重置所有设置吗?')) {
-        if (window.pywebview) {
-            await window.pywebview.api.reset_settings();
-            state.settings = await getSettings();
-            applySettings();
-            showToast('info', t('messages.settings_reset'));
+    if (!await confirmDialog('settings.reset_confirm')) return;
+    const result = await state.api.reset_settings();
+    if (result && result.success) state.settings = result.settings;
+    fillSettingsForm();
+    showToast('info', t('settings.reset_done'));
+}
+
+async function chooseDirectory() {
+    const dir = await state.api.choose_directory();
+    if (dir) {
+        document.getElementById('download-dir-input').value = dir;
+        if (state.settings) state.settings.download.download_dir = dir;
+    }
+}
+
+async function changeLanguage(code) {
+    const result = await state.api.set_language(code);
+    if (result && result.success) {
+        state.translations = result.translations || state.translations;
+        if (state.settings) state.settings.ui.language = result.language;
+        applyTranslations();
+    }
+}
+
+/* ------------------------------------------------------------------- login */
+
+async function refreshLoginStatus() {
+    const status = await state.api.get_login_status();
+    updateLoginBadge(status || { is_logged_in: false, user: null });
+}
+
+function updateLoginBadge(status) {
+    status = status || {};
+    const button = document.getElementById('btn-login');
+    if (!button) return;
+    if (status.is_logged_in && status.user) {
+        button.classList.remove('btn-primary');
+        button.classList.add('btn-secondary');
+        button.innerHTML = '';
+        const name = document.createElement('span');
+        name.textContent = status.user.nickname || t('login.logged_in_as', { name: '' });
+        button.appendChild(name);
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = status.user.vip_type > 0 ? 'VIP' : '';
+        if (badge.textContent) button.appendChild(badge);
+        button.onclick = async () => {
+            if (await confirmDialog('login.logout_confirm')) {
+                await state.api.logout();
+                await refreshLoginStatus();
+            }
+        };
+        button.title = t('login.logged_in_as', { name: status.user.nickname || '' });
+    } else {
+        button.classList.add('btn-primary');
+        button.classList.remove('btn-secondary');
+        button.textContent = t('login.title');
+        button.title = '';
+        button.onclick = openLoginModal;
+    }
+}
+
+function openLoginModal() {
+    openModal('login-modal');
+    switchLoginTab('qrcode');
+}
+
+function switchLoginTab(tab) {
+    document.querySelectorAll('#login-tabs .tab').forEach((el) =>
+        el.classList.toggle('is-active', el.dataset.tab === tab));
+    document.querySelectorAll('#login-modal .tab-panel').forEach((el) =>
+        el.classList.toggle('is-active', el.dataset.panel === tab));
+    if (tab === 'qrcode') state.api.login_qrcode();
+}
+
+async function refreshQrcode() {
+    const result = await state.api.refresh_qrcode();
+    if (!result || !result.success) showToast('error', t('login.login_error'));
+}
+
+async function sendPhoneCode() {
+    const phone = document.getElementById('phone-input').value.trim();
+    if (!/^1\d{10}$/.test(phone)) {
+        showToast('warning', t('login.invalid_phone'));
+        return;
+    }
+    const result = await state.api.send_phone_code(phone);
+    if (result.success) {
+        showToast('success', t('login.code_sent'));
+        startCountdown();
+    } else {
+        showToast('error', t('login.code_send_failed', { message: result.message || '' }));
+    }
+}
+
+function startCountdown() {
+    const button = document.getElementById('btn-send-code');
+    let seconds = 60;
+    button.disabled = true;
+    const tick = () => {
+        button.textContent = t('login.code_countdown', { seconds });
+        seconds -= 1;
+        if (seconds < 0) {
+            clearInterval(state.phoneTimer);
+            button.disabled = false;
+            button.textContent = t('login.send_code');
         }
+    };
+    tick();
+    state.phoneTimer = setInterval(tick, 1000);
+}
+
+async function doPhoneLogin() {
+    const phone = document.getElementById('phone-input').value.trim();
+    const code = document.getElementById('code-input').value.trim();
+    if (!phone || !code) {
+        showToast('warning', t('login.enter_phone_and_code'));
+        return;
+    }
+    const result = await state.api.login_phone(phone, code);
+    if (!result.success) {
+        showToast('error', result.message ? `${t('login.login_failed')}: ${result.message}` : t('login.login_failed'));
     }
 }
 
-// ===== Window Controls =====
-function minimizeWindow() {
-    if (window.pywebview) window.pywebview.api.minimize_window();
-}
-
-function maximizeWindow() {
-    if (window.pywebview) window.pywebview.api.maximize_window();
-}
-
-function closeWindow() {
-    if (window.pywebview) window.pywebview.api.close_window();
-}
-
-// ===== UI Helpers =====
-function setLoading(loading) {
-    const btn = document.getElementById('btn-fetch');
-    if (btn) {
-        btn.disabled = loading;
-        btn.textContent = loading ? t('download.fetching') : t('download.fetch_btn');
+async function doCookieLogin() {
+    const cookie = document.getElementById('cookie-input').value.trim();
+    if (!cookie) {
+        showToast('warning', t('login.enter_cookie'));
+        return;
     }
+    const result = await state.api.login_cookie(cookie);
+    if (!result.success) showToast('error', t('login.cookie_invalid'));
 }
 
-function updateStatus(status, data = {}) {
-    const statusText = document.getElementById('status-text');
-    const statsText = document.getElementById('stats-text');
-    
-    const statusKey = `status.${status}`;
-    let message = t(statusKey);
-    
-    if (data.current !== undefined && data.total !== undefined) {
-        message = message.replace('{current}', data.current).replace('{total}', data.total);
-    }
-    
-    if (statusText) statusText.textContent = message;
-    
-    if (status === 'downloading' && statsText) {
-        const completed = data.current || 0;
-        const total = data.total || 0;
-        statsText.textContent = `${completed}/${total}`;
-    }
-}
+/* ---------------------------------------------------------------- playlist */
 
-function showToast(type, message) {
-    // Create container if not exists
-    let container = document.querySelector('.toast-container');
-    if (!container) {
-        container = document.createElement('div');
-        container.className = 'toast-container';
-        document.body.appendChild(container);
-    }
-    
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.textContent = message;
-    container.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateX(100%)';
-        setTimeout(() => toast.remove(), 300);
-    }, 3000);
-}
-
-function setupEventListeners() {
-    // Enter key on playlist input
+async function fetchPlaylist() {
     const input = document.getElementById('playlist-input');
-    if (input) {
-        input.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') fetchPlaylist();
-        });
+    const value = input.value.trim();
+    if (!value) {
+        showToast('warning', t('playlist.invalid_input'));
+        return;
     }
-    
-    // Theme change listener
-    const themeSelect = document.getElementById('theme-select');
-    if (themeSelect) {
-        themeSelect.addEventListener('change', (e) => applyTheme(e.target.value));
+    const button = document.getElementById('btn-fetch');
+    button.disabled = true;
+    button.textContent = t('playlist.fetching');
+    updateStatus('fetching_playlist');
+
+    try {
+        const result = await state.api.fetch_playlist(value);
+        if (!result.success) {
+            showError(result, 'playlist.fetch_failed');
+            return;
+        }
+        state.playlist = result.playlist;
+        state.tracks = result.tracks || [];
+        state.selected.clear();
+        state.tasks.clear();
+        document.getElementById('download-queue').innerHTML =
+            `<p class="empty" id="empty-queue">${t('download.queue_empty')}</p>`;
+        renderPlaylist(result.playlist);
+        renderTracks(state.tracks);
+        document.getElementById('playlist-card').hidden = false;
+        document.getElementById('song-card').hidden = false;
+        document.getElementById('btn-start').disabled = false;
+        updateSelectionCount();
+        showToast('success', t('playlist.fetch_success', { count: state.tracks.length }));
+    } catch (err) {
+        showToast('error', t('playlist.fetch_failed') + ': ' + (err.message || err));
+    } finally {
+        button.disabled = false;
+        button.textContent = t('playlist.fetch_btn');
+        updateStatus('ready');
     }
 }
 
-// ===== Language Change Handler =====
+function renderPlaylist(playlist) {
+    if (!playlist) return;
+    document.getElementById('playlist-name').textContent = playlist.name;
+    document.getElementById('playlist-creator').textContent =
+        `${t('playlist.creator')}: ${playlist.creator}`;
+    document.getElementById('playlist-count').textContent =
+        `${t('playlist.track_count')}: ${playlist.track_count}`;
+    const cover = document.getElementById('playlist-cover');
+    cover.classList.toggle('is-empty', !playlist.cover_url);
+    if (playlist.cover_url) {
+        cover.src = playlist.cover_url;
+        cover.onerror = () => {
+            cover.removeAttribute('src');
+            cover.classList.add('is-empty');
+        };
+    } else {
+        cover.removeAttribute('src');
+    }
+}
+
+function renderTracks(tracks) {
+    const list = document.getElementById('song-list');
+    list.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+    tracks.forEach((track) => {
+        const row = document.createElement('div');
+        row.className = 'song-row';
+        row.dataset.index = track.index;
+        row.dataset.songId = track.id;
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.setAttribute('aria-label', track.name);
+        checkbox.addEventListener('change', () => toggleSong(track.index, checkbox.checked));
+
+        const index = document.createElement('span');
+        index.className = 'idx';
+        index.textContent = String(track.index + 1);
+
+        const title = document.createElement('div');
+        title.className = 'song-title';
+        const nameLine = document.createElement('div');
+        nameLine.className = 'song-name-line';
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = track.name;
+        nameLine.appendChild(name);
+        if (track.vip) {
+            const badge = document.createElement('span');
+            badge.className = 'badge';
+            badge.textContent = 'VIP';
+            nameLine.appendChild(badge);
+        }
+        const artist = document.createElement('span');
+        artist.className = 'song-artist';
+        artist.textContent = track.artists;
+        title.append(nameLine, artist);
+
+        const pill = document.createElement('span');
+        pill.className = 'pill waiting';
+        pill.dataset.status = 'waiting';
+        pill.textContent = t('download.status_waiting');
+
+        row.append(checkbox, index, title, pill);
+        fragment.appendChild(row);
+    });
+    list.appendChild(fragment);
+}
+
+function toggleSong(index, checked) {
+    if (checked) state.selected.add(index);
+    else state.selected.delete(index);
+    updateSelectionCount();
+}
+
+function selectAll() {
+    state.selected = new Set(state.tracks.map((track) => track.index));
+    document.querySelectorAll('#song-list input[type="checkbox"]').forEach((cb) => { cb.checked = true; });
+    updateSelectionCount();
+}
+
+function deselectAll() {
+    state.selected.clear();
+    document.querySelectorAll('#song-list input[type="checkbox"]').forEach((cb) => { cb.checked = false; });
+    updateSelectionCount();
+}
+
+function updateSelectionCount() {
+    const counter = document.getElementById('tracks-count');
+    if (!counter) return;
+    if (!state.tracks.length) {
+        counter.textContent = '';
+        return;
+    }
+    if (state.selected.size) {
+        counter.textContent = '· ' + t('download.selected_count',
+            { count: state.selected.size, total: state.tracks.length });
+    } else {
+        counter.textContent = '· ' + state.tracks.length;
+    }
+}
+
+/* ---------------------------------------------------------------- download */
+
+async function startDownload() {
+    if (!state.selected.size) {
+        showToast('warning', t('status.no_songs_selected'));
+        return;
+    }
+    const options = {
+        quality: document.getElementById('quality-select').value,
+        max_concurrent: parseInt(document.getElementById('concurrent-select').value, 10),
+        overwrite: document.getElementById('overwrite-check').checked,
+        download_dir: (state.settings && state.settings.download.download_dir) || '',
+        indices: Array.from(state.selected).sort((a, b) => a - b),
+    };
+    try {
+        const result = await state.api.start_download(options);
+        if (result.success) {
+            state.downloading = true;
+            state.paused = false;
+            updateDownloadControls();
+            resetProgress(result.total);
+        } else {
+            showError(result, 'download.start_failed');
+        }
+    } catch (err) {
+        showToast('error', t('download.start_failed', { message: err.message || err }));
+    }
+}
+
+async function togglePause() {
+    if (state.paused) {
+        await state.api.resume_download();
+        state.paused = false;
+        showToast('info', t('status.download_resumed'));
+    } else {
+        await state.api.pause_download();
+        state.paused = true;
+        showToast('info', t('status.download_paused'));
+    }
+    updateDownloadControls();
+}
+
+async function cancelDownload() {
+    if (!await confirmDialog('error.cancel_download_confirm')) return;
+    await state.api.cancel_download();
+    state.downloading = false;
+    state.paused = false;
+    updateDownloadControls();
+    showToast('info', t('status.download_cancelled'));
+}
+
+async function openFolder() {
+    const ok = await state.api.open_download_folder();
+    if (!ok) showToast('error', t('error.permission'));
+}
+
+function updateDownloadControls() {
+    document.getElementById('btn-start').disabled = state.downloading;
+    document.getElementById('btn-pause').disabled = !state.downloading;
+    document.getElementById('btn-cancel').disabled = !state.downloading;
+    document.getElementById('btn-pause').textContent =
+        state.paused ? t('download.resume_btn') : t('download.pause_btn');
+}
+
+function resetProgress(total) {
+    state.completed = 0;
+    state.total = total || 0;
+    document.getElementById('progress-fill').style.width = '0%';
+    document.getElementById('progress-text').textContent = `0% (0/${state.total})`;
+    document.getElementById('overall-speed').textContent = '';
+    updateStatus('downloading', { current: 0, total: state.total });
+}
+
+function updateStatusPill() {
+    if (state.downloading) {
+        updateStatus('downloading', { current: state.completed || 0, total: state.total || 0 });
+    }
+}
+
+function updateStatus(key, params) {
+    const text = document.getElementById('status-text');
+    if (text) text.textContent = t('status.' + key, params || {});
+}
+
+function updateSongRow(task) {
+    const row = document.querySelector(`.song-row[data-index="${task.index}"]`);
+    if (!row) return;
+    const pill = row.querySelector('.pill');
+    if (!pill) return;
+    pill.dataset.status = task.status;
+    pill.className = `pill ${task.status}`;
+    pill.textContent = t('download.status_' + task.status);
+    if (task.status === 'completed' || task.status === 'skipped') {
+        const checkbox = row.querySelector('input[type="checkbox"]');
+        if (checkbox) checkbox.checked = false;
+        state.selected.delete(Number(task.index));
+        updateSelectionCount();
+    }
+}
+
+function upsertQueueItem(task) {
+    const queue = document.getElementById('download-queue');
+    const empty = document.getElementById('empty-queue');
+    if (empty) empty.remove();
+
+    let item = state.tasks.get(task.song_id);
+    if (!item || !item.isConnected) {
+        item = document.createElement('div');
+        item.className = 'queue-item';
+        item.innerHTML = `
+            <div class="queue-item-head">
+                <span class="queue-item-title"></span>
+                <span class="pill queue-status"></span>
+            </div>
+            <div class="progress-track"><div class="progress-fill"></div></div>
+            <div class="queue-item-meta"><span class="queue-speed"></span><span class="queue-size"></span></div>
+            <div class="reason" hidden></div>`;
+        item.querySelector('.queue-item-title').textContent = `${task.artists} - ${task.name}`;
+        queue.appendChild(item);
+        state.tasks.set(task.song_id, item);
+    }
+
+    const fill = item.querySelector('.progress-fill');
+    const statusEl = item.querySelector('.queue-status');
+    const speedEl = item.querySelector('.queue-speed');
+    const sizeEl = item.querySelector('.queue-size');
+    const reasonEl = item.querySelector('.reason');
+
+    fill.style.width = `${Math.min(100, task.progress || 0)}%`;
+    statusEl.dataset.status = task.status;
+    statusEl.className = `pill queue-status ${task.status}`;
+    statusEl.textContent = t('download.status_' + task.status);
+
+    const level = task.level ? ` · ${t('download.level_' + task.level)}` : '';
+    speedEl.textContent = (task.status === 'downloading' ? fmtSpeed(task.speed) : '') + level;
+    sizeEl.textContent = task.total_size
+        ? `${fmtBytes(task.downloaded_size || 0)} / ${fmtBytes(task.total_size)}`
+        : '';
+
+    if (task.status === 'failed' && (task.error_code || task.error)) {
+        reasonEl.hidden = false;
+        reasonEl.dataset.reason = task.error_code || task.error;
+        reasonEl.textContent = failureReason(task.error_code || task.error);
+    } else {
+        reasonEl.hidden = true;
+    }
+}
+
+/* ------------------------------------------------------------------ about */
+
+function renderAbout() {
+    if (!state.appInfo) return;
+    const version = document.getElementById('about-version');
+    if (version) version.textContent = t('about.version', { version: state.appInfo.version });
+    const author = document.getElementById('about-author');
+    if (author) author.textContent = t('about.author', { author: state.appInfo.author });
+}
+
+/* ------------------------------------------------------- static listeners */
+
+function bindStaticEvents() {
+    document.getElementById('btn-fetch').addEventListener('click', fetchPlaylist);
+    document.getElementById('playlist-input').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') fetchPlaylist();
+    });
+    document.getElementById('btn-select-all').addEventListener('click', selectAll);
+    document.getElementById('btn-select-none').addEventListener('click', deselectAll);
+    document.getElementById('btn-start').addEventListener('click', startDownload);
+    document.getElementById('btn-pause').addEventListener('click', togglePause);
+    document.getElementById('btn-cancel').addEventListener('click', cancelDownload);
+    document.getElementById('btn-open-folder').addEventListener('click', openFolder);
+    document.getElementById('btn-settings').addEventListener('click', () => openModal('settings-modal'));
+    document.getElementById('btn-theme').addEventListener('click', cycleTheme);
+
+    document.getElementById('btn-refresh-qrcode').addEventListener('click', refreshQrcode);
+    document.getElementById('btn-send-code').addEventListener('click', sendPhoneCode);
+    document.getElementById('btn-phone-login').addEventListener('click', doPhoneLogin);
+    document.getElementById('btn-cookie-login').addEventListener('click', doCookieLogin);
+
+    document.getElementById('btn-choose-dir').addEventListener('click', chooseDirectory);
+    document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
+    document.getElementById('btn-reset-settings').addEventListener('click', resetSettings);
+    document.getElementById('language-select').addEventListener('change', (event) => {
+        changeLanguage(event.target.value);
+    });
+    document.getElementById('theme-select').addEventListener('change', (event) => {
+        setTheme(event.target.value, true);
+    });
+    document.getElementById('btn-open-homepage').addEventListener('click', async () => {
+        if (state.appInfo) await state.api.open_external(state.appInfo.homepage);
+    });
+
+    document.getElementById('login-tabs').addEventListener('click', (event) => {
+        const tab = event.target.closest('.tab');
+        if (tab) switchLoginTab(tab.dataset.tab);
+    });
+    document.getElementById('settings-tabs').addEventListener('click', (event) => {
+        const tab = event.target.closest('.tab');
+        if (!tab) return;
+        document.querySelectorAll('#settings-tabs .tab').forEach((el) =>
+            el.classList.toggle('is-active', el === tab));
+        document.querySelectorAll('#settings-modal .tab-panel').forEach((el) =>
+            el.classList.toggle('is-active', el.dataset.panel === tab.dataset.tab));
+    });
+
+    document.querySelectorAll('[data-close]').forEach((el) => {
+        el.addEventListener('click', () => {
+            const target = el.dataset.close;
+            if (target === 'confirm-modal') resolveConfirm(false);
+            else closeModal(target);
+        });
+    });
+    document.getElementById('btn-confirm-ok').addEventListener('click', () => resolveConfirm(true));
+    document.getElementById('btn-confirm-cancel').addEventListener('click', () => resolveConfirm(false));
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        const open = document.querySelector('.modal:not([hidden])');
+        if (!open) return;
+        if (open.id === 'confirm-modal') resolveConfirm(false);
+        else closeModal(open.id);
+    });
+}
+
+/* ------------------------------------------- backend -> frontend callbacks */
+
+function onStatusUpdate(payload) {
+    if (payload && payload.status) updateStatus(payload.status, {});
+}
+
+function onDownloadProgress(task) {
+    updateSongRow(task);
+    upsertQueueItem(task);
+}
+
+function onDownloadStats(stats) {
+    state.completed = stats.finished || 0;
+    state.total = stats.total || 0;
+    const percent = state.total ? (state.completed / state.total * 100) : 0;
+    document.getElementById('progress-fill').style.width = `${percent}%`;
+    document.getElementById('progress-text').textContent =
+        `${percent.toFixed(0)}% (${state.completed}/${state.total})`;
+    document.getElementById('overall-speed').textContent = fmtSpeed(stats.speed);
+    updateStatus('downloading', { current: state.completed, total: state.total });
+}
+
+function onDownloadComplete(payload) {
+    state.downloading = false;
+    state.paused = false;
+    updateDownloadControls();
+    const stats = (payload && payload.stats) || {};
+    showToast(stats.failed ? 'warning' : 'success', t('status.download_complete', {
+        success: stats.success || 0,
+        fail: stats.failed || 0,
+        skipped: stats.skipped || 0,
+    }), 6000);
+    if (payload && payload.hint_login) {
+        showToast('info', t('login.login_needed'), 6000);
+    }
+    updateStatus('ready');
+    document.querySelectorAll('.pill[data-status="waiting"]').forEach((pill) => {
+        pill.dataset.status = 'waiting';
+        pill.textContent = t('download.status_waiting');
+    });
+}
+
+function onDownloadFailed(payload) {
+    state.downloading = false;
+    updateDownloadControls();
+    showToast('error', (payload && payload.message) || t('common.error'));
+}
+
+function onLoginStatusChange(payload) {
+    const statusEl = document.getElementById('qrcode-status');
+    if (!statusEl || !payload) return;
+    if (payload.status === 'pending') {
+        statusEl.textContent = t('login.qrcode_waiting');
+    } else if (payload.status === 'scanned') {
+        statusEl.textContent = t('login.qrcode_scanned');
+    } else if (payload.status === 'expired') {
+        statusEl.textContent = t('login.qrcode_expired');
+    }
+}
+
+function onQrcodeUpdate(payload) {
+    const image = document.getElementById('qrcode-image');
+    const statusEl = document.getElementById('qrcode-status');
+    if (image && payload && payload.image) image.src = payload.image;
+    if (statusEl) statusEl.textContent = t('login.qrcode_waiting');
+}
+
+function onLoginSuccess() {
+    showToast('success', t('login.login_success'));
+    closeModal('login-modal');
+    refreshLoginStatus();
+}
+
+function onLoginFailed(payload) {
+    const message = payload && payload.error_key ? t(payload.error_key) : t('login.login_failed');
+    showToast('error', message);
+}
+
 function onLanguageChanged(translations) {
-    state.translations = translations;
+    if (translations) state.translations = translations;
     applyTranslations();
 }

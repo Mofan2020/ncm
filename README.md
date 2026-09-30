@@ -1,166 +1,129 @@
-# 网易云音乐歌单下载器 (macOS优化版)
+# 网易云音乐歌单下载器 / NetEase Music Playlist Downloader
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
-![Platform](https://img.shields.io/badge/Platform-macOS-green.svg)
+![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-## 项目简介
+基于 **pywebview** 的桌面应用：粘贴歌单 ID（或链接）→ 勾选歌曲 → 多线程下载。
+同一套代码同时适配 **Windows** 与 **macOS**（Apple 芯片 / Intel 都有构建产物），界面支持 **中文 / English** 实时切换。
 
-这是一个专为macOS系统优化的网易云音乐歌单下载工具，支持获取公开歌单信息并下载其中的歌曲。工具具有以下特点：
+> 与旧版本的区别：v2.0 之前的命令行用法（以及一个 macOS 专用版本）已经废弃，
+> 现在只有这一个 GUI 版本，同时支持 Windows 和 macOS。旧脚本保留在 `legacy/` 目录，仅供参考，不再维护。
 
-- 🚀 支持多种音质选择（标准、较高、极高、无损、Hi-Res）
-- 🎯 自动从歌单链接提取ID，操作更便捷
-- 📊 实时显示下载进度和统计信息
-- 🔄 智能音质降级机制，保障歌曲可下载性
-- 🛡️ 完善的错误处理和用户提示
-- 🌐 支持游客Cookie获取，减少API访问限制
-- 💾 自动创建下载目录，默认保存至`~/Music/Downloads`
+## 功能
 
-## 安装说明
+- **歌单获取**：直接粘贴 ID 或歌单链接；超过 1000 首的歌单会自动分批补全曲目
+- **音质选择**：标准 / 较高 / 极高 / 无损 / Hi-Res，不可用时自动降级到可用音质
+- **并发下载**：可同时下载 1–3 个文件（默认 2），实时显示每首进度、速度与总体统计
+- **用户登录**：扫码登录 / 手机验证码 / 导入 Cookie；登录后可下载**非公开歌单**与会员（VIP）歌曲
+- **多语言**：简体中文 / English，应用内切换，无需重启
+- **断点安全**：先写 `.part` 临时文件，校验完整（字节数/接口声明大小）后再原子改名；失败歌曲单独列出
+- **下载控制**：暂停 / 继续 / 取消，跳过已存在文件，可覆盖重下
+- **界面**：深色 / 浅色 / 跟随系统主题，窗口从 780×560 到 4K 自适应
 
-### 1. 克隆或下载项目
+## 下载安装
+
+到 [Releases](https://github.com/Mofan2020/ncm/releases/latest) 下载对应系统的产物：
+
+**macOS**
+
+| 机型 | 文件 |
+|------|------|
+| Apple 芯片（M 系列） | `NeteaseMusicDownloader-macOS-arm64.dmg` / `.zip` |
+| Intel 芯片 | `NeteaseMusicDownloader-macOS-x64.dmg` / `.zip` |
+
+构建产物**未做代码签名**（没有 Apple 开发者账号），首次打开请**右键 → 打开**，或执行：
 
 ```bash
-git clone https://your-repo-url/ncm.git
+xattr -dr com.apple.quarantine /Applications/NeteaseMusicDownloader.app
+```
+
+**Windows**
+
+| 文件 | 说明 |
+|------|------|
+| `NeteaseMusicDownloader.exe` | 单文件免安装，直接运行 |
+| `NeteaseMusicDownloader-Windows-x64.zip` | 同上，压缩包形式 |
+
+Windows 需要 **WebView2 运行时**（Windows 11 与较新的 Windows 10 已自带；老系统请到
+[微软官网](https://developer.microsoft.com/microsoft-edge/webview2/) 安装）。
+
+## 从源码运行
+
+需要 Python 3.9+（CI 使用 3.11 构建）：
+
+```bash
+git clone https://github.com/Mofan2020/ncm.git
 cd ncm
-```
-
-### 2. 安装依赖
-
-```bash
 pip3 install -r requirements.txt
+python3 main.py
 ```
 
-依赖项说明：
-- `requests>=2.28.0`: 处理HTTP请求
-- Python 3.8或更高版本
+`pywebview` 会自动带上平台后端（Windows: pythonnet + WebView2；macOS: pyobjc + WebKit）。
 
 ## 使用方法
 
-### 基本用法
+1. 在顶部输入框粘贴歌单 ID 或链接（如 `3778678` 或 `https://music.163.com/playlist?id=3778678`），点「获取歌单」
+2. 选择音质与同时下载数，勾选想要的歌曲（支持全选 / 取消全选）
+3. 点「开始下载」，右侧队列显示每首进度；完成后点「打开文件夹」
+4. 需要非公开歌单或会员歌曲时，先点右上角「登录」：扫码 / 手机验证码 / 导入 Cookie 三种方式
+
+默认下载目录为 `~/Music/Downloads`（Windows 为 `%USERPROFILE%\Music\Downloads`），可在设置里修改。
+配置与日志位于 `~/Library/Application Support/NeteaseMusicDownloader/`（macOS）
+或 `%APPDATA%\NeteaseMusicDownloader\`（Windows）。
+
+## 自行打包
 
 ```bash
-python3 main.py <歌单ID或URL>
+pip3 install -r requirements-dev.txt
+pyinstaller --clean --noconfirm main.spec
+# macOS: dist/NeteaseMusicDownloader.app
+# Windows: dist/NeteaseMusicDownloader.exe
+
+# 冒烟自检（不需要图形界面，检查打包后资源是否可用）
+dist/NeteaseMusicDownloader.app/Contents/MacOS/NeteaseMusicDownloader --self-test
 ```
 
-### 参数说明
+图标由 `python3 scripts/make_icon.py` 生成（`assets/icon.{png,ico,icns}`）。
 
-| 参数 | 描述 | 默认值 |
-|------|------|--------|
-| `playlist_id` | 歌单ID或歌单URL (必填) | 无 |
-| `--quality` | 音质选择 (standard/higher/exhigh/lossless/hires) | standard |
-| `--overwrite` | 覆盖已存在的文件 | 否 |
-| `--skip-url-check` | 跳过URL检查直接开始下载 | 否 |
-| `--debug` | 显示详细调试信息 | 否 |
-| `-h, --help` | 显示帮助信息 | 无 |
+## 开发与测试
 
-### 使用示例
+```bash
+pip3 install -r requirements-dev.txt
 
-1. **基本下载**
-   ```bash
-   python3 main.py 3778678
-   ```
+ruff check .        # 静态检查
+pytest -q           # 单元测试（完全不联网，使用本地 HTTP 服务器）
 
-2. **使用歌单URL**
-   ```bash
-   python3 main.py https://music.163.com/playlist?id=3778678
-   ```
-
-3. **无损音质下载**
-   ```bash
-   python3 main.py 3778678 --quality lossless
-   ```
-
-4. **覆盖已存在文件**
-   ```bash
-   python3 main.py 3778678 --overwrite
-   ```
-
-5. **调试模式**
-   ```bash
-   python3 main.py 3778678 --debug
-   ```
-
-## 输出说明
-
-- **成功信息**: 绿色文本和✅图标
-- **提示信息**: 蓝色文本和💡图标
-- **警告信息**: 黄色文本和⚠️图标
-- **错误信息**: 红色文本和❌图标
-
-下载完成后，程序会显示统计信息，包括：
-- 总歌曲数量
-- 成功下载数量
-- 失败下载数量
-- 下载耗时
-
-## 功能说明
-
-### 1. 自动ID提取
-
-支持直接输入歌单链接，程序会自动提取歌单ID：
-```
-https://music.163.com/playlist?id=3778678  # 自动提取ID: 3778678
+# 可选：真实接口冒烟测试（会访问网易云 API）
+NCM_LIVE=1 pytest tests/test_live_api.py -q
 ```
 
-### 2. 音质选择
-
-- `standard`: 标准品质 (128kbps MP3)
-- `higher`: 较高品质 (192kbps MP3)
-- `exhigh`: 极高品质 (320kbps MP3)
-- `lossless`: 无损品质 (FLAC)
-- `hires`: Hi-Res音质 (高品质无损)
-
-### 3. 智能降级机制
-
-如果请求的音质不可用，程序会自动尝试降级到下一个可用音质，确保最大程度的下载成功率。
-
-### 4. 错误处理
-
-程序具有完善的错误处理机制，包括：
-- API请求失败重试
-- 网络异常处理
-- 文件保存错误处理
-- 用户中断（Ctrl+C）优雅退出
+CI（`.github/workflows/build.yml`）在每次提交跑 lint + 测试，打 tag 时构建
+Windows x64、macOS arm64、macOS x64 三份产物并自动发布 Release。
 
 ## 常见问题
 
-### 1. 下载失败怎么办？
+| 现象 | 原因 / 处理 |
+|------|-------------|
+| 部分歌曲下载失败（提示「版权不可用」） | 该曲目对未登录用户不开放，登录后重试；会员歌曲需要账号有对应权益 |
+| 歌单获取失败 | 非公开歌单必须登录；也请确认歌单 ID 正确 |
+| 下载速度没有更快 | 同时下载数提高的是「并发」；若本机带宽已被占满，多个文件会分摊同样的总速度 |
+| macOS 提示「无法验证开发者」 | 未签名构建，右键 → 打开，或见上方 `xattr` 命令 |
+| Windows 打不开 / 白屏 | 缺少 WebView2 运行时，按上方链接安装 |
+| 想要命令行版本 | v2.0 起已移除，见 `legacy/`（不再维护） |
 
-- 检查网络连接
-- 确认歌单ID/URL是否正确
-- 使用`--debug`参数查看详细错误信息
-- 尝试使用`--skip-url-check`参数跳过URL检查
+## 技术说明
 
-### 2. 歌曲下载后无法播放？
+- 请求走网易云 **eapi** 通道（AES-ECB + MD5 签名，官方桌面端同款）。`weapi` 在部分网络下
+  被 CDN 黑洞（任何请求都返回空响应），因此本项目不使用它
+- 接口清单、登录状态码语义、限速策略与踩过的坑都记录在 [`docs/notes.md`](docs/notes.md)
+- 目录结构、开发约定见 [`AGENTS.md`](AGENTS.md)
 
-- 检查文件是否完整下载
-- 确认本地播放器支持下载的音频格式
-- 尝试使用更低品质重新下载
+## 免责声明
 
-### 3. 下载速度慢？
-
-- 尝试降低音质设置
-- 检查网络连接质量
-- 避免同时下载过多歌曲
-
-## 注意事项
-
-1. 本工具仅用于下载公开歌单，不支持付费歌曲
-2. 请遵守相关法律法规，仅下载和使用有版权的音乐
-3. 建议合理使用API，避免过于频繁的请求
-4. 部分歌曲可能因版权原因无法下载
-
-## 版权声明
-
-本项目仅用于学习和交流，不用于商业用途。所有音乐资源版权归网易云音乐所有。
+本项目仅用于学习与个人备份，请勿用于商业用途。所有音乐版权归网易云音乐及其权利人所有，
+请遵守相关法律法规与平台条款。
 
 ## 许可证
 
-[MIT License](https://opensource.org/licenses/MIT)
-
-## 系统要求
-
-- macOS系统
-- Python 3.8或更高版本
-- requests库
+[MIT](LICENSE) © 2026 Skyc8266
