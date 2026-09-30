@@ -100,3 +100,69 @@ def test_matches_the_cryptography_reference(payload):
 
     assert sign_eapi(path, payload) == expected
     assert cryptography is not None
+
+
+# --------------------------------------------------------------- decryption
+
+def test_fips_197_decrypt_vector():
+    from src.core.aes import decrypt_block
+
+    assert decrypt_block(FIPS_KEY, FIPS_CIPHERTEXT) == FIPS_PLAINTEXT
+
+
+def test_roundtrip_many_sizes_and_payloads():
+    from src.core.aes import aes_ecb_decrypt
+
+    for length in (0, 1, 15, 16, 17, 63, 64, 200):
+        for data in (b"x" * length, bytes(range(256))[:length]):
+            encrypted = aes_ecb_encrypt(data, EAPI_KEY)
+            assert aes_ecb_decrypt(encrypted, EAPI_KEY) == data
+
+
+def test_roundtrip_of_a_signed_payload():
+    """The eapi signature must decrypt back to the exact signed message."""
+    from src.core.aes import aes_ecb_decrypt
+
+    path = "/api/song/enhance/player/url/v1"
+    payload = {"ids": "[1,2]", "level": "hires", "讯息": "中文"}
+    message = aes_ecb_decrypt(bytes.fromhex(sign_eapi(path, payload)), EAPI_KEY)
+    text = message.decode("utf-8")
+    assert text.startswith(f"{path}-36cd479b6b5-")
+    assert text.endswith("-36cd479b6b5-" + __import__("hashlib").md5(
+        f"nobody{path}use{text.split('-36cd479b6b5-')[1]}md5forencrypt".encode()).hexdigest())
+
+
+def test_pkcs7_unpad_validates():
+    from src.core.aes import pkcs7_unpad
+
+    with pytest.raises(ValueError):
+        pkcs7_unpad(b"")
+    with pytest.raises(ValueError):
+        pkcs7_unpad(b"not a multiple of 16")
+    with pytest.raises(ValueError):
+        pkcs7_unpad(b"a" * 15 + b"\x05")   # padding claims 5 bytes, only 1 present
+    assert pkcs7_unpad(b"a" * 15 + b"\x01") == b"a" * 15
+
+
+def test_decrypt_block_validates_the_block_size():
+    from src.core.aes import decrypt_block
+
+    with pytest.raises(ValueError):
+        decrypt_block(FIPS_KEY, b"short")
+
+
+def test_no_native_crypto_dependency():
+    """The whole point of src/core/aes.py: no cryptography / OpenSSL in the build."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for path in list((root / "src").rglob("*.py")) + [root / "main.py"]:
+        text = path.read_text(encoding="utf-8")
+        if "import cryptography" in text or "from cryptography" in text:
+            offenders.append(path.name)
+    assert offenders == [], f"native crypto import found in {offenders}"
+    spec = (root / "main.spec").read_text(encoding="utf-8")
+    assert '"cryptography"' in spec, "the spec must keep excluding cryptography"
+    requirements = (root / "requirements.txt").read_text(encoding="utf-8")
+    assert "cryptography" not in requirements

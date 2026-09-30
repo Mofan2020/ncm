@@ -17,14 +17,12 @@ from src.core.crypto import (
 
 
 def _decode(params: str) -> bytes:
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    """Decrypt our own signed payload with the same (dependency-free) AES."""
+    from src.core.aes import aes_ecb_decrypt
 
     raw = binascii.unhexlify(params)
     assert len(raw) % 16 == 0, "AES block size"
-    decryptor = Cipher(algorithms.AES(EAPI_KEY), modes.ECB()).decryptor()
-    padded = decryptor.update(raw) + decryptor.finalize()
-    pad = padded[-1]
-    return padded[:-pad]
+    return aes_ecb_decrypt(raw, EAPI_KEY)
 
 
 def test_signature_layout_and_padding():
