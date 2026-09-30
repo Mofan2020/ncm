@@ -98,15 +98,13 @@ jobs:
       - name: Display structure
         run: find artifacts -type f
       
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            artifacts/macos-x64/*.dmg
-            artifacts/macos-arm64/*.dmg
+      - name: Create Release with gh CLI
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "NeteaseMusicDownloader ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            artifacts/macos-x64/*.dmg \
+            artifacts/macos-arm64/*.dmg \
             artifacts/windows-x64/*.exe
-          draft: false
-          prerelease: false
-          generate_release_notes: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
