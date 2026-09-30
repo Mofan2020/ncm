@@ -1,6 +1,6 @@
 """Single source of truth for application identity and version."""
 
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 
 #: Product name used for the window title, artifact names and the config dir.
 APP_NAME = "NeteaseMusicDownloader"

@@ -58,6 +58,7 @@ class GuiBridge:
         self.login_manager.on("qrcode_update", self._on_qrcode_update)
         self.login_manager.on("login_success", self._on_login_success)
         self.login_manager.on("login_failed", self._on_login_failed)
+        self.login_manager.on("status_message", self._on_login_message)
 
     def set_window(self, window: Any) -> None:
         self._window = window
@@ -233,6 +234,8 @@ class GuiBridge:
         return {
             "status": self.login_manager.status.value,
             "is_logged_in": self.login_manager.is_logged_in,
+            "qr_code": self.login_manager.last_qr_code,
+            "qr_message": self.login_manager.last_qr_message,
             "user": {
                 "user_id": user.user_id,
                 "nickname": user.nickname,
@@ -242,6 +245,7 @@ class GuiBridge:
         }
 
     def login_qrcode(self) -> dict[str, Any]:
+        # The manager reuses a QR code that is still pending on its own.
         ok = self.login_manager.login_qrcode()
         return {"success": ok, "error_key": None if ok else "login.login_failed"}
 
@@ -256,8 +260,10 @@ class GuiBridge:
         result = self.login_manager.send_phone_code(phone, ctcode)
         return {
             "success": result["success"],
-            "error_key": None if result["success"] else "login.code_send_failed",
+            "error_key": result.get("error_key") or (None if result["success"]
+                                                     else "login.code_send_failed"),
             "message": result.get("message", ""),
+            "throttled": bool(result.get("throttled")),
         }
 
     def login_phone(self, phone: str, code: str, ctcode: str = "86") -> dict[str, Any]:
@@ -281,7 +287,15 @@ class GuiBridge:
         return {"success": True}
 
     def _on_login_status_change(self, status: LoginStatus) -> None:
-        self._call_js("onLoginStatusChange", {"status": status.value})
+        self._call_js("onLoginStatusChange", {
+            "status": status.value,
+            "code": self.login_manager.last_qr_code,
+            "message": self.login_manager.last_qr_message,
+        })
+
+    def _on_login_message(self, message: str) -> None:
+        """An answer the QR flow did not expect -- show it instead of hiding it."""
+        self._call_js("onLoginMessage", {"message": message})
 
     def _on_qrcode_update(self, qrcode_url: str) -> None:
         image = self.login_manager.get_qrcode_image(qrcode_url)

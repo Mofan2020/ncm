@@ -43,6 +43,10 @@ __all__ = [
 EAPI_KEY = b"e82ckenh8dichen8"
 EAPI_SEPARATOR = "-36cd479b6b5-"
 
+#: The single place the eapi URL prefix is spelled out (enforced by
+#: ``tests/test_api.py::test_no_weapi_signing_anywhere``).
+EAPI_PREFIX = "/eapi"
+
 #: Quality level -> container the API should hand back.
 _LEVEL_ENCODE_TYPE = {
     "standard": "mp3",

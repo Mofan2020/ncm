@@ -448,27 +448,40 @@ async function sendPhoneCode() {
         showToast('warning', t('login.invalid_phone'));
         return;
     }
+    const button = document.getElementById('btn-send-code');
+    // Guard against double submits: every extra request extends NetEase's
+    // cooldown for the number, which is what produces "操作过于频繁".
+    if (button && button.disabled) return;
+    if (button) button.disabled = true;
     const result = await state.api.send_phone_code(phone);
     if (result.success) {
         showToast('success', t('login.code_sent'));
         startCountdown();
+    } else if (result.throttled || result.error_key === 'login.code_too_frequent') {
+        showToast('error', t('login.code_too_frequent', { message: result.message || '' }), 9000);
+        startCountdown(180);
     } else {
         showToast('error', t('login.code_send_failed', { message: result.message || '' }));
+        startCountdown(60);
     }
 }
 
-function startCountdown() {
+function startCountdown(seconds = 60) {
     const button = document.getElementById('btn-send-code');
-    let seconds = 60;
+    if (!button) return;
+    if (state.phoneTimer) clearInterval(state.phoneTimer);
     button.disabled = true;
+    let remaining = seconds;
     const tick = () => {
-        button.textContent = t('login.code_countdown', { seconds });
-        seconds -= 1;
-        if (seconds < 0) {
+        if (remaining <= 0) {
             clearInterval(state.phoneTimer);
+            state.phoneTimer = null;
             button.disabled = false;
             button.textContent = t('login.send_code');
+            return;
         }
+        button.textContent = t('login.code_countdown', { seconds: remaining });
+        remaining -= 1;
     };
     tick();
     state.phoneTimer = setInterval(tick, 1000);
@@ -931,6 +944,22 @@ function onLoginStatusChange(payload) {
         statusEl.textContent = t('login.qrcode_scanned');
     } else if (payload.status === 'expired') {
         statusEl.textContent = t('login.qrcode_expired');
+    } else if (payload.status === 'failed') {
+        statusEl.textContent = t('login.login_failed');
+    }
+    // Show the server's own words when the answer is not one of the codes we
+    // know: an unexpected answer used to leave the previous text on screen,
+    // which looked exactly like "stuck at scanned".
+    const known = [800, 801, 802, 803];
+    if (payload.message && !known.includes(payload.code)) {
+        statusEl.textContent = `${statusEl.textContent} · ${payload.code}: ${payload.message}`;
+    }
+}
+
+function onLoginMessage(payload) {
+    const statusEl = document.getElementById('qrcode-status');
+    if (statusEl && payload && payload.message) {
+        statusEl.textContent = `${t('login.qrcode_waiting')} · ${payload.message}`;
     }
 }
 

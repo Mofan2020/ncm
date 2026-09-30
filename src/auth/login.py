@@ -21,9 +21,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -79,6 +81,16 @@ _QR_STATUS = {
     803: LoginStatus.SUCCESS,
 }
 
+#: The plain route and the signed ``eapi`` route are polled alternately: both
+#: answer (verified live), and a second channel means one misbehaving CDN node
+#: cannot strand the login in ``scanned``.
+_QR_CHANNELS = ("api", "eapi")
+
+#: Throttle answers from the SMS endpoint ("操作过于频繁") -- never retried,
+#: because retrying is what turns a one-minute cooldown into a long lockout.
+_THROTTLE_CODES = (429, 503, 509)
+_THROTTLE_WORDS = ("频繁", "过快", "稍后", "too often", "too many", "frequent")
+
 
 class LoginManager:
     """Manages authentication with NetEase Cloud Music (singleton)."""
@@ -100,6 +112,25 @@ class LoginManager:
     #: How long a positive login check is trusted before re-verifying.
     STATUS_TTL = 60.0
 
+    #: Seconds between QR polls (the phone needs a moment to confirm).
+    QR_POLL_INTERVAL = 1.5
+
+    #: Identity cookies the official PC client always carries.  Some login
+    #: endpoints only hand out a session cookie when the caller looks like a PC
+    #: client; they are harmless for the endpoints that ignore them.
+    CLIENT_COOKIES = {"os": "pc", "appver": "8.9.70", "channel": "netease"}
+
+    #: Cap for ``login-debug.log`` before it is rotated away.
+    DEBUG_LOG_MAX = 256 * 1024
+
+    #: A fresh login cookie is not always accepted by the account endpoint on
+    #: the very first try (server-side propagation), so verification is retried.
+    VERIFY_ATTEMPTS = 3
+    VERIFY_RETRY_DELAY = 0.8
+
+    #: Diagnostics land next to ``settings.yaml`` so a user can find them.
+    DEBUG_LOG_NAME = "login-debug.log"
+
     def __new__(cls) -> LoginManager:
         if cls._instance is None:
             with cls._lock:
@@ -120,6 +151,7 @@ class LoginManager:
             "qrcode_update": [],
             "login_success": [],
             "login_failed": [],
+            "status_message": [],
         }
 
         self._qrcode_key = ""
@@ -128,6 +160,8 @@ class LoginManager:
         self._poll_lock = threading.Lock()
 
         self._status_checked_at = 0.0
+        self._last_qr_code: int | None = None
+        self._last_qr_message = ""
         self.logger = logging.getLogger("ncm.login")
 
         self._session = requests.Session()
@@ -136,8 +170,43 @@ class LoginManager:
             "Referer": "https://music.163.com/",
             "Content-Type": "application/x-www-form-urlencoded",
         })
+        self._install_client_identity()
 
         self.load_saved_cookie()
+
+    def _install_client_identity(self) -> None:
+        """Pretend to be the PC client (cookies only; the API still acks us)."""
+        for name, value in self.CLIENT_COOKIES.items():
+            self._session.cookies.set(name, value, domain=".music.163.com")
+        if not self._session.cookies.get("_ntes_nuid"):
+            self._session.cookies.set("_ntes_nuid", uuid.uuid4().hex, domain=".music.163.com")
+
+    # ------------------------------------------------------------ diagnostics
+    def config_path_for_debug(self) -> Path:
+        """Where :meth:`_debug_log` writes (and where a user should look)."""
+        return get_settings().config_path.with_name(self.DEBUG_LOG_NAME)
+
+    def _debug_log(self, message: str) -> None:
+        """Append one line to ``login-debug.log`` next to ``settings.yaml``.
+
+        Nothing here may raise: a logging failure must never break a login.
+        """
+        try:
+            path = self.config_path_for_debug()
+            if path.exists() and path.stat().st_size > self.DEBUG_LOG_MAX:
+                path.unlink()
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(f"[{stamp}] {message}\n")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _mask_phone(phone: str) -> str:
+        phone = str(phone or "")
+        if len(phone) < 7:
+            return "***"
+        return f"{phone[:3]}****{phone[-2:]}"
 
     # ------------------------------------------------------------- cookie I/O
     @staticmethod
@@ -213,6 +282,16 @@ class LoginManager:
         return self._status
 
     @property
+    def last_qr_code(self) -> int | None:
+        """Most recent QR poll code (``801`` / ``802`` / ``803`` ...), for the UI."""
+        return self._last_qr_code
+
+    @property
+    def last_qr_message(self) -> str:
+        """Server text that came with :attr:`last_qr_code`."""
+        return self._last_qr_message
+
+    @property
     def user_info(self) -> UserInfo | None:
         return self._user_info
 
@@ -286,8 +365,16 @@ class LoginManager:
         return True, account, profile
 
     # ---------------------------------------------------------- QR code login
-    def login_qrcode(self) -> bool:
-        """Start the QR-code login flow and begin polling."""
+    def login_qrcode(self, force: bool = False) -> bool:
+        """Start the QR-code login flow and begin polling.
+
+        A code that is still on screen is reused (unless ``force``): minting a
+        new unikey would invalidate a scan the user is confirming on the phone,
+        which looks exactly like a login that never completes.
+        """
+        if not force and self.has_pending_qrcode():
+            return self.resend_qrcode()
+
         self._stop_polling.clear()
         self._set_status(LoginStatus.PENDING)
 
@@ -297,15 +384,20 @@ class LoginManager:
                                      timeout=(5, 15))
             data = resp.json()
         except Exception as exc:
+            self._debug_log(f"qrcode: unikey request failed: {exc}")
             self._fail(f"QR key request failed: {exc}")
             return False
 
         if data.get("code") != 200 or not data.get("unikey"):
+            self._debug_log(f"qrcode: unikey refused: {data}")
             self._fail(data.get("message") or "QR key unavailable")
             return False
 
         self._qrcode_key = data["unikey"]
         qrcode_url = f"{self.BASE_URL}/login?codekey={self._qrcode_key}"
+        self._last_qr_code = None
+        self._last_qr_message = ""
+        self._debug_log(f"qrcode: unikey={self._qrcode_key}")
         self._emit("qrcode_update", qrcode_url)
 
         with self._poll_lock:
@@ -314,50 +406,130 @@ class LoginManager:
         return True
 
     def _poll_qrcode(self) -> None:
+        attempt = 0
         while not self._stop_polling.is_set():
-            try:
-                resp = self._session.get(
-                    self.QRCODE_CHECK_URL,
-                    params={"key": self._qrcode_key, "type": 1, "timestamp": int(time.time() * 1000)},
-                    timeout=(5, 15),
-                )
-                data = resp.json()
-            except Exception as exc:
-                self.logger.warning("QR poll error: %s", exc)
+            channel = _QR_CHANNELS[attempt % len(_QR_CHANNELS)]
+            attempt += 1
+
+            data = self._poll_once(channel)
+            if data is None:
                 if self._stop_polling.wait(2.0):
                     return
                 continue
 
-            code = data.get("code")
-            status = _QR_STATUS.get(code)
+            code = self._qr_code_of(data)
+            message = str(data.get("message") or data.get("msg") or "")
+            cookie = self._qr_cookie_of(data)
 
-            if status is LoginStatus.SUCCESS:
+            if (code, message) != (self._last_qr_code, self._last_qr_message):
+                # Log every change (never on every poll -- that would spin the
+                # log while the QR just sits there waiting for a scan).
+                self._last_qr_code, self._last_qr_message = code, message
+                self._debug_log(f"poll {channel}: code={code} msg={message!r} "
+                                f"cookie={'yes' if cookie else 'no'}")
+                if code not in _QR_STATUS:
+                    # An unknown answer used to be swallowed by a debug log and
+                    # left the UI spinning on its last text.  Show it instead.
+                    self._emit("status_message", message or f"code {code}")
+
+            # Success is code 803 -- but some builds hand the cookie over with a
+            # plain 200, and a nested ``data.code`` is possible too.
+            if code == 803 or (code == 200 and cookie):
                 self._stop_polling.set()
-                cookie = data.get("cookie") or ""
-                if not cookie and isinstance(data.get("cookies"), dict):
-                    cookie = "; ".join(f"{k}={v}" for k, v in data["cookies"].items())
                 if cookie:
                     self.apply_cookie_string(cookie)
+                self._debug_log(f"qrcode authorised via {channel} (code={code})")
                 self._handle_login_success(cookie)
                 return
 
-            if status is LoginStatus.EXPIRED:
+            if code == 800:
                 self._stop_polling.set()
+                self._last_qr_code, self._last_qr_message = code, message
                 self._set_status(LoginStatus.EXPIRED)
                 self._emit("login_failed", "qrcode_expired")
                 return
 
+            status = _QR_STATUS.get(code)
             if status is not None:
                 self._set_status(status)
-            elif code is not None:
-                self.logger.debug("unknown QR code %s", code)
 
-            if self._stop_polling.wait(2.0):
+            if self._stop_polling.wait(self.QR_POLL_INTERVAL):
                 return
+
+    def _poll_once(self, channel: str) -> dict[str, Any] | None:
+        """Poll the QR state on the plain (``api``) or signed (``eapi``) route."""
+        try:
+            if channel == "eapi":
+                # Imported here on purpose: ``src.core`` imports ``src.auth``, so a
+                # module-level import would create a cycle and break every entry
+                # point that imports this module first (see tests/test_imports.py).
+                from src.core.crypto import EAPI_PREFIX, eapi_body
+
+                body = eapi_body("/api/login/qrcode/client/login",
+                                 {"key": self._qrcode_key, "type": 1})
+                url = f"{self.BASE_URL}{EAPI_PREFIX}/api/login/qrcode/client/login"
+                resp = self._session.post(url, data=body, timeout=(5, 15))
+            else:
+                resp = self._session.get(
+                    self.QRCODE_CHECK_URL,
+                    params={"key": self._qrcode_key, "type": 1,
+                            "timestamp": int(time.time() * 1000)},
+                    timeout=(5, 15),
+                )
+            if resp.status_code != 200 or not (resp.text or "").strip():
+                self._debug_log(f"poll {channel}: HTTP {resp.status_code} empty response")
+                return None
+            payload = resp.json()
+        except Exception as exc:
+            self.logger.warning("QR poll error on %s: %s", channel, exc)
+            self._debug_log(f"poll {channel}: error {exc}")
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _qr_code_of(data: dict[str, Any]) -> int | None:
+        """The poll code, tolerating a nested ``data`` object."""
+        nested = data.get("data") if isinstance(data.get("data"), dict) else {}
+        for candidate in (data.get("code"), nested.get("code")):
+            if isinstance(candidate, bool):
+                continue
+            if isinstance(candidate, int):
+                return candidate
+        return None
+
+    @staticmethod
+    def _qr_cookie_of(data: dict[str, Any]) -> str:
+        """Extract a session cookie from any shape NetEase has used."""
+        nested = data.get("data") if isinstance(data.get("data"), dict) else {}
+        for source in (data, nested):
+            for key_name in ("cookie", "cookies"):
+                value = source.get(key_name)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+                if isinstance(value, dict) and value:
+                    return "; ".join(f"{k}={v}" for k, v in value.items())
+        return ""
 
     def refresh_qrcode(self) -> bool:
         self.cancel_login()
-        return self.login_qrcode()
+        return self.login_qrcode(force=True)
+
+    def has_pending_qrcode(self) -> bool:
+        """True while a QR code is on screen and still resolvable."""
+        return bool(self._qrcode_key) and self._status in (LoginStatus.PENDING,
+                                                           LoginStatus.SCANNED)
+
+    def resend_qrcode(self) -> bool:
+        """Re-emit the QR currently on screen -- **without** a new unikey.
+
+        Reopening the login panel used to mint a fresh unikey; a scan the user
+        was confirming on the phone then pointed at a key nobody polled, which
+        looks exactly like "scanned but never finishes".
+        """
+        if not self._qrcode_key:
+            return False
+        self._emit("qrcode_update", f"{self.BASE_URL}/login?codekey={self._qrcode_key}")
+        return True
 
     def cancel_login(self) -> None:
         self._stop_polling.set()
@@ -370,20 +542,45 @@ class LoginManager:
 
     # ------------------------------------------------------- SMS / phone login
     def send_phone_code(self, phone: str, ctcode: str = "86") -> dict[str, Any]:
-        """Request an SMS captcha. Returns ``{'success': bool, 'message': str}``."""
+        """Request an SMS captcha.
+
+        Returns ``{'success', 'message', 'error_key', 'throttled'}``.
+
+        Measurements (2026-09-30): the endpoint acks *anything* -- a bogus number
+        also gets ``{"code":200,"data":true}`` -- so the ``data`` flag is what
+        decides whether the request was accepted, and a throttle answer carries
+        code 429/503 or a "频繁" style message.  Throttle answers are **never
+        retried**: each extra request extends NetEase's cooldown for the number.
+        """
+        masked = self._mask_phone(phone)
         try:
             resp = self._session.post(
                 self.SMS_CODE_URL,
-                data={"cellphone": phone, "ctcode": ctcode},
+                data={"cellphone": phone, "ctcode": ctcode,
+                      "timestamp": int(time.time() * 1000)},
                 timeout=(5, 15),
             )
             data = resp.json()
         except Exception as exc:
-            return {"success": False, "message": str(exc)}
+            self._debug_log(f"sms {masked}: request failed: {exc}")
+            return {"success": False, "message": str(exc),
+                    "error_key": "login.code_send_failed"}
 
-        if data.get("code") == 200:
-            return {"success": True, "message": "sent"}
-        return {"success": False, "message": data.get("message") or data.get("msg") or "unknown error"}
+        code = data.get("code")
+        message = str(data.get("message") or data.get("msg") or "")
+        accepted = data.get("data")
+        self._debug_log(f"sms {masked}: code={code} data={accepted!r} msg={message!r}")
+
+        if code == 200 and accepted is not False:
+            return {"success": True, "message": "sent", "error_key": None}
+
+        throttled = code in _THROTTLE_CODES or any(word in message for word in _THROTTLE_WORDS)
+        return {
+            "success": False,
+            "message": message or f"code {code}",
+            "error_key": "login.code_too_frequent" if throttled else "login.code_send_failed",
+            "throttled": throttled,
+        }
 
     def login_phone(self, phone: str, code: str, ctcode: str = "86") -> dict[str, Any]:
         """Log in with a phone number + SMS captcha."""
@@ -427,12 +624,32 @@ class LoginManager:
         return {"success": False, "message": "cookie_invalid"}
 
     def _handle_login_success(self, cookie_str: str) -> None:
-        if not self.verify_login(force=True):
+        """Verify the fresh session, retrying briefly before giving up.
+
+        The retry matters: a QR authorisation can hand over a cookie that the
+        account endpoint only honours a moment later, and without the retry that
+        turned a *successful* login into a failure while the UI still showed
+        "scanned, confirm on your phone".
+        """
+        verified = False
+        for attempt in range(self.VERIFY_ATTEMPTS):
+            if self.verify_login(force=True):
+                verified = True
+                break
+            if attempt < self.VERIFY_ATTEMPTS - 1:
+                time.sleep(self.VERIFY_RETRY_DELAY)
+
+        if not verified:
+            self._debug_log(f"login: the session was not confirmed after "
+                            f"{self.VERIFY_ATTEMPTS} tries "
+                            f"(cookie={'yes' if cookie_str else 'no'}, "
+                            f"session cookies={len(self.get_cookies())})")
             self._fail("login_status_check_failed")
             return
         self._status_checked_at = time.time()
         if get_settings().auth.remember_login:
             self._save_cookie()
+        self._debug_log(f"login: success as {self._user_info.user_id if self._user_info else '?'}")
         self._set_status(LoginStatus.SUCCESS)
         self._emit("login_success", self._user_info)
 

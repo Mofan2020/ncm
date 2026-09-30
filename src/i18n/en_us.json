@@ -52,6 +52,7 @@
     "invalid_phone": "Enter a valid 11-digit phone number",
     "code_sent": "Verification code sent",
     "code_send_failed": "Could not send the code: {message}",
+    "code_too_frequent": "Too many requests (NetEase allows one SMS per number per minute): {message}. Wait a few minutes, or sign in with the QR code instead.",
     "enter_phone_and_code": "Enter both the phone number and the code",
     "enter_cookie": "Paste a cookie first",
     "not_logged_in": "Not signed in",

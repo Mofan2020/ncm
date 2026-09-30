@@ -52,6 +52,7 @@
     "invalid_phone": "请输入正确的 11 位手机号",
     "code_sent": "验证码已发送",
     "code_send_failed": "验证码发送失败：{message}",
+    "code_too_frequent": "发送过于频繁（网易云的时限是同一号码每分钟一条）：{message}。请等待几分钟后再试，或改用扫码登录。",
     "enter_phone_and_code": "请输入手机号和验证码",
     "enter_cookie": "请输入 Cookie",
     "not_logged_in": "未登录",
