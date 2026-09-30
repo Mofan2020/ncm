@@ -1,8 +1,5 @@
 name: Build and Release
 
-permissions:
-  contents: write
-
 on:
   push:
     tags:
@@ -12,6 +9,8 @@ on:
 jobs:
   build-macos:
     runs-on: macos-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         arch: [x64, arm64]
@@ -57,6 +56,8 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       
@@ -85,6 +86,8 @@ jobs:
   release:
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download all artifacts
