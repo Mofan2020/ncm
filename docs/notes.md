@@ -253,3 +253,112 @@ dist/NeteaseMusicDownloader.app/Contents/MacOS/NeteaseMusicDownloader --self-tes
 * **短信验证码无法端到端验证**：不拿真实号码发短信（会打扰陌生人）。已验证的是：
   接口可达、请求形状被接受、限流/失败的分类与倒计时逻辑（有单测）。
   网易云的限流是按号码（+IP）判定的，被锁后只能等待；本版能保证的是**不再越点越糟**。
+
+## 10. 播放器（v3.0.0：下载 + 播放两个标签页）
+
+### 范围
+
+顶部拆成「下载 / 播放」两个标签页，下载侧保持原样。播放侧：账号歌单与「我喜欢的」、
+本地目录、最近播放、在线搜索五个数据源；单曲循环 / 列表循环 / 随机；滚动歌词；
+收藏；一键下载；播放次数；关机续播；自定义背景图。
+
+### 关键设计决定
+
+| 决定 | 原因 |
+|------|------|
+| 音频统一走 `127.0.0.1` 回环 HTTP 媒体服务（`src/core/mediaserver.py`） | 网易云 CDN 直链需要桌面端 `Referer`，WebKit 对 `file://` 和自定义请求头都不可控；本地文件走同一个出口还能白拿 Range 拖动。绑定 127.0.0.1 + 随机 token，只服务白名单根目录内的文件 |
+| 标签解析自己写（`src/core/localmusic.py`） | mutagen 是 GPL-2.0，会污染 MIT 项目。自写 ID3v2 / FLAC Vorbis / MP4 atom / WAV / OGG，读不到就从文件名兜底 |
+| 播放次数以本地 `library.json` 为准，云端上报可选（默认关闭） | `/api/scrobble`、`/api/v1/play/record`、`/api/radio/like` 都不可用（-460 / -2 / 404）；`/api/feedback/weblog` 可用，但默认不发，只在设置里打开且已登录时才发，失败不影响播放。设置里可一键清空本地次数 |
+| 随机播放是均匀随机 | 用户明确要求「不要根据播放次数改变概率」。实现里不读播放次数，只避开「刚播过的那一首」 |
+| 背景图复制到配置目录 | 原图被删/被移走之后壁纸不该失效 |
+
+### 端点（2026-10-01 实测）
+
+| 能力 | 端点 | 结果 |
+|------|------|------|
+| 搜索 | eapi `/api/cloudsearch/pc` | code 200，返回 `ar` / `al` / `dt` |
+| 账号歌单 | eapi `/api/user/playlist` | code 200，每页 100 + `more` 翻页 |
+| 收藏 / 取消 | eapi `/api/song/like` | 301（未登录）；登录后可用 |
+| 我喜欢的 | eapi `/api/song/like/get` | 同上 |
+| 播放上报 | eapi `/api/feedback/weblog` | code 200 |
+| ~~`/api/radio/like`、`/api/scrobble`、`/api/v1/play/record`~~ | | -460 / 404 / -2，不用 |
+
+### 实测数据（本机 macOS，真文件、真 HTTP）
+
+| 项目 | 数值 |
+|------|------|
+| 进程常驻（含 pywebview 后端与媒体服务） | 约 46 MB |
+| 索引 3000 个本地文件 | +13 MB，首次 0.27s，二次 0.07s |
+| 每个本地文件的常驻开销 | 约 3 KB（曲目负载 + 标签缓存） |
+| 一次下发给前端的本地分页 | 200 首 / 64 KB |
+| 过滤一次 3300 首 | 约 3.5 ms |
+| 60 MB 文件：取 1 MB Range | 16 ms；整曲流式读完只增加约 1 MB 常驻 |
+| 封面缓存预算 | 12 MB（单图上限 4 MB） |
+| 2000 首的续播存档 | 254 KB |
+| 随机播放 | 6 首队列跑 24 万次，每首偏离均值 < 1%，与播放次数无关 |
+
+### 本次改动清单
+
+* 新增 `src/core/library.py`：播放次数、收藏、最近播放、续播存档，落 `library.json`
+  （临时文件 + 原子改名，损坏文件降级不崩；收藏/最近/次数都有上限）
+* 新增 `src/core/localmusic.py`：目录扫描 + 零依赖标签 / 内嵌歌词 / 封面解析，
+  索引缓存到 `local-index.json`（按 mtime + size 判断是否需要重解析）
+* 新增 `src/core/mediaserver.py`：回环媒体服务，Range、HEAD、封面、背景图、
+  在线代理（带 Referer）、URL 缓存与封面缓存
+* `src/core/api.py`：搜索、账号歌单、收藏、播放上报端点与 `get_song_url_info`（含降级）
+* `src/core/lyrics.py`：`parse_lrc_timed` / `build_timed_lyrics`（多时间戳展开、翻译配对容差 800ms）
+* `src/config/settings.py`：`PlaybackSettings`（优先级 / 音质 / 模式 / 音量 / 续播 /
+  上报开关 / 歌词翻译 / 本地目录）与背景图存取
+* `src/gui/bridge.py`：播放器侧全部接口（解析、歌词三来源、收藏、计数、续播、
+  五个数据源、快捷下载、背景图、`reveal_path`）；网络调用统一经 `_safe()` 兜底
+* `main.py`：启动/关闭媒体服务，`--self-test` 增加播放器检查项
+* `src/gui/assets/`：`index.html` / `style.css` / `app.js` 重写，液态玻璃 + 壁纸
+* `scripts/check-player-js.mjs`：随机播放的统计校验（node 运行，不进 pytest）
+* 测试新增 5 个文件：`test_library` / `test_localmusic` / `test_mediaserver` /
+  `test_lyrics_timed` / `test_player_bridge`，配套 `tests/audio_fixtures.py`
+  逐字节合成 MP3(ID3v2) 与 FLAC
+
+### 写的过程中发现并修掉的问题
+
+* **扫描是 O(n²) 的**：`sidecar_lyrics_path()` 在找不到 `.lrc` 时会把所在目录整个列一遍，
+  而它每个文件都会被调用一次。1500 个文件扫描要 12s，目录列表还被反复重建。
+  改成按目录缓存（按 mtime 失效）的 `stem -> .lrc` 表之后，同样的 1500 个文件 0.12s，
+  重扫 0.03s。
+* **标签缓存从来没生效过**：`refresh()` 收尾时拿「按路径索引的缓存」去和
+  「按曲目 key（`local:/path`）索引的曲目表」比对，于是每次扫描都把缓存清空。
+  原本那版测试用 `Path.read_bytes` 计数，而解析器走的是 `open()`，所以测不出问题；
+  现在改成替换 `read_metadata` 计数，重扫时调用次数必须是 0。
+* **死锁**：在线 URL 解析里嵌套了两次 `with self._cache_lock:`（`threading.Lock` 不可重入），
+  第一次解析在线歌曲就会把媒体服务线程挂死。测试里的超时抓到了这个。
+* **播放次数上限会吃掉新曲目**：次数表按上限裁剪时把「刚播的那首」也裁掉了，
+  于是每首歌每次都从 1 重新开始。现在裁剪一定保留刚播放的 key。
+* **续播存档每 5 秒重写一遍整个队列**：加了变更检测，队列/序号/模式没变、位置只挪了
+  不到 1 秒就直接返回，不落盘。
+* **USLT 内嵌歌词**：描述字段（descriptor）之前被当成歌词的一部分带出来，
+  显示成 `desc [00:01.00]...`。合成样本用的是规范布局，问题在测试夹具上，
+  已按 `encoding + language + descriptor\0 + text` 修正。
+* **翻译行会渲染出空行歌词**：翻译里对不上原文的时间轴会生成一条没有正文的行。
+  现在这类孤行直接丢弃，不再显示成幽灵行。
+
+### 没做 / 做不到的，以及原因
+
+* **没有手测界面**：按约定只保证「功能理论上可用 + 自测通过」，点界面、真实播放、
+  原生文件对话框、扫码登录这些都要用户自己跑一遍。
+* **滚动歌词用的是 `scrollTop`**：不是逐帧动画，滚动平滑度依赖浏览器默认行为。
+* **在线歌曲的歌词每次播放都会请求一次**：接口有节流，没有再做一层歌词缓存。
+* **本地文件只做只读索引**：不改标签、不写回文件，也没有重命名/整理功能。
+* **不支援 Live2D / 在线音源扩展**：与本次需求无关。
+* **播放上报的语义**：网易云那边只接受 weblog，不是完整的听歌记录（没有播放完成度），
+  所以「云端次数」和本地次数不会完全一致。
+* **应用名与 bundle id 没改**：现在它不只是下载器，但改名会挪配置目录、让已装的版本失效，
+  所以仓库名、产物名、`com.skyc8266.neteasemusicdownloader` 都保持原样。
+* **`/api/song/like` 的返回没有再次校验**：只按 code 判定成功，没有回查一次收藏列表。
+
+### 复核方式
+
+```bash
+ruff check .                                   # 静态检查
+pytest -q                                      # 全部单测（不联网）
+node scripts/check-player-js.mjs               # 随机播放的统计校验
+python3 main.py --self-test                    # 打包前的资源/依赖自检
+```

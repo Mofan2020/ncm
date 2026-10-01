@@ -10,6 +10,11 @@ playlist detail        ``/api/v6/playlist/detail``              eapi
 song detail (batch)    ``/api/v3/song/detail``                  eapi
 song play url          ``/api/song/enhance/player/url/v1``      eapi
 song lyrics            ``/api/song/lyric``                       eapi
+song search            ``/api/cloudsearch/pc``                   eapi
+account playlists      ``/api/user/playlist``                    eapi
+like / unlike          ``/api/song/like``                        eapi
+liked song ids         ``/api/song/like/get``                    eapi
+play report            ``/api/feedback/weblog``                  eapi
 account / login status ``/api/w/nuser/account/get``              eapi
 QR key                 ``/api/login/qrcode/unikey``             legacy
 QR poll                ``/api/login/qrcode/client/login``       legacy
@@ -17,6 +22,11 @@ SMS captcha            ``/api/sms/captcha/sent``                legacy
 phone login            ``/api/w/login/cellphone``               legacy
 logout                 ``/api/logout``                          legacy
 =====================  =======================================  =========
+
+Verification dates: the playlist/song/login rows were measured on 2026-09-30,
+the search/account/like/weblog rows on 2026-10-01.  `/api/radio/like`
+(``code -460``), `/api/scrobble` and `/api/v1/play/record` (404) were tried and
+rejected -- do not reintroduce them.
 
 Endpoints that **do not exist any more** (all answer ``404 接口未找到``) and must
 never be reintroduced: ``/api/song/url``, ``/api/song/url/v1``,
@@ -44,7 +54,16 @@ from src.config import get_settings
 from src.core.crypto import eapi_body, encode_type_for_level
 from src.core.lyrics import LYRIC_ENDPOINT
 
-__all__ = ["NeteaseAPI", "get_api", "QUALITY_ORDER", "quality_fallbacks"]
+__all__ = ["NeteaseAPI", "get_api", "QUALITY_ORDER", "quality_fallbacks",
+           "SEARCH_ENDPOINT", "USER_PLAYLIST_ENDPOINT", "LIKE_ENDPOINT",
+           "LIKE_LIST_ENDPOINT", "WEBLOG_ENDPOINT"]
+
+#: Search / account endpoints (all verified live on 2026-10-01).
+SEARCH_ENDPOINT = "/api/cloudsearch/pc"
+USER_PLAYLIST_ENDPOINT = "/api/user/playlist"
+LIKE_ENDPOINT = "/api/song/like"
+LIKE_LIST_ENDPOINT = "/api/song/like/get"
+WEBLOG_ENDPOINT = "/api/feedback/weblog"
 
 #: Audio levels from lowest to highest.
 QUALITY_ORDER: tuple[str, ...] = ("standard", "higher", "exhigh", "lossless", "hires")
@@ -358,6 +377,123 @@ class NeteaseAPI:
         """Backwards-compatible helper returning just the URL."""
         info = self.get_song_url_info(song_id, quality)
         return info["url"] if info else None
+
+    # ------------------------------------------------------------------ search
+    def search_songs(self, keyword: str, limit: int = 30, offset: int = 0) -> list[dict[str, Any]]:
+        """Search songs (``eapi /api/cloudsearch/pc``, verified live 2026-10-01).
+
+        The response carries the same ``ar``/``al``/``dt`` shape the playlist
+        endpoints use, so the GUI can render both with one code path.
+        """
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return []
+        limit = max(1, min(int(limit or 30), 100))
+        payload = {"s": keyword, "type": 1, "limit": limit, "offset": max(0, int(offset or 0)),
+                   "total": "true"}
+        result = self._eapi(SEARCH_ENDPOINT, payload)
+        songs = ((result or {}).get("result") or {}).get("songs")
+        if not songs:
+            legacy = self._legacy("/search/get",
+                                  {"s": keyword, "type": 1, "limit": limit,
+                                   "offset": max(0, int(offset or 0))})
+            songs = ((legacy or {}).get("result") or {}).get("songs")
+        return [song for song in (songs or []) if isinstance(song, dict)]
+
+    # ----------------------------------------------------------- account music
+    def get_user_playlists(self, uid: str, limit: int = 100,
+                           offset: int = 0) -> dict[str, Any]:
+        """All playlists of ``uid`` -- ``{"playlists": [...], "more": bool}``.
+
+        Verified live 2026-10-01: ``eapi /api/user/playlist`` answers ``code 200``
+        with 100 entries per page plus a ``more`` flag (the ``/api/v1/...``
+        variant is 404).
+        """
+        uid = str(uid or "").strip()
+        if not uid:
+            return {"playlists": [], "more": False}
+        payload = {"uid": int(uid) if uid.isdigit() else uid,
+                   "limit": max(1, min(int(limit or 100), 1000)),
+                   "offset": max(0, int(offset or 0)),
+                   "includeVideo": "true"}
+        result = self._eapi(USER_PLAYLIST_ENDPOINT, payload)
+        playlists = (result or {}).get("playlist")
+        if not isinstance(playlists, list):
+            legacy = self._legacy("/user/playlist", payload)
+            playlists = (legacy or {}).get("playlist") or []
+        return {"playlists": [p for p in playlists if isinstance(p, dict)],
+                "more": bool((result or {}).get("more"))}
+
+    def get_user_playlists_all(self, uid: str, max_pages: int = 20) -> list[dict[str, Any]]:
+        """Page through :meth:`get_user_playlists` until ``more`` is false."""
+        collected: list[dict[str, Any]] = []
+        offset = 0
+        for _ in range(max(1, max_pages)):
+            page = self.get_user_playlists(uid, limit=100, offset=offset)
+            batch = page["playlists"]
+            collected.extend(batch)
+            if not page["more"] or len(batch) < 100:
+                break
+            offset += len(batch)
+        return collected
+
+    def get_liked_song_ids(self, uid: str) -> list[str]:
+        """Ids of the songs in the user's "liked" list (needs a login)."""
+        uid = str(uid or "").strip()
+        if not uid:
+            return []
+        result = self._eapi(LIKE_LIST_ENDPOINT, {"uid": int(uid) if uid.isdigit() else uid})
+        ids = (result or {}).get("ids")
+        if not isinstance(ids, list):
+            return []
+        return [str(item) for item in ids]
+
+    def set_song_like(self, song_id: str, like: bool = True) -> bool:
+        """Like / unlike one song.  Returns whether the call was accepted."""
+        song_id = str(song_id or "").strip()
+        if not song_id:
+            return False
+        payload = {"trackId": int(song_id) if song_id.isdigit() else song_id,
+                   "like": "true" if like else "false",
+                   "alg": "itembased", "time": 3}
+        result = self._eapi(LIKE_ENDPOINT, payload)
+        code = (result or {}).get("code")
+        if code == 200:
+            return True
+        # `/api/radio/like` is the older route; it still answers on some networks.
+        legacy = self._eapi("/api/radio/like", payload)
+        return (legacy or {}).get("code") == 200
+
+    def report_play(self, song_id: str, seconds: float, source_id: int = 0,
+                    played_at: float | None = None) -> bool:
+        """Tell NetEase that a track was played (best effort).
+
+        Local play counting never depends on this; a failure here is only
+        logged, because the account's listening history is a bonus.
+        """
+        song_id = str(song_id or "").strip()
+        if not song_id:
+            return False
+        entry = {
+            "action": "play",
+            "json": {
+                "id": int(song_id) if song_id.isdigit() else song_id,
+                "type": "song",
+                "time": max(0, int(seconds or 0)),
+                "playedTime": max(0, int(seconds or 0)),
+                "sourceid": str(source_id or 0),
+                "mainsite": 1,
+                "download": 0,
+                "end": "playend",
+            },
+        }
+        stamp = int((played_at or time.time()) * 1000)
+        result = self._eapi(WEBLOG_ENDPOINT, {"logs": json.dumps([entry], ensure_ascii=False),
+                                              "ts": stamp})
+        ok = (result or {}).get("code") == 200
+        if not ok:
+            self._log(f"play report for {song_id} refused: {(result or {}).get('code')}", "debug")
+        return ok
 
     # ------------------------------------------------------------------- misc
     def get_lyrics(self, song_id: str) -> dict[str, Any] | None:

@@ -117,3 +117,25 @@ def test_default_download_dir_is_under_home(isolated_home):
 def test_config_dir_permissions_are_default(isolated_home):
     mode = get_settings().config_path.parent.stat().st_mode
     assert mode & 0o700  # owner can read/write/traverse
+
+
+def test_settings_is_marked_ready_only_after_it_is_usable(isolated_home):
+    """Another thread may grab the singleton mid-init; it must not look ready."""
+    from src.config.settings import Settings
+
+    Settings._instance = None
+    seen = {}
+    original = Settings._config_path_for_platform
+
+    def spy(self):
+        seen["ready_during_init"] = getattr(self, "_initialized", False)
+        return original(self)
+
+    Settings._config_path_for_platform = spy
+    try:
+        settings = Settings()
+    finally:
+        Settings._config_path_for_platform = original
+
+    assert seen["ready_during_init"] is False
+    assert settings.config_path.name.endswith(".yaml")

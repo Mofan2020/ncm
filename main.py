@@ -142,6 +142,41 @@ def _run_self_test(report_path: str | None = None) -> int:
     strings = bridge.get_translations()
     checks.append(("bridge api", len(strings) > 100, f"{len(strings)} strings"))
 
+    from src.core.library import get_library
+
+    library = get_library()
+    checks.append(("library store", library.path.name == "library.json",
+                   str(library.path)))
+
+    from src.core.localmusic import guess_from_filename
+
+    artist, title = guess_from_filename("01 - Artist - Title")
+    checks.append(("local scanner", (artist, title) == ("Artist", "Title"),
+                   f"{artist} / {title} (tags read on demand)"))
+
+    from src.core.lyrics import build_timed_lyrics
+
+    timed = build_timed_lyrics("[00:01.50]line one\n[00:02.00]line two")
+    checks.append(("timed lyrics", len(timed) == 2 and timed[0]["time"] == 1500,
+                   f"{len(timed)} lines, first at {timed[0]['time'] if timed else '-'} ms"))
+
+    from src.core.mediaserver import MediaServer
+
+    server = MediaServer()
+    base_url = ""
+    healthy = False
+    try:
+        import requests
+
+        base_url = server.start()
+        response = requests.get(server.url_for_health(), timeout=5)
+        healthy = response.status_code == 200 and response.text.strip() == "ok"
+    except Exception as exc:  # pragma: no cover - port/permission problems
+        base_url = f"error: {type(exc).__name__}: {exc}"
+    finally:
+        server.stop()
+    checks.append(("media server", healthy, base_url or "did not start"))
+
     try:
         import webview
 
@@ -245,6 +280,20 @@ def main(argv: list[str] | None = None) -> int:
         settings.ui.window_height or DEFAULT_SIZE[1],
     )
 
+    # The player streams through a loopback HTTP server (see src/core/mediaserver):
+    # it is the only way a webview may read local files and the only way we can
+    # control the Referer the CDN sees.  A failure here disables playback but
+    # must never stop the downloader from working.
+    media = bridge.media
+    media.configure(api_provider=lambda: bridge.api,
+                    background_provider=settings.background_path)
+    try:
+        media.start()
+        bridge.refresh_allowed_roots()
+    except Exception as exc:  # pragma: no cover - port exhaustion / firewall
+        log.warning("the media server could not start (%s); playback is disabled", exc)
+    log.info("media server: %s", media.stats())
+
     # The theme and language travel in the URL so the very first paint is
     # already correct (no white flash when the app opens in dark mode).
     theme_mode = normalize_theme(settings.ui.theme)
@@ -281,6 +330,15 @@ def main(argv: list[str] | None = None) -> int:
             log.debug("cannot persist window size: %s", exc)
 
     window.events.closed += _remember_geometry
+
+    def _shutdown() -> None:
+        _remember_geometry()
+        try:
+            media.stop()
+        except Exception as exc:  # pragma: no cover - best effort
+            log.debug("media server shutdown failed: %s", exc)
+
+    window.events.closed += _shutdown
 
     log.info("starting %s %s (pywebview %s)", APP_DISPLAY_NAME, __version__,
              getattr(webview, "__version__", "?"))

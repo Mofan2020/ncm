@@ -33,6 +33,36 @@ except Exception:  # pragma: no cover
     _install_webview_stub()
 
 
+def _reset_stores() -> None:
+    """Drop the process-wide stores so every test starts from an empty library.
+
+    ``Settings``/``Library``/``LocalMusicLibrary``/``MediaServer`` are all
+    singletons keyed to the config directory, which changes per test.
+    """
+    from src.config import settings as settings_module
+
+    settings_module.Settings._instance = None
+
+    from src.core import library as library_module
+
+    library_module.Library._instance = None
+
+    from src.core import localmusic as localmusic_module
+
+    localmusic_module.LocalMusicLibrary._instance = None
+    localmusic_module._local_music = None
+
+    from src.core import mediaserver as mediaserver_module
+
+    server = mediaserver_module.MediaServer._instance
+    if server is not None:
+        try:
+            server.stop()
+        except Exception:  # pragma: no cover - already stopped
+            pass
+    mediaserver_module.MediaServer._instance = None
+
+
 @pytest.fixture()
 def isolated_home(tmp_path, monkeypatch):
     """Point the app's config directory at a throwaway location."""
@@ -43,11 +73,9 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
     monkeypatch.delenv("XDG_CONFIG_HOME_BACKUP", raising=False)
 
-    from src.config import settings as settings_module
-
-    settings_module.Settings._instance = None
+    _reset_stores()
     yield home
-    settings_module.Settings._instance = None
+    _reset_stores()
 
 
 @pytest.fixture()
@@ -107,6 +135,35 @@ class FakePlaylistAPI:
 
     def get_request_stats(self):
         return {"total_requests": 1}
+
+    # ---- player surface (mirrors NeteaseAPI, no network) ------------------
+    def search_songs(self, keyword, limit=30, offset=0):
+        return [dict(song) for song in self.SONGS]
+
+    def get_songs_detail(self, song_ids, batch_size=200):
+        wanted = {str(i) for i in song_ids}
+        return [dict(song) for song in self.SONGS if str(song["id"]) in wanted]
+
+    def get_user_playlists(self, uid, limit=100, offset=0):
+        return {"playlists": [{"id": 7, "name": "Fake list", "trackCount": 2,
+                               "creator": {"nickname": "tester"}}], "more": False}
+
+    def get_user_playlists_all(self, uid, max_pages=20):
+        return self.get_user_playlists(uid)["playlists"]
+
+    def get_liked_song_ids(self, uid):
+        return ["1"]
+
+    def set_song_like(self, song_id, like=True):
+        self.liked = (str(song_id), bool(like))
+        return True
+
+    def report_play(self, song_id, seconds, source_id=0, played_at=None):
+        self.reported = (str(song_id), float(seconds))
+        return True
+
+    def get_lyrics(self, song_id):
+        return {"lyric": "[00:01.00]hello\n[00:02.00]world", "translation": "", "code": 200}
 
 
 @pytest.fixture()

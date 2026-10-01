@@ -4,11 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light dark">
-    <title>NetEase Music Playlist Downloader</title>
+    <title>网易云音乐歌单下载器</title>
     <link rel="stylesheet" href="style.css">
     <script>
-        /* Apply the theme before the first paint: main.py puts the persisted
-           mode in the query string, and `system` follows the OS setting.
+        /* Apply the theme and the wallpaper before the first paint: main.py puts
+           the persisted mode in the query string, and `system` follows the OS.
            Without this the window flashes white when the app runs in dark. */
         (function () {
             var params = new URLSearchParams(window.location.search);
@@ -22,16 +22,31 @@
             var root = document.documentElement;
             root.setAttribute('data-theme', resolved === 'dark' ? 'dark' : 'light');
             root.dataset.themeMode = (mode === 'light' || mode === 'dark') ? mode : 'system';
+            var wallpaper = params.get('bg');
+            if (wallpaper) root.style.setProperty('--wallpaper', 'url("' + wallpaper + '")');
+            root.dataset.glass = params.get('glass') === '0' ? 'off' : 'on';
         })();
     </script>
 </head>
 <body>
+<!-- custom wallpaper (behind everything, blurred and dimmed by CSS) -->
+<div id="wallpaper" aria-hidden="true"></div>
+<div id="wallpaper-veil" aria-hidden="true"></div>
+
 <div id="app">
-    <header class="app-header">
+    <header class="app-header glass">
         <div class="brand">
             <h1 data-i18n="app.title">网易云音乐歌单下载器</h1>
             <p class="subtitle" data-i18n="app.subtitle"></p>
         </div>
+
+        <nav class="top-tabs" id="top-tabs" role="tablist">
+            <button class="top-tab is-active" type="button" data-view="download"
+                    data-i18n="tabs.download"></button>
+            <button class="top-tab" type="button" data-view="player"
+                    data-i18n="tabs.player"></button>
+        </nav>
+
         <div class="header-actions">
             <button id="btn-theme" class="btn btn-icon" type="button"
                     data-i18n-title="settings.theme_toggle" aria-label="theme">◐</button>
@@ -41,129 +56,253 @@
         </div>
     </header>
 
-    <main class="layout">
-        <div class="column-main">
-            <!-- playlist input -->
-            <section class="card">
-                <div class="card-head">
-                    <h2 data-i18n="download.title"></h2>
+    <main class="app-main">
+        <!-- ======================= download view ======================= -->
+        <section class="view is-active" id="view-download">
+            <div class="layout">
+                <div class="column-main">
+                    <section class="card glass">
+                        <div class="card-head">
+                            <h2 data-i18n="download.title"></h2>
+                        </div>
+                        <div class="card-body">
+                            <div class="inline-form">
+                                <label class="sr-only" for="playlist-input" data-i18n="playlist.input_label"></label>
+                                <input type="text" id="playlist-input" data-i18n-placeholder="playlist.placeholder"
+                                       autocomplete="off" spellcheck="false">
+                                <button id="btn-fetch" class="btn btn-primary" type="button"
+                                        data-i18n="playlist.fetch_btn"></button>
+                            </div>
+                            <div class="option-grid">
+                                <label class="option">
+                                    <span data-i18n="download.quality_label"></span>
+                                    <select id="quality-select">
+                                        <option value="standard" data-i18n="download.quality_standard"></option>
+                                        <option value="higher" data-i18n="download.quality_higher"></option>
+                                        <option value="exhigh" data-i18n="download.quality_exhigh"></option>
+                                        <option value="lossless" data-i18n="download.quality_lossless"></option>
+                                        <option value="hires" data-i18n="download.quality_hires"></option>
+                                    </select>
+                                </label>
+                                <label class="option">
+                                    <span data-i18n="download.concurrent_label"></span>
+                                    <select id="concurrent-select">
+                                        <option value="1">1</option>
+                                        <option value="2">2</option>
+                                        <option value="3">3</option>
+                                    </select>
+                                </label>
+                                <label class="option checkbox">
+                                    <input type="checkbox" id="overwrite-check">
+                                    <span data-i18n="download.overwrite_label"></span>
+                                </label>
+                                <label class="option checkbox">
+                                    <input type="checkbox" id="lyrics-check" checked>
+                                    <span data-i18n="settings.download_lyrics"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="card glass" id="playlist-card" hidden>
+                        <div class="card-head">
+                            <h2 data-i18n="playlist.title"></h2>
+                        </div>
+                        <div class="card-body playlist-info">
+                            <img id="playlist-cover" class="cover" src="" alt="">
+                            <div class="playlist-meta">
+                                <h3 id="playlist-name">--</h3>
+                                <p id="playlist-creator">--</p>
+                                <p id="playlist-count">--</p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="card glass" id="song-card" hidden>
+                        <div class="card-head">
+                            <h2><span data-i18n="playlist.tracks"></span> <span id="tracks-count" class="muted"></span></h2>
+                            <div class="card-head-actions">
+                                <button id="btn-select-all" class="btn btn-sm" type="button"
+                                        data-i18n="download.select_all"></button>
+                                <button id="btn-select-none" class="btn btn-sm" type="button"
+                                        data-i18n="download.deselect_all"></button>
+                            </div>
+                        </div>
+                        <div class="song-list" id="song-list"></div>
+                    </section>
+
+                    <section class="card glass">
+                        <div class="card-body">
+                            <div class="download-controls">
+                                <button id="btn-start" class="btn btn-primary btn-lg" type="button" disabled
+                                        data-i18n="download.start_btn"></button>
+                                <button id="btn-pause" class="btn btn-secondary" type="button" disabled
+                                        data-i18n="download.pause_btn"></button>
+                                <button id="btn-cancel" class="btn btn-danger" type="button" disabled
+                                        data-i18n="download.cancel_btn"></button>
+                                <button id="btn-open-folder" class="btn btn-ghost" type="button"
+                                        data-i18n="download.open_folder"></button>
+                            </div>
+                            <div class="overall">
+                                <div class="progress-track">
+                                    <div class="progress-fill" id="progress-fill"></div>
+                                </div>
+                                <div class="overall-meta">
+                                    <span id="progress-text">0%</span>
+                                    <span id="overall-speed"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
                 </div>
-                <div class="card-body">
-                    <div class="inline-form">
-                        <label class="sr-only" for="playlist-input" data-i18n="playlist.input_label"></label>
-                        <input type="text" id="playlist-input" data-i18n-placeholder="playlist.placeholder"
+
+                <aside class="column-side">
+                    <section class="card side-card glass">
+                        <div class="card-head">
+                            <h2 data-i18n="download.queue_title"></h2>
+                        </div>
+                        <div class="queue" id="download-queue">
+                            <p class="empty" id="empty-queue" data-i18n="download.queue_empty"></p>
+                        </div>
+                    </section>
+                </aside>
+            </div>
+        </section>
+
+        <!-- ======================== player view ======================== -->
+        <section class="view" id="view-player">
+            <div class="player-layout">
+                <aside class="player-side glass">
+                    <div class="source-search inline-form">
+                        <input type="search" id="search-input" data-i18n-placeholder="player.search_placeholder"
                                autocomplete="off" spellcheck="false">
-                        <button id="btn-fetch" class="btn btn-primary" type="button"
-                                data-i18n="playlist.fetch_btn"></button>
+                        <button id="btn-search" class="btn btn-primary" type="button"
+                                data-i18n="player.search_btn"></button>
                     </div>
-                    <div class="option-grid">
-                        <label class="option">
-                            <span data-i18n="download.quality_label"></span>
-                            <select id="quality-select">
-                                <option value="standard" data-i18n="download.quality_standard"></option>
-                                <option value="higher" data-i18n="download.quality_higher"></option>
-                                <option value="exhigh" data-i18n="download.quality_exhigh"></option>
-                                <option value="lossless" data-i18n="download.quality_lossless"></option>
-                                <option value="hires" data-i18n="download.quality_hires"></option>
-                            </select>
-                        </label>
-                        <label class="option">
-                            <span data-i18n="download.concurrent_label"></span>
-                            <select id="concurrent-select">
-                                <option value="1">1</option>
-                                <option value="2">2</option>
-                                <option value="3">3</option>
-                            </select>
-                        </label>
-                        <label class="option checkbox">
-                            <input type="checkbox" id="overwrite-check">
-                            <span data-i18n="download.overwrite_label"></span>
-                        </label>
-                        <label class="option checkbox">
-                            <input type="checkbox" id="lyrics-check" checked>
-                            <span data-i18n="settings.download_lyrics"></span>
-                        </label>
-                    </div>
-                </div>
-            </section>
 
-            <!-- playlist info -->
-            <section class="card" id="playlist-card" hidden>
-                <div class="card-head">
-                    <h2 data-i18n="playlist.title"></h2>
-                </div>
-                <div class="card-body playlist-info">
-                    <img id="playlist-cover" class="cover" src="" alt="">
-                    <div class="playlist-meta">
-                        <h3 id="playlist-name">--</h3>
-                        <p id="playlist-creator">--</p>
-                        <p id="playlist-count">--</p>
-                    </div>
-                </div>
-            </section>
+                    <nav class="source-tabs" id="source-tabs">
+                        <button class="source-tab is-active" type="button" data-source="playlists"
+                                data-i18n="player.source_playlists"></button>
+                        <button class="source-tab" type="button" data-source="liked"
+                                data-i18n="player.source_liked"></button>
+                        <button class="source-tab" type="button" data-source="local"
+                                data-i18n="player.source_local"></button>
+                        <button class="source-tab" type="button" data-source="recent"
+                                data-i18n="player.source_recent"></button>
+                        <button class="source-tab" type="button" data-source="search"
+                                data-i18n="player.source_search"></button>
+                    </nav>
 
-            <!-- tracks -->
-            <section class="card" id="song-card" hidden>
-                <div class="card-head">
-                    <h2><span data-i18n="playlist.tracks"></span> <span id="tracks-count" class="muted"></span></h2>
-                    <div class="card-head-actions">
-                        <button id="btn-select-all" class="btn btn-sm" type="button"
-                                data-i18n="download.select_all"></button>
-                        <button id="btn-select-none" class="btn btn-sm" type="button"
-                                data-i18n="download.deselect_all"></button>
+                    <div class="source-head">
+                        <button id="btn-list-back" class="btn btn-icon" type="button" hidden
+                                data-i18n-title="player.back" aria-label="back">‹</button>
+                        <span id="list-title" class="list-title"></span>
+                        <span id="list-count" class="muted"></span>
                     </div>
-                </div>
-                <div class="song-list" id="song-list"></div>
-            </section>
 
-            <!-- download controls -->
-            <section class="card">
-                <div class="card-body">
-                    <div class="download-controls">
-                        <button id="btn-start" class="btn btn-primary btn-lg" type="button" disabled
-                                data-i18n="download.start_btn"></button>
-                        <button id="btn-pause" class="btn btn-secondary" type="button" disabled
-                                data-i18n="download.pause_btn"></button>
-                        <button id="btn-cancel" class="btn btn-danger" type="button" disabled
-                                data-i18n="download.cancel_btn"></button>
-                        <button id="btn-open-folder" class="btn btn-ghost" type="button"
-                                data-i18n="download.open_folder"></button>
+                    <div class="source-actions" id="local-actions" hidden>
+                        <button id="btn-add-folder" class="btn btn-sm" type="button"
+                                data-i18n="player.add_folder"></button>
+                        <button id="btn-rescan" class="btn btn-sm" type="button"
+                                data-i18n="player.rescan"></button>
                     </div>
-                    <div class="overall">
-                        <div class="progress-track">
-                            <div class="progress-fill" id="progress-fill"></div>
+
+                    <div class="list-area">
+                        <div class="playlist-list" id="playlist-list"></div>
+                        <div class="track-list" id="track-list"></div>
+                    </div>
+
+                    <div class="source-foot">
+                        <button id="btn-list-more" class="btn btn-sm btn-block" type="button" hidden
+                                data-i18n="player.load_more"></button>
+                    </div>
+                </aside>
+
+                <div class="player-main">
+                    <section class="now-playing glass">
+                        <div class="np-cover-wrap">
+                            <img id="np-cover" class="np-cover" src="" alt="">
                         </div>
-                        <div class="overall-meta">
-                            <span id="progress-text">0%</span>
-                            <span id="overall-speed"></span>
+                        <div class="np-meta">
+                            <h2 id="np-title" data-i18n="player.nothing_playing"></h2>
+                            <p id="np-artist"></p>
+                            <p id="np-album" class="muted"></p>
+                            <div class="np-badges">
+                                <span class="pill" id="np-kind"></span>
+                                <span class="pill" id="np-plays"></span>
+                                <span class="pill" id="np-quality"></span>
+                            </div>
                         </div>
-                    </div>
-                </div>
-            </section>
-        </div>
+                    </section>
 
-        <aside class="column-side">
-            <section class="card side-card">
-                <div class="card-head">
-                    <h2 data-i18n="download.queue_title"></h2>
+                    <section class="lyrics-panel glass">
+                        <div class="lyrics-head">
+                            <span id="lyrics-source" class="muted"></span>
+                            <button id="btn-save-lyrics" class="btn btn-sm" type="button" hidden
+                                    data-i18n="lyrics.save"></button>
+                        </div>
+                        <div class="lyrics" id="lyrics-scroll">
+                            <p class="empty" id="lyrics-empty" data-i18n="lyrics.none"></p>
+                        </div>
+                    </section>
                 </div>
-                <div class="queue" id="download-queue">
-                    <p class="empty" id="empty-queue" data-i18n="download.queue_empty"></p>
-                </div>
-            </section>
-        </aside>
+            </div>
+        </section>
     </main>
 
-    <footer class="status-bar">
+    <!-- ====================== persistent player bar ====================== -->
+    <div class="player-bar glass" id="player-bar">
+        <div class="pb-left">
+            <img id="pb-cover" class="pb-cover" src="" alt="">
+            <div class="pb-meta">
+                <span id="pb-title" class="pb-title" data-i18n="player.nothing_playing"></span>
+                <span id="pb-artist" class="pb-artist"></span>
+            </div>
+        </div>
+
+        <div class="pb-center">
+            <div class="pb-buttons">
+                <button id="pb-mode" class="btn btn-icon" type="button" title=""></button>
+                <button id="pb-prev" class="btn btn-icon" type="button"
+                        data-i18n-title="player.prev" aria-label="previous">⏮</button>
+                <button id="pb-play" class="btn btn-icon btn-play" type="button"
+                        data-i18n-title="player.play" aria-label="play">▶</button>
+                <button id="pb-next" class="btn btn-icon" type="button"
+                        data-i18n-title="player.next" aria-label="next">⏭</button>
+                <button id="pb-fav" class="btn btn-icon" type="button"
+                        data-i18n-title="player.favorite" aria-label="favorite">♡</button>
+                <button id="pb-download" class="btn btn-icon" type="button"
+                        data-i18n-title="player.download" aria-label="download">⤓</button>
+            </div>
+            <div class="pb-progress">
+                <span id="pb-current" class="time">0:00</span>
+                <div class="progress-track is-clickable" id="pb-track">
+                    <div class="progress-fill" id="pb-fill"></div>
+                </div>
+                <span id="pb-duration" class="time">0:00</span>
+            </div>
+        </div>
+
+        <div class="pb-right">
+            <button id="pb-mute" class="btn btn-icon" type="button"
+                    data-i18n-title="player.volume" aria-label="volume">🔊</button>
+            <input type="range" id="pb-volume" min="0" max="1" step="0.01" value="0.8"
+                   data-i18n-title="player.volume">
+        </div>
+    </div>
+
+    <footer class="status-bar glass">
         <span id="status-text" data-i18n="status.ready"></span>
         <span id="stats-text" class="muted"></span>
     </footer>
 </div>
 
+<audio id="audio" preload="metadata"></audio>
+
 <!-- ============ login modal ============ -->
 <div class="modal" id="login-modal" hidden>
     <div class="modal-backdrop" data-close="login-modal"></div>
-    <div class="modal-box" role="dialog" aria-modal="true">
+    <div class="modal-box glass" role="dialog" aria-modal="true">
         <header class="modal-head">
             <h2 data-i18n="login.title"></h2>
             <button class="btn btn-icon" type="button" data-close="login-modal">✕</button>
@@ -222,7 +361,7 @@
 <!-- ============ settings modal ============ -->
 <div class="modal" id="settings-modal" hidden>
     <div class="modal-backdrop" data-close="settings-modal"></div>
-    <div class="modal-box" role="dialog" aria-modal="true">
+    <div class="modal-box glass" role="dialog" aria-modal="true">
         <header class="modal-head">
             <h2 data-i18n="settings.title"></h2>
             <button class="btn btn-icon" type="button" data-close="settings-modal">✕</button>
@@ -231,6 +370,7 @@
             <div class="tabs" id="settings-tabs">
                 <button class="tab is-active" type="button" data-tab="general"
                         data-i18n="settings.general"></button>
+                <button class="tab" type="button" data-tab="playback" data-i18n="settings.playback"></button>
                 <button class="tab" type="button" data-tab="download" data-i18n="settings.download"></button>
                 <button class="tab" type="button" data-tab="advanced"
                         data-i18n="settings.advanced"></button>
@@ -249,6 +389,88 @@
                         <option value="system" data-i18n="settings.theme_system"></option>
                     </select>
                 </label>
+
+                <div class="group">
+                    <h3 class="group-title" data-i18n="settings.appearance"></h3>
+                    <label class="option">
+                        <span data-i18n="settings.background"></span>
+                        <div class="inline-form">
+                            <input type="text" id="background-input" readonly>
+                            <button id="btn-choose-background" class="btn btn-secondary" type="button"
+                                    data-i18n="settings.choose_background"></button>
+                            <button id="btn-clear-background" class="btn btn-ghost" type="button"
+                                    data-i18n="settings.clear_background"></button>
+                        </div>
+                    </label>
+                    <label class="option">
+                        <span><span data-i18n="settings.background_blur"></span> <span id="blur-value" class="muted"></span></span>
+                        <input type="range" id="background-blur" min="0" max="40" step="1">
+                    </label>
+                    <label class="option">
+                        <span><span data-i18n="settings.background_dim"></span> <span id="dim-value" class="muted"></span></span>
+                        <input type="range" id="background-dim" min="0" max="80" step="1">
+                    </label>
+                    <label class="option checkbox">
+                        <input type="checkbox" id="glass-check">
+                        <span data-i18n="settings.glass"></span>
+                    </label>
+                    <label class="option checkbox indent">
+                        <input type="checkbox" id="accent-check">
+                        <span data-i18n="settings.accent_from_background"></span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="tab-panel" data-panel="playback">
+                <label class="option">
+                    <span data-i18n="settings.play_priority"></span>
+                    <select id="priority-select">
+                        <option value="online" data-i18n="settings.priority_online"></option>
+                        <option value="local" data-i18n="settings.priority_local"></option>
+                    </select>
+                </label>
+                <label class="option">
+                    <span data-i18n="settings.online_quality"></span>
+                    <select id="online-quality-select">
+                        <option value="standard" data-i18n="download.quality_standard"></option>
+                        <option value="higher" data-i18n="download.quality_higher"></option>
+                        <option value="exhigh" data-i18n="download.quality_exhigh"></option>
+                        <option value="lossless" data-i18n="download.quality_lossless"></option>
+                        <option value="hires" data-i18n="download.quality_hires"></option>
+                    </select>
+                </label>
+                <label class="option checkbox">
+                    <input type="checkbox" id="resume-playback-check">
+                    <span data-i18n="settings.resume_playback"></span>
+                </label>
+                <label class="option checkbox">
+                    <input type="checkbox" id="report-play-check">
+                    <span data-i18n="settings.report_play_count"></span>
+                </label>
+                <label class="option checkbox">
+                    <input type="checkbox" id="show-translation-check">
+                    <span data-i18n="settings.show_translation"></span>
+                </label>
+
+                <div class="group">
+                    <h3 class="group-title" data-i18n="settings.local_music"></h3>
+                    <p class="muted" data-i18n="settings.local_music_hint"></p>
+                    <div class="folder-list" id="folder-list"></div>
+                    <div class="inline-form">
+                        <button id="btn-add-folder-settings" class="btn btn-secondary" type="button"
+                                data-i18n="player.add_folder"></button>
+                        <button id="btn-rescan-settings" class="btn btn-ghost" type="button"
+                                data-i18n="player.rescan"></button>
+                    </div>
+                    <p class="muted" id="local-stats-text"></p>
+                </div>
+
+                <div class="group">
+                    <h3 class="group-title" data-i18n="settings.play_history"></h3>
+                    <p class="muted" id="play-stats-text"></p>
+                    <button id="btn-reset-counts" class="btn btn-danger btn-sm" type="button"
+                            data-i18n="settings.reset_play_counts"></button>
+                </div>
             </div>
 
             <div class="tab-panel" data-panel="download">
@@ -323,7 +545,7 @@
 <!-- ============ confirm dialog ============ -->
 <div class="modal" id="confirm-modal" hidden>
     <div class="modal-backdrop" data-close="confirm-modal"></div>
-    <div class="modal-box modal-box-sm" role="dialog" aria-modal="true">
+    <div class="modal-box modal-box-sm glass" role="dialog" aria-modal="true">
         <header class="modal-head">
             <h2 data-i18n="common.warning"></h2>
         </header>

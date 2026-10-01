@@ -24,9 +24,11 @@ __all__ = [
     "LYRICS_EXTENSION",
     "LYRIC_ENDPOINT",
     "build_lyrics",
+    "build_timed_lyrics",
     "lyrics_path_for",
     "merge_translation",
     "parse_lrc",
+    "parse_lrc_timed",
     "write_lyrics",
 ]
 
@@ -169,3 +171,76 @@ def build_lyrics(api: Any, song_id: str, *, translation: bool = True) -> str | N
         if merged:
             return merged
     return _as_text(lyric)
+
+
+# ---------------------------------------------------------------- player mode
+#: How far a translation line may sit from its lyric line (ms).
+TRANSLATION_TOLERANCE_MS = 800
+
+#: ``[mm:ss.xx]`` / ``[mm:ss:xx]`` / ``[h:mm:ss]`` -> milliseconds.
+_STAMP_VALUE_RE = re.compile(r"\[(\d{1,4}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
+
+
+def _stamp_to_ms(stamp: str) -> int:
+    """``"[01:23.45]"`` -> ``83450`` (fraction digits are read as centi/millis)."""
+    match = _STAMP_VALUE_RE.match(stamp or "")
+    if not match:
+        return -1
+    minutes, seconds, fraction = match.groups()
+    total = int(minutes) * 60_000 + int(seconds) * 1000
+    if fraction:
+        # `.5` is 500 ms, `.50` is 500 ms, `.500` is 500 ms -- pad to 3 digits.
+        total += int(fraction.ljust(3, "0")[:3])
+    return total
+
+
+def parse_lrc_timed(text: str) -> list[tuple[int, str]]:
+    """Parse an LRC into ``[(milliseconds, line), ...]`` sorted by time.
+
+    Timestamps with more than one value (``[00:10][01:20]chorus``) expand into
+    one entry per timestamp, which is what a scrolling view needs.
+    """
+    _, entries = parse_lrc(text)
+    timed: list[tuple[int, str]] = []
+    for stamps, content in entries:
+        if not content:
+            continue
+        for stamp in _STAMP_VALUE_RE.finditer(stamps):
+            value = _stamp_to_ms(stamp.group(0))
+            if value >= 0:
+                timed.append((value, content))
+    timed.sort(key=lambda item: item[0])
+    return timed
+
+
+def build_timed_lyrics(lyric: str, translation: str = "") -> list[dict[str, Any]]:
+    """Pair every lyric line with its translation, ready for the rolling view.
+
+    Returns ``[{"time": ms, "text": str, "translation": str}, ...]``; the
+    translation is empty when the song has none.
+    """
+    lines = parse_lrc_timed(lyric)
+    if not lines:
+        return []
+
+    translations = parse_lrc_timed(translation) if (translation or "").strip() else []
+    index: dict[int, str] = {}
+    for stamp, content in translations:
+        index.setdefault(stamp, content)
+
+    result: list[dict[str, Any]] = []
+    for stamp, content in lines:
+        # Translations sometimes land a few milliseconds off the original line;
+        # accept the closest one within the tolerance so the pairing still works.
+        match = index.get(stamp)
+        if match is None:
+            for offset in range(-TRANSLATION_TOLERANCE_MS, TRANSLATION_TOLERANCE_MS + 1, 10):
+                if stamp + offset in index:
+                    match = index[stamp + offset]
+                    break
+        result.append({"time": stamp, "text": content, "translation": match or ""})
+
+    # A translation without its own lyric line cannot be shown on its own, so it
+    # is dropped rather than rendered as a line with no text.
+    result.sort(key=lambda item: item["time"])
+    return result

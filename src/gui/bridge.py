@@ -14,8 +14,10 @@ import base64
 import json
 import logging
 import platform
+import re
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -23,14 +25,42 @@ from typing import Any
 import webview
 
 from src.auth import LoginStatus, get_login_manager
-from src.config import default_download_dir, get_settings
+from src.config import PLAY_MODES, default_download_dir, get_settings
 from src.core import get_api
 from src.core.downloader import MAX_CONCURRENT, DownloadStats, DownloadTask, SongDownloader
+from src.core.library import get_library, track_key
+from src.core.localmusic import (
+    get_local_music,
+    read_embedded_lyrics,
+    sidecar_lyrics_path,
+)
+from src.core.lyrics import build_timed_lyrics
+from src.core.mediaserver import get_media_server
 from src.gui.theme import effective_theme, normalize_theme, system_theme
 from src.i18n import get_i18n, t
 from src.version import APP_DISPLAY_NAME, AUTHOR, BUNDLE_ID, HOMEPAGE, LICENSE, __version__
 
 __all__ = ["GuiBridge"]
+
+#: Characters stripped when the player looks for a local copy of an online song.
+_MATCH_NOISE = re.compile(r"[\s\u3000()（）\[\]【】<>《》,，.。!！?？'\"“”‘’\-_~·・:：;；/\\|+&]+")
+
+
+def _match_key(text: str) -> str:
+    """Normalise a title/artist for the online <-> local matching index."""
+    return _MATCH_NOISE.sub("", str(text or "").lower())
+
+
+def _reason_code(value: Any) -> str:
+    """Reduce ``"lossless:copyright_unavailable"`` to its reason code.
+
+    ``api.get_song_url_info`` reports the last failed quality together with the
+    reason; only the reason is translatable.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return "no_url"
+    return text.split(":")[-1] or "no_url"
 
 
 class GuiBridge:
@@ -53,6 +83,16 @@ class GuiBridge:
         #: Hook installed by main.py so the OS window chrome follows the theme.
         self.apply_theme: Callable[[str], bool] | None = None
         self._lock = threading.RLock()
+
+        # ---- player state ----------------------------------------------------
+        self.library = get_library()
+        self.local_music = get_local_music()
+        self.media = get_media_server()
+        #: Normalised "title|artist" -> local track, rebuilt on demand.
+        self._match_index: dict[str, dict[str, Any]] = {}
+        self._match_index_token: Any = None
+        self._favorite_ids: set[str] = set()
+        self._favorite_ids_loaded = False
 
         self.login_manager.on("status_change", self._on_login_status_change)
         self.login_manager.on("qrcode_update", self._on_qrcode_update)
@@ -101,6 +141,30 @@ class GuiBridge:
             self.logger.warning("cannot open %s: %s", url, exc)
             return False
 
+    def reveal_path(self, path: str) -> bool:
+        """Show a file in the OS file manager (used by the local player).
+
+        Unlike :meth:`open_external` this one is about files the user already
+        has on disk, so it takes a path rather than a url.
+        """
+        if not isinstance(path, str) or not path.strip():
+            return False
+        target = Path(path).expanduser()
+        if not target.exists():
+            return False
+        try:
+            if platform.system() == "Darwin":
+                subprocess.Popen(["open", "-R", str(target)])
+            elif platform.system() == "Windows":
+                subprocess.Popen(["explorer", "/select,", str(target)])
+            else:
+                folder = target if target.is_dir() else target.parent
+                subprocess.Popen(["xdg-open", str(folder)])
+            return True
+        except Exception as exc:  # pragma: no cover - depends on the OS
+            self.logger.warning("cannot reveal %s: %s", target, exc)
+            return False
+
     # ----------------------------------------------------------------- settings
     def _download_dir(self) -> str:
         configured = self.settings.download.download_dir
@@ -116,10 +180,27 @@ class GuiBridge:
                 "lyrics_translation": self.settings.download.lyrics_translation,
                 "download_dir": self._download_dir(),
             },
+            "playback": {
+                "prefer_online": self.settings.playback.prefer_online,
+                "online_quality": self.settings.playback.online_quality,
+                "play_mode": self.settings.playback.play_mode,
+                "volume": self.settings.playback.volume,
+                "resume_playback": self.settings.playback.resume_playback,
+                "report_play_count": self.settings.playback.report_play_count,
+                "local_dirs": list(self.settings.playback.local_dirs),
+                "scan_depth": self.settings.playback.scan_depth,
+                "show_translation": self.settings.playback.show_translation,
+            },
             "ui": {
                 "language": self.settings.ui.language,
                 "theme": self.settings.ui.theme,
                 "remember_window_size": self.settings.ui.remember_window_size,
+                "background_image": self.settings.ui.background_image,
+                "background_url": self.background_url(),
+                "background_blur": self.settings.ui.background_blur,
+                "background_dim": self.settings.ui.background_dim,
+                "glass": self.settings.ui.glass,
+                "accent_from_background": self.settings.ui.accent_from_background,
             },
             "auth": {
                 "remember_login": self.settings.auth.remember_login,
@@ -131,9 +212,15 @@ class GuiBridge:
         try:
             if category == "download":
                 self.settings.update_download(**self._clean_download(data))
+            elif category == "playback":
+                self.settings.update_playback(**self._clean_playback(data))
+                if "local_dirs" in (data or {}):
+                    self._match_index_token = None
             elif category == "ui":
-                self.settings.update_ui(**self._clean(data, {"language", "theme",
-                                                             "remember_window_size"}))
+                self.settings.update_ui(**self._clean(data, {
+                    "language", "theme", "remember_window_size", "background_image",
+                    "background_blur", "background_dim", "glass",
+                    "accent_from_background"}))
                 if "language" in data:
                     self.i18n.set_language(str(data["language"]))
                 if "theme" in data:
@@ -162,6 +249,17 @@ class GuiBridge:
                 cleaned["max_concurrent"] = max(1, min(int(cleaned["max_concurrent"]), MAX_CONCURRENT))
             except (TypeError, ValueError):
                 cleaned.pop("max_concurrent")
+        return cleaned
+
+    def _clean_playback(self, data: dict[str, Any]) -> dict[str, Any]:
+        cleaned = self._clean(data, {"prefer_online", "online_quality", "play_mode", "volume",
+                                      "resume_playback", "report_play_count", "local_dirs",
+                                      "scan_depth", "show_translation", "last_local_dir"})
+        if "play_mode" in cleaned and cleaned["play_mode"] not in PLAY_MODES:
+            cleaned["play_mode"] = "list"
+        if isinstance(cleaned.get("local_dirs"), list):
+            cleaned["local_dirs"] = [str(item) for item in cleaned["local_dirs"]
+                                     if str(item or "").strip()]
         return cleaned
 
     def reset_settings(self) -> dict[str, Any]:
@@ -324,8 +422,6 @@ class GuiBridge:
     # ---------------------------------------------------------------- playlist
     @staticmethod
     def _extract_playlist_id(value: str) -> str | None:
-        import re
-
         value = (value or "").strip()
         if not value:
             return None
@@ -382,13 +478,17 @@ class GuiBridge:
     def _track_payload(index: int, song: dict[str, Any]) -> dict[str, Any]:
         artists = song.get("artists") or song.get("ar") or []
         album = song.get("album") or song.get("al") or {}
+        song_id = str(song.get("id", ""))
         return {
             "index": index,
-            "id": str(song.get("id", "")),
+            "id": song_id,
+            "key": track_key("online", song_id),
+            "source": "online",
             "name": song.get("name") or "Unknown",
             "artists": ", ".join(a.get("name", "Unknown") for a in artists if isinstance(a, dict))
             or "Unknown",
             "album": album.get("name") or "",
+            "cover_url": album.get("picUrl") or song.get("cover_url") or "",
             "duration": song.get("dt") or song.get("duration") or 0,
             "fee": song.get("fee", 0),
             "vip": bool(song.get("fee", 0)),
@@ -427,6 +527,17 @@ class GuiBridge:
                 return {"success": False, "error_key": "status.no_songs_selected"}
             songs = [self.playlist_songs[i] for i in self.selected_songs
                      if 0 <= i < len(self.playlist_songs)]
+        return self._launch_download(songs, options)
+
+    def _launch_download(self, songs: list[dict[str, Any]],
+                         options: dict[str, Any]) -> dict[str, Any]:
+        """Start a batch download in the background (shared with the player)."""
+        options = options or {}
+        with self._lock:
+            songs = [song for song in (songs or [])
+                     if isinstance(song, dict) and str(song.get("id") or "").strip()]
+            if not songs:
+                return {"success": False, "error_key": "status.no_songs_selected"}
             if self._download_thread and self._download_thread.is_alive():
                 return {"success": False, "error_key": "download.start_failed",
                         "message": "a download is already running"}
@@ -457,6 +568,7 @@ class GuiBridge:
                                           download_lyrics=download_lyrics,
                                           lyrics_translation=lyrics_translation,
                                           download_dir=str(self.downloader.download_dir))
+            self.refresh_allowed_roots()
 
             DownloadStats(total=len(songs))
 
@@ -526,6 +638,545 @@ class GuiBridge:
         except Exception as exc:
             self.logger.warning("cannot open %s: %s", path, exc)
             return False
+
+    # =================================================================== player
+    # -- shared helpers --------------------------------------------------------
+    def _safe(self, label: str, call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Call a network helper, turning a transport error into ``None``.
+
+        The UI shows a translated "failed" state for ``None``; letting the
+        exception escape would only produce an unhandled promise in the webview.
+        """
+        try:
+            return call(*args, **kwargs)
+        except Exception as exc:  # pragma: no cover - transport dependent
+            self.logger.info("%s failed: %s", label, exc)
+            return None
+
+    def background_url(self) -> str:
+        """URL of the stored wallpaper (``""`` when unset or the server is down)."""
+        if not self.media.running or self.settings.background_path() is None:
+            return ""
+        return self.media.url_for_background()
+
+    def refresh_allowed_roots(self) -> list[str]:
+        """Let the media server read the download folder and every music folder."""
+        roots = [self._download_dir(), *self.settings.playback.local_dirs]
+        self.media.set_allowed_roots(roots)
+        return [str(path) for path in self.media.allowed_roots]
+
+    @staticmethod
+    def _key_of(track: dict[str, Any]) -> str:
+        key = str((track or {}).get("key") or "")
+        if key:
+            return key
+        source = (track or {}).get("source") or "online"
+        identifier = (track or {}).get("path") if source == "local" else (track or {}).get("id")
+        return track_key(source, str(identifier or ""))
+
+    @staticmethod
+    def _meta_of(track: dict[str, Any]) -> dict[str, Any]:
+        """The small subset of a track the library stores next to a favourite."""
+        return {
+            "name": track.get("name") or "",
+            "artists": track.get("artists") or "",
+            "album": track.get("album") or "",
+            "cover_url": track.get("cover_url") or "",
+            "duration": track.get("duration") or 0,
+            "source": track.get("source") or "online",
+            "id": track.get("id") or "",
+            "path": track.get("path") or "",
+        }
+
+    @staticmethod
+    def _clean_track(track: Any) -> dict[str, Any]:
+        """Whitelist the fields a queue entry may carry (the queue is persisted)."""
+        if not isinstance(track, dict):
+            return {}
+        allowed = ("key", "source", "id", "path", "name", "artists", "album",
+                   "cover_url", "duration", "vip", "ext", "size", "has_lyrics")
+        return {name: track[name] for name in allowed if name in track}
+
+    # -- local <-> online matching --------------------------------------------
+    def _ensure_match_index(self) -> None:
+        """Index local files by "title|artist" so an online song can find its copy."""
+        directories = tuple(self.settings.playback.local_dirs)
+        tracks = self.local_music.tracks()
+        token = (len(tracks), directories)
+        if self._match_index_token == token:
+            return
+        index: dict[str, dict[str, Any]] = {}
+        title_index: dict[str, list[dict[str, Any]]] = {}
+        for track in tracks:
+            title = _match_key(track.get("name"))
+            artist = _match_key(track.get("artists"))
+            if title and artist:
+                index.setdefault(f"{title}|{artist}", track)
+            if title:
+                title_index.setdefault(title, []).append(track)
+        for title, candidates in title_index.items():
+            if len(candidates) == 1 and title not in index:
+                index[title] = candidates[0]
+        self._match_index = index
+        self._match_index_token = token
+
+    def _local_track_for(self, track: dict[str, Any]) -> dict[str, Any] | None:
+        """A local file that is very likely the same song as ``track``."""
+        if (track or {}).get("source") == "local" and track.get("path"):
+            return track
+        source = track.get("source")
+        if source == "local":
+            found = self.local_music.track(str(track.get("path") or track.get("id") or ""))
+            return found
+        self._ensure_match_index()
+        title = _match_key(track.get("name"))
+        artist = _match_key(track.get("artists"))
+        if not title:
+            return None
+        return self._match_index.get(f"{title}|{artist}") or self._match_index.get(title)
+
+    # -- resolving a playable url ---------------------------------------------
+    def resolve_track(self, track: dict[str, Any]) -> dict[str, Any]:
+        """Pick a source for ``track`` and return a media-server url.
+
+        The order follows the playback setting (online first or local first) and
+        falls back to the other side when the preferred one is unavailable.
+        """
+        track = track or {}
+        prefer_online = bool(self.settings.playback.prefer_online)
+        quality = str(track.get("quality") or self.settings.playback.online_quality
+                      or "standard")
+        song_id = str(track.get("id") or "")
+        attempts: list[str] = ["online", "local"] if prefer_online else ["local", "online"]
+        errors: list[str] = []
+
+        for kind in attempts:
+            if kind == "online":
+                if track.get("source") != "online" or not song_id:
+                    continue
+                info = self._safe("resolve url", self.api.get_song_url_info, song_id, quality)
+                if info and info.get("url"):
+                    return {
+                        "success": True,
+                        "kind": "online",
+                        "url": self.media.url_for_online(song_id, info.get("level") or quality),
+                        "quality": info.get("level") or quality,
+                        "level": info.get("level"),
+                        "size": info.get("size") or 0,
+                        "matched_local": False,
+                    }
+                errors.append(str(getattr(self.api, "last_url_error", None) or "no_url"))
+            else:
+                local = self._local_track_for(track)
+                path = Path(str((local or {}).get("path") or ""))
+                if local and path.is_file():
+                    return {
+                        "success": True,
+                        "kind": "local",
+                        "url": self.media.url_for_local(path),
+                        "path": str(path),
+                        "matched_local": track.get("source") == "online",
+                        # Embedded art is extracted on demand by the media server.
+                        "cover_url": self.media.url_for_cover(path),
+                        "name": local.get("name"),
+                        "artists": local.get("artists"),
+                        "album": local.get("album"),
+                        "duration": local.get("duration") or track.get("duration") or 0,
+                        "has_lyrics": bool(local.get("has_lyrics")),
+                    }
+                errors.append("no_local_copy")
+
+        return {
+            "success": False,
+            "error_key": "error.reason." + _reason_code(errors[-1] if errors else "no_url"),
+            "message": ", ".join(dict.fromkeys(errors)),
+        }
+
+    # -- play counts, favourites ----------------------------------------------
+    def record_play(self, track: dict[str, Any]) -> dict[str, Any]:
+        """Count one playback locally and (optionally) report it to NetEase."""
+        key = self._key_of(track)
+        if not key:
+            return {"success": False, "error_key": "error.unknown"}
+        count = self.library.record_play(key, meta=self._meta_of(track))
+        reported = False
+        if (track.get("source") != "local" and self.settings.playback.report_play_count
+                and self.login_manager.is_logged_in and track.get("id")):
+            seconds = float(track.get("duration") or 0) / 1000.0
+            threading.Thread(
+                target=self.api.report_play,
+                args=(str(track.get("id")), seconds or 0.0),
+                name="ncm-report", daemon=True,
+            ).start()
+            reported = True
+        return {"success": True, "key": key, "count": count, "reported": reported}
+
+    def get_play_stats(self) -> dict[str, Any]:
+        return {
+            "success": True,
+            "counts": self.library.play_counts(),
+            "stats": self.library.stats(),
+            "favorites": self.library.favorite_keys(),
+        }
+
+    def reset_play_counts(self) -> dict[str, Any]:
+        self.library.reset_play_counts()
+        return {"success": True, "stats": self.library.stats()}
+
+    def get_recent_tracks(self, limit: int = 50) -> dict[str, Any]:
+        entries = self.library.recent(limit)
+        tracks = []
+        for entry in entries:
+            meta = dict(entry.get("meta") or {})
+            meta.setdefault("key", entry.get("key"))
+            tracks.append({**meta, "played": entry.get("played")})
+        return {"success": True, "tracks": tracks}
+
+    def set_favorite(self, track: dict[str, Any], favorite: bool = True) -> dict[str, Any]:
+        """Toggle a favourite locally and mirror it to NetEase when possible."""
+        key = self._key_of(track)
+        if not key:
+            return {"success": False, "error_key": "error.unknown"}
+        state = self.library.set_favorite(key, bool(favorite), self._meta_of(track))
+        cloud: str | None = None
+        if track.get("source") != "local" and track.get("id"):
+            if not self.login_manager.is_logged_in:
+                cloud = "login_required"
+            else:
+                liked = self._safe("cloud favourite", self.api.set_song_like,
+                                   str(track["id"]), state)
+                cloud = "ok" if liked else "failed"
+        return {"success": True, "key": key, "favorite": state, "cloud": cloud,
+                "favorites": self.library.favorite_keys()}
+
+    def get_favorites(self) -> dict[str, Any]:
+        return {"success": True, "tracks": self.library.favorites(),
+                "keys": self.library.favorite_keys()}
+
+    # -- lyrics ---------------------------------------------------------------
+    def _lookup_online_lyrics(self, track: dict[str, Any]) -> dict[str, Any] | None:
+        """Find lyrics for a local file by searching NetEase for its title."""
+        name = str(track.get("name") or "").strip()
+        if not name:
+            return None
+        query = f"{name} {str(track.get('artists') or '')}".strip()
+        results = self._safe("lyric search", self.api.search_songs, query, limit=5) or []
+        wanted = _match_key(name)
+        ordered = sorted(
+            (song for song in results if song.get("id")),
+            key=lambda song: 0 if _match_key(song.get("name")) == wanted else 1,
+        )
+        for song in ordered[:3]:
+            result = self._safe("lyrics", self.api.get_lyrics, str(song["id"]))
+            if result is None:
+                continue
+            if result and (result.get("lyric") or "").strip():
+                return {
+                    "song_id": str(song["id"]),
+                    "name": song.get("name"),
+                    "artists": ", ".join(a.get("name", "") for a in (song.get("ar") or [])
+                                         if isinstance(a, dict)),
+                    "lyric": result.get("lyric") or "",
+                    "translation": result.get("translation") or "",
+                }
+        return None
+
+    def get_track_lyrics(self, track: dict[str, Any], save: bool = False) -> dict[str, Any]:
+        """Lyrics for one track, with the source they came from.
+
+        Local files try their ``.lrc`` sidecar, then the embedded tag, and only
+        then ask NetEase.  ``save`` writes a sidecar for the lyrics that were
+        found online, so the next playback is offline again.
+        """
+        track = track or {}
+        lyric = ""
+        translation = ""
+        origin = "none"
+        saved_path = ""
+        is_local = track.get("source") == "local"
+        path = Path(str(track.get("path") or track.get("id") or "")) if is_local else None
+
+        if path is not None:
+            sidecar = sidecar_lyrics_path(path) if path.is_file() else None
+            if sidecar is not None:
+                try:
+                    lyric = sidecar.read_text(encoding="utf-8", errors="replace")
+                    origin = "sidecar"
+                except OSError:
+                    lyric = ""
+            if not lyric.strip() and path.is_file():
+                try:
+                    lyric = read_embedded_lyrics(path)
+                    origin = "embedded" if lyric.strip() else origin
+                except Exception:  # pragma: no cover - unreadable tag
+                    lyric = ""
+            if not lyric.strip():
+                found = self._lookup_online_lyrics(track)
+                if found:
+                    lyric, translation, origin = found["lyric"], found["translation"], "netease"
+                    if save:
+                        from src.core.lyrics import merge_translation, write_lyrics
+
+                        target = path.with_suffix(".lrc")
+                        try:
+                            write_lyrics(target, merge_translation(lyric, translation))
+                            saved_path = str(target)
+                        except OSError as exc:
+                            self.logger.info("cannot save lyrics for %s: %s", path, exc)
+        else:
+            song_id = str(track.get("id") or "")
+            if song_id:
+                result = self._safe("lyrics", self.api.get_lyrics, song_id)
+                if result:
+                    lyric = result.get("lyric") or ""
+                    translation = result.get("translation") or ""
+                    origin = "netease" if lyric.strip() else "none"
+
+        lines = build_timed_lyrics(lyric, translation)
+        return {
+            "success": True,
+            "lines": lines,
+            "source": origin,
+            "has_lyrics": bool(lines),
+            "lyrics_path": saved_path,
+            "plain": lyric if not lines else "",
+        }
+
+    # -- playback session ------------------------------------------------------
+    def save_playback_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Persist the queue/index/position so the next launch resumes there."""
+        if not isinstance(state, dict):
+            return {"success": False, "error_key": "error.unknown"}
+        queue = [self._clean_track(item) for item in state.get("queue") or []]
+        queue = [item for item in queue if item.get("key")][:2000]
+        if not queue:
+            self.library.save_playback(None)
+            return {"success": True, "stored": False}
+        try:
+            index = int(state.get("index") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        try:
+            position = max(0.0, float(state.get("position") or 0))
+        except (TypeError, ValueError):
+            position = 0.0
+        mode = state.get("mode") if state.get("mode") in PLAY_MODES else "list"
+        source = state.get("source")
+        self.library.save_playback({
+            "queue": queue,
+            "index": max(0, min(index, len(queue) - 1)),
+            "position": position,
+            "mode": mode,
+            "source": source if isinstance(source, dict) else None,
+            "saved_at": time.time(),
+        })
+        return {"success": True, "stored": True}
+
+    def load_playback_state(self) -> dict[str, Any]:
+        state = self.library.playback_state()
+        if not state or not state.get("queue"):
+            return {"success": True, "state": None}
+        return {"success": True, "state": state}
+
+    def clear_playback_state(self) -> dict[str, Any]:
+        self.library.clear_playback()
+        return {"success": True}
+
+    # -- online library --------------------------------------------------------
+    def get_playlists(self) -> dict[str, Any]:
+        """Every playlist of the signed-in account."""
+        user = self.login_manager.user_info
+        if not user or not user.user_id:
+            return {"success": False, "error_key": "player.login_required", "playlists": []}
+        playlists = self._safe("account playlists", self.api.get_user_playlists_all,
+                               user.user_id)
+        if playlists is None:
+            return {"success": False, "error_key": "error.network", "playlists": []}
+        return {
+            "success": bool(playlists),
+            "error_key": None if playlists else "player.playlist_empty",
+            "playlists": [self._playlist_payload(item) for item in playlists],
+        }
+
+    @staticmethod
+    def _playlist_payload(playlist: dict[str, Any]) -> dict[str, Any]:
+        creator = playlist.get("creator") or {}
+        return {
+            "id": str(playlist.get("id", "")),
+            "name": playlist.get("name") or "Unknown",
+            "cover_url": playlist.get("coverImgUrl") or playlist.get("coverImgUrlStr") or "",
+            "track_count": playlist.get("trackCount") or 0,
+            "creator": creator.get("nickname") or "",
+            "special_type": playlist.get("specialType") or 0,
+            "subscribed": bool(playlist.get("subscribed")),
+            "description": playlist.get("description") or "",
+        }
+
+    def get_playlist_tracks(self, playlist_id: str) -> dict[str, Any]:
+        """Tracks of one playlist, in playlist order (does not touch the download tab)."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id.isdigit():
+            return {"success": False, "error_key": "playlist.invalid_input", "tracks": []}
+        info = self._safe("playlist info", self.api.get_playlist_info, playlist_id)
+        songs = self._safe("playlist songs", self.api.get_playlist_songs, playlist_id) or []
+        if not songs:
+            return {"success": False, "error_key": "playlist.fetch_failed", "tracks": []}
+        return {
+            "success": True,
+            "playlist": self._playlist_payload(info or {"id": playlist_id}),
+            "tracks": [self._track_payload(index, song) for index, song in enumerate(songs)],
+        }
+
+    def get_liked_tracks(self) -> dict[str, Any]:
+        """The account's "liked" list (needs a login)."""
+        user = self.login_manager.user_info
+        if not user or not user.user_id:
+            return {"success": False, "error_key": "player.login_required", "tracks": []}
+        ids = self._safe("liked ids", self.api.get_liked_song_ids, user.user_id)
+        if not ids:
+            return {"success": True, "tracks": []}
+        songs = self._safe("liked songs", self.api.get_songs_detail, ids) or []
+        return {"success": True, "tracks": [self._track_payload(index, song)
+                                           for index, song in enumerate(songs)]}
+
+    def search_tracks(self, keyword: str, limit: int = 30, offset: int = 0) -> dict[str, Any]:
+        """Search NetEase for songs."""
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return {"success": False, "error_key": "player.search_empty", "tracks": []}
+        songs = self._safe("search", self.api.search_songs, keyword,
+                           limit=limit, offset=offset)
+        if songs is None:
+            return {"success": False, "error_key": "error.network", "tracks": []}
+        return {
+            "success": True,
+            "keyword": keyword,
+            "offset": max(0, int(offset or 0)),
+            "tracks": [self._track_payload(index, song) for index, song in enumerate(songs)],
+        }
+
+    # -- local music -----------------------------------------------------------
+    def get_local_tracks(self, query: str = "", limit: int = 200,
+                         offset: int = 0) -> dict[str, Any]:
+        """A page of the local library, optionally filtered by ``query``.
+
+        The UI keeps its own copy of what it has fetched, so a library with tens
+        of thousands of files never crosses the bridge in one go.
+        """
+        tracks = self.local_music.tracks()
+        needle = _match_key(query)
+        if needle:
+            tracks = [track for track in tracks
+                      if needle in _match_key(track.get("name"))
+                      or needle in _match_key(track.get("artists"))
+                      or needle in _match_key(track.get("album"))]
+        try:
+            size = max(1, min(int(limit or 200), 5000))
+            start = max(0, int(offset or 0))
+        except (TypeError, ValueError):
+            size, start = 200, 0
+        return {
+            "success": True,
+            "tracks": tracks[start:start + size],
+            "offset": start,
+            "total": len(tracks),
+            "directories": list(self.settings.playback.local_dirs),
+        }
+
+    def add_local_folder(self, rescan: bool = True) -> dict[str, Any]:
+        """Ask for a folder, remember it and (optionally) scan right away."""
+        if not self._window:
+            return {"success": False, "error_key": "error.unknown"}
+        try:
+            result = self._window.create_file_dialog(
+                webview.FOLDER_DIALOG, directory=str(Path.home()))
+        except Exception as exc:
+            self.logger.warning("folder dialog failed: %s", exc)
+            return {"success": False, "error_key": "error.permission"}
+        if not result:
+            return {"success": False, "cancelled": True}
+        chosen = result[0] if isinstance(result, list | tuple) else result
+        path = str(Path(str(chosen)).expanduser())
+        directories = list(dict.fromkeys([*self.settings.playback.local_dirs, path]))
+        self.settings.update_playback(local_dirs=directories, last_local_dir=path)
+        self._match_index_token = None
+        self.refresh_allowed_roots()
+        payload: dict[str, Any] = {"success": True, "directory": path, "directories": directories}
+        if rescan:
+            payload.update(self.scan_local_music())
+        return payload
+
+    def remove_local_folder(self, directory: str) -> dict[str, Any]:
+        directory = str(directory or "")
+        directories = [item for item in self.settings.playback.local_dirs if item != directory]
+        self.settings.update_playback(local_dirs=directories)
+        self._match_index_token = None
+        return {"success": True, "directories": directories}
+
+    def scan_local_music(self, rescan: bool = False) -> dict[str, Any]:
+        """Scan every configured folder; ``rescan`` re-reads the tag cache from disk."""
+        directories = list(self.settings.playback.local_dirs)
+        if not directories:
+            return {"success": True, "tracks": 0, "directories": [], "scanned": 0}
+        if rescan:
+            self.local_music.clear()
+        summary = self.local_music.refresh(directories,
+                                           max_depth=self.settings.playback.scan_depth)
+        self._match_index_token = None
+        self.refresh_allowed_roots()
+        return {"success": True, **summary, "stats": self.local_music.stats()}
+
+    def get_local_stats(self) -> dict[str, Any]:
+        return {"success": True, "stats": self.local_music.stats(),
+                "directories": list(self.settings.playback.local_dirs),
+                "media": self.media.stats()}
+
+    # -- appearance ------------------------------------------------------------
+    def pick_background_image(self) -> dict[str, Any]:
+        """Choose an image, copy it into the config dir and return its url."""
+        if not self._window:
+            return {"success": False, "error_key": "error.unknown"}
+        try:
+            result = self._window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False,
+                file_types=("Image (*.jpg;*.jpeg;*.png;*.webp;*.gif;*.bmp;*.heic)",))
+        except Exception as exc:
+            self.logger.warning("image dialog failed: %s", exc)
+            return {"success": False, "error_key": "error.permission"}
+        if not result:
+            return {"success": False, "cancelled": True}
+        chosen = result[0] if isinstance(result, list | tuple) else result
+        if not self.settings.set_background_image(chosen):
+            return {"success": False, "error_key": "settings.background_failed"}
+        return {"success": True, "background_url": self.background_url(),
+                "settings": self.get_settings()}
+
+    def clear_background_image(self) -> dict[str, Any]:
+        self.settings.clear_background_image()
+        return {"success": True, "background_url": "", "settings": self.get_settings()}
+
+    # -- quick download from the player ---------------------------------------
+    def download_tracks(self, tracks: list[dict[str, Any]] | None = None,
+                        options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Queue the given tracks in the normal download pipeline.
+
+        Online tracks are re-read from ``/api/v3/song/detail`` so the downloader
+        gets its usual raw song shape; local files have nothing to download.
+        """
+        wanted = [self._clean_track(item) for item in (tracks or []) if isinstance(item, dict)]
+        ids = [str(item.get("id")) for item in wanted
+               if item.get("source") != "local" and str(item.get("id") or "").isdigit()]
+        if not ids:
+            return {"success": False, "error_key": "player.download_local_only"}
+        songs = self._safe("song details", self.api.get_songs_detail, ids) or []
+        if not songs:
+            songs = [{"id": int(song_id), "name": next(
+                (item.get("name") for item in wanted if str(item.get("id")) == song_id), "Unknown"),
+                "artists": [{"name": next(
+                    (item.get("artists") for item in wanted
+                     if str(item.get("id")) == song_id), "Unknown")}]}
+                for song_id in ids]
+        return self._launch_download(songs, options or {})
 
     # --------------------------------------------------------------- utilities
     def get_api_stats(self) -> dict[str, Any]:
