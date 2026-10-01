@@ -334,9 +334,13 @@ class LoginManager:
         return False
 
     def _set_user_from_account(self, account: dict[str, Any], profile: dict[str, Any]) -> None:
+        # ``profile.nickname`` is the name the user chose; ``account.userName`` is
+        # the privacy-masked form (``1_********477``), which tells nobody who they
+        # are in the header.  Fall back to it, never lead with it.
+        nickname = profile.get("nickname") or account.get("userName") or ""
         self._user_info = UserInfo(
             user_id=str(account.get("id", "")),
-            nickname=account.get("userName") or profile.get("nickname", ""),
+            nickname=nickname,
             avatar_url=profile.get("avatarUrl", ""),
             vip_type=profile.get("vipType", 0) or 0,
             cookie=self._cookie_string(),

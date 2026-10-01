@@ -271,6 +271,23 @@ def test_login_still_fails_when_the_session_is_really_dead(manager, monkeypatch)
     assert "not confirmed" in manager.config_path_for_debug().read_text(encoding="utf-8")
 
 
+# ------------------------------------------------------------------ account
+
+def test_the_header_shows_the_real_nickname_not_the_masked_one(manager):
+    """`account.userName` is `1_********477`; only `profile.nickname` identifies."""
+    manager._set_user_from_account(
+        {"id": 9641982263, "userName": "1_********477"},
+        {"nickname": "深空遗尘", "avatarUrl": "https://img", "vipType": 0},
+    )
+    assert manager.user_info.nickname == "深空遗尘"
+    assert manager.user_info.user_id == "9641982263"
+
+
+def test_a_profile_without_a_nickname_still_names_the_user(manager):
+    manager._set_user_from_account({"id": 1, "userName": "1_****477"}, {})
+    assert manager.user_info.nickname == "1_****477"
+
+
 # --------------------------------------------------------------------- SMS
 
 def _sms(manager, payload, status_code=200):

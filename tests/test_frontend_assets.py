@@ -107,3 +107,189 @@ def test_backend_pushes_have_a_matching_frontend_handler():
 
     assert pushed, "the bridge should push at least one event"
     assert missing == [], f"app.js has no handler for: {missing}"
+
+
+#: Built-ins and browser globals that are legitimately not defined in app.js.
+_JS_GLOBALS = {
+    "console", "document", "window", "setTimeout", "clearTimeout", "setInterval",
+    "clearInterval", "requestAnimationFrame", "parseInt", "parseFloat", "isNaN",
+    "isFinite", "fetch", "alert", "confirm", "encodeURIComponent",
+    "decodeURIComponent", "Boolean", "Error", "JSON", "Object", "Array", "Math",
+    "Date", "String", "Number", "Promise", "Map", "Set", "Image", "URL", "Blob",
+    "RegExp", "Infinity", "NaN", "undefined", "arguments", "true", "false",
+    "null", "this", "globalThis", "Intl", "Audio", "Event", "FileReader",
+}
+
+#: Reserved words: they are not variables, so they never need a declaration.
+_JS_KEYWORDS = {
+    "if", "for", "while", "switch", "catch", "finally", "try", "function",
+    "return", "typeof", "instanceof", "new", "do", "await", "delete", "void",
+    "in", "of", "else", "case", "async", "yield", "throw", "break", "continue",
+    "const", "let", "var", "class", "extends", "super", "import", "export",
+    "default", "get", "set", "static",
+}
+
+
+def _skip_quoted(source: str, start: int) -> int:
+    """Index just past the ``'``/``"``/``` ` ``` string that opens at ``start``."""
+    quote = source[start]
+    index = start + 1
+    while index < len(source):
+        if source[index] == "\\":
+            index += 2
+            continue
+        if source[index] == quote:
+            return index + 1
+        index += 1
+    return len(source)
+
+
+def _skip_template(source: str, start: int) -> int:
+    """Index just past the template literal that opens at ``start``.
+
+    ``${...}`` holes are code, but they are dropped along with the literal text
+    (checked elsewhere); they still have to be counted correctly or a ``}`` of
+    a nested object ends the scan in the wrong place.
+    """
+    index = start + 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "`":
+            return index + 1
+        if char == "$" and source[index + 1:index + 2] == "{":
+            depth, index = 1, index + 2
+            while index < len(source) and depth:
+                inner = source[index]
+                if inner in "'\"`":
+                    index = _skip_quoted(source, index)
+                    continue
+                if inner == "{":
+                    depth += 1
+                elif inner == "}":
+                    depth -= 1
+                index += 1
+            continue
+        index += 1
+    return len(source)
+
+
+#: After these, a ``/`` opens a regex literal rather than dividing.
+_JS_REGEX_PRECEDERS = set("(,=:[!&|?{};+-*%^~<>") | {
+    "return", "typeof", "case", "in", "of", "new", "delete", "do", "else",
+    "yield", "await", "instanceof", "void",
+}
+
+
+def _skip_regex(source: str, start: int) -> int:
+    """Index just past the regex literal that opens at ``start``."""
+    index = start + 1
+    in_class = False
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "[":
+            in_class = True
+        elif char == "]":
+            in_class = False
+        elif char == "/" and not in_class:
+            index += 1
+            while index < len(source) and source[index].isalpha():
+                index += 1  # flags
+            return index
+        elif char == "\n":
+            break
+        index += 1
+    return start + 1  # not a literal after all: leave the slash as code
+
+
+def _js_code() -> str:
+    """app.js reduced to code: comments, literals and props blanked out.
+
+    A hand-rolled scanner rather than a pile of regexes -- an apostrophe in a
+    comment, a ``//`` inside a string or a ``${}`` hole desynchronises any of
+    them, and a wrong answer here is worse than no check at all.  Regex literals
+    matter too: ``/^https?:\\/\\//`` would otherwise look like a comment.
+    """
+    out: list[str] = []
+    index, length = 0, len(JS)
+    previous = ""  # last significant character, to tell regex from division
+    while index < length:
+        pair = JS[index:index + 2]
+        if pair == "//":
+            newline = JS.find("\n", index)
+            index = length if newline < 0 else newline
+            continue
+        if pair == "/*":
+            end = JS.find("*/", index + 2)
+            index = length if end < 0 else end + 2
+            out.append(" ")
+            previous = " "
+            continue
+        char = JS[index]
+        if char == "`":
+            index = _skip_template(JS, index)
+            out.append(" '' ")
+            previous = "'"
+            continue
+        if char in "'\"":
+            index = _skip_quoted(JS, index)
+            out.append(" '' ")
+            previous = "'"
+            continue
+        if char == "/" and (previous in _JS_REGEX_PRECEDERS or previous == ""):
+            index = _skip_regex(JS, index)
+            out.append(" '' ")
+            previous = " "
+            continue
+        if not char.isspace():
+            # A keyword counts as a whole word, so `return /re/` is seen correctly.
+            if char.isalpha() or char in "_$":
+                end = index
+                while end < length and (JS[end].isalnum() or JS[end] in "_$"):
+                    end += 1
+                word = JS[index:end]
+                out.append(word)
+                previous = word if word not in _JS_KEYWORDS else " "
+                index = end
+                continue
+            previous = char
+        out.append(char)
+        index += 1
+    code = "".join(out)
+    # `foo.bar` -> `foo.`: a property name is not a variable.
+    return re.sub(r"\.[A-Za-z_$][\w$]*", ".", code)
+
+
+def test_every_identifier_the_script_uses_is_defined():
+    """A name nobody declares is a ReferenceError at runtime.
+
+    Python cannot see it, so the window just comes up half dead -- v3.0.0 shipped
+    a `renderSourceHeader()` call with no definition, which aborted boot() before
+    the login badge was refreshed (the app looked logged out) and left the whole
+    player uninitialised.  The check is on every *reference*, not only on call
+    syntax, so a function handed to `safeRender()` is covered too.
+    """
+    code = _js_code()
+    defined = set(re.findall(r"\b(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(", code))
+    defined |= set(re.findall(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b", code))
+    # Parameter names are defined too: `function safeRender(name, fn)` is why
+    # `fn()` resolves, and `(resolve) => {}` is why `resolve(...)` does.
+    signatures = re.findall(r"\b(?:async\s+)?function\s*[A-Za-z_$][\w$]*\s*\(([^)]*)\)", code)
+    signatures += re.findall(r"\(([^()]*)\)\s*=>", code)
+    signatures += re.findall(r"\b(?:async\s+)?function\s*\(([^)]*)\)", code)
+    signatures += re.findall(r"\bcatch\s*\(([^)]*)\)", code)
+    for params in signatures:
+        defined |= set(re.findall(r"[A-Za-z_$][\w$]*", params))
+    # Object literal keys (`{ kind, id, name }`) name nothing either.
+    defined |= set(re.findall(r"([A-Za-z_$][\w$]*)\s*:", code))
+    used = set(re.findall(r"[A-Za-z_$][\w$]*", code))
+
+    missing = sorted(used - defined - _JS_GLOBALS - _JS_KEYWORDS)
+
+    assert used, "the script should use variables"
+    assert missing == [], f"app.js uses undefined identifiers: {missing}"
