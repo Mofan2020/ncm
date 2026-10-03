@@ -123,7 +123,7 @@ class NeteaseAPI:
 
     #: Minimum seconds between two outbound API calls.  The endpoints start
     #: answering ``code 400`` when hammered without any pacing.
-    MIN_REQUEST_INTERVAL = 0.30
+    MIN_REQUEST_INTERVAL = 0.15  # Reduced from 0.30 for better responsiveness
     MAX_RETRIES = 3
     PLAYLIST_CACHE_TTL = 300.0
 
@@ -147,6 +147,9 @@ class NeteaseAPI:
         }
 
         self._playlist_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        # Cache for search and other API responses
+        self._response_cache: dict[str, tuple[float, Any]] = {}
+        self._cache_ttl = 60.0  # 60 seconds cache TTL
         #: Reason the last play-url lookup failed ("copyright_unavailable", ...).
         self.last_url_error: str | None = None
 
@@ -224,8 +227,32 @@ class NeteaseAPI:
             self._log(f"eapi returned non-JSON for {path}: {text[:120]!r}", "warning")
             return None
 
-    def _eapi(self, path: str, data: dict[str, Any] | None = None) -> dict[str, Any] | None:
-        """Signed eapi call with retries and host rotation."""
+    def _cache_key(self, path: str, data: dict[str, Any] | None) -> str:
+        """Generate a cache key for an API call."""
+        import hashlib
+        key_data = f"{path}:{str(data or '')}"
+        return hashlib.md5(key_data.encode()).hexdigest()
+
+    def _get_cached(self, cache_key: str) -> Any | None:
+        """Get cached response if still valid."""
+        now = time.time()
+        cached = self._response_cache.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+        return None
+
+    def _set_cached(self, cache_key: str, value: Any) -> None:
+        """Cache a response."""
+        self._response_cache[cache_key] = (time.time() + self._cache_ttl, value)
+
+    def _eapi(self, path: str, data: dict[str, Any] | None = None, use_cache: bool = True) -> dict[str, Any] | None:
+        """Signed eapi call with retries, host rotation, and optional caching."""
+        cache_key = self._cache_key(path, data) if use_cache else None
+        if cache_key:
+            cached = self._get_cached(cache_key)
+            if cached is not None:
+                return cached
+
         for attempt in range(self.MAX_RETRIES):
             result = self._eapi_once(path, data)
             if result is not None:
@@ -237,6 +264,8 @@ class NeteaseAPI:
                     self._switch_host()
                     continue
                 self.stats["successful_requests"] += 1
+                if cache_key:
+                    self._set_cached(cache_key, result)
                 return result
             if attempt < self.MAX_RETRIES - 1:
                 self._switch_host()
@@ -251,11 +280,19 @@ class NeteaseAPI:
         endpoint: str,
         params: dict[str, Any] | None = None,
         method: str = "GET",
+        use_cache: bool = True,
     ) -> dict[str, Any] | None:
         """Call one of the still-served plain ``/api/*`` routes."""
         url = f"{self.LEGACY_HOST}{endpoint}"
         payload = dict(params or {})
         payload.setdefault("timestamp", int(time.time() * 1000))
+        cache_key = self._cache_key(endpoint, payload) if use_cache else None
+        
+        if cache_key:
+            cached = self._get_cached(cache_key)
+            if cached is not None:
+                return cached
+        
         for attempt in range(self.MAX_RETRIES):
             try:
                 if method.upper() == "GET":
@@ -265,6 +302,8 @@ class NeteaseAPI:
                 if resp.status_code == 200 and resp.text.strip():
                     result = resp.json()
                     self.stats["successful_requests"] += 1
+                    if cache_key:
+                        self._set_cached(cache_key, result)
                     return result
                 self._log(f"legacy {endpoint} -> HTTP {resp.status_code} {resp.text[:80]!r}", "warning")
             except requests.exceptions.RequestException as exc:
@@ -412,12 +451,14 @@ class NeteaseAPI:
         limit = max(1, min(int(limit or 30), 100))
         payload = {"s": keyword, "type": 1, "limit": limit, "offset": max(0, int(offset or 0)),
                    "total": "true"}
-        result = self._eapi(SEARCH_ENDPOINT, payload)
+        # Use cache for first page of results only
+        use_cache = offset == 0
+        result = self._eapi(SEARCH_ENDPOINT, payload, use_cache=use_cache)
         songs = ((result or {}).get("result") or {}).get("songs")
         if not songs:
             legacy = self._legacy("/search/get",
                                   {"s": keyword, "type": 1, "limit": limit,
-                                   "offset": max(0, int(offset or 0))})
+                                   "offset": max(0, int(offset or 0))}, use_cache=use_cache)
             songs = ((legacy or {}).get("result") or {}).get("songs")
         return [song for song in (songs or []) if isinstance(song, dict)]
 
@@ -809,6 +850,10 @@ class NeteaseAPI:
 
     def clear_playlist_cache(self) -> None:
         self._playlist_cache.clear()
+
+    def clear_response_cache(self) -> None:
+        """Clear the response cache."""
+        self._response_cache.clear()
 
     def get_request_stats(self) -> dict[str, Any]:
         stats = dict(self.stats)

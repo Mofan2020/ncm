@@ -1634,6 +1634,7 @@ class GuiBridge:
 
             url = f"{html_path.as_uri()}?fontSize={font_size}&color={color}&opacity={opacity}&showTranslation={show_translation}"
 
+            # Use a simpler window configuration for better compatibility
             self._desktop_lyrics_window = self._webview_module.create_window(
                 title="Desktop Lyrics",
                 url=url,
@@ -1645,8 +1646,7 @@ class GuiBridge:
                 frameless=True,
                 easy_drag=True,
                 on_top=True,
-                transparent=True,
-                background_color="#00000000",
+                # Remove transparent/background_color for better compatibility
             )
 
             # Store reference to this bridge for the desktop lyrics window
