@@ -287,12 +287,12 @@ class NeteaseAPI:
         payload = dict(params or {})
         payload.setdefault("timestamp", int(time.time() * 1000))
         cache_key = self._cache_key(endpoint, payload) if use_cache else None
-        
+
         if cache_key:
             cached = self._get_cached(cache_key)
             if cached is not None:
                 return cached
-        
+
         for attempt in range(self.MAX_RETRIES):
             try:
                 if method.upper() == "GET":
