@@ -243,7 +243,7 @@ class Settings:
         ui.desktop_lyrics_opacity = self._clamp_float(ui.desktop_lyrics_opacity, 0.1, 1.0, 0.9)
         if not ui.desktop_lyrics_color or not str(ui.desktop_lyrics_color).startswith("#"):
             ui.desktop_lyrics_color = "#ffffff"
-        setattr(ui, "desktop_lyrics_show_translation", _as_bool(getattr(ui, "desktop_lyrics_show_translation", True)))
+        ui.desktop_lyrics_show_translation = _as_bool(getattr(ui, "desktop_lyrics_show_translation", True))
 
         playback = self._data.playback
         for flag in ("prefer_online", "resume_playback", "report_play_count",

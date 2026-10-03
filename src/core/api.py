@@ -551,12 +551,12 @@ class NeteaseAPI:
         keyword = str(keyword or "").strip()
         if not keyword:
             return {"songs": [], "playlists": [], "artists": [], "albums": [], "mvs": [], "users": [], "lyrics": []}
-        
+
         payload = {"s": keyword, "type": 1000, "limit": limit, "offset": offset, "total": "true"}
         # type=1000 means "all types"
         result = self._eapi(SEARCH_MULTI_ENDPOINT, payload)
         res = (result or {}).get("result") or {}
-        
+
         return {
             "songs": [song for song in (res.get("songs") or []) if isinstance(song, dict)],
             "playlists": [p for p in (res.get("playlists") or []) if isinstance(p, dict)],
@@ -564,7 +564,7 @@ class NeteaseAPI:
             "albums": [a for a in (res.get("albums") or []) if isinstance(a, dict)],
             "mvs": [m for m in (res.get("mvs") or []) if isinstance(m, dict)],
             "users": [u for u in (res.get("userprofiles") or []) if isinstance(u, dict)],
-            "lyrics": [l for l in (res.get("lyrics") or []) if isinstance(l, dict)],
+            "lyrics": [lyric for lyric in (res.get("lyrics") or []) if isinstance(lyric, dict)],
         }
 
     # ----------------------------------------------------------- account music

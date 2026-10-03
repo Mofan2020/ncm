@@ -1410,7 +1410,7 @@ class GuiBridge:
         playlist = next((p for p in lp.playlists if p["id"] == playlist_id), None)
         if not playlist:
             return {"success": False, "error_key": "playlist.not_found"}
-        
+
         # Resolve track keys to track info
         existing_keys = {t.get("key") for t in playlist.get("tracks", [])}
         new_tracks = []
@@ -1428,7 +1428,7 @@ class GuiBridge:
                 # Online track - store minimal info
                 new_tracks.append({"key": key})
                 existing_keys.add(key)
-        
+
         playlist.setdefault("tracks", []).extend(new_tracks)
         playlist["updated_at"] = time.time()
         self.settings.update_local_playlists(playlists=lp.playlists)
@@ -1440,7 +1440,7 @@ class GuiBridge:
         playlist = next((p for p in lp.playlists if p["id"] == playlist_id), None)
         if not playlist:
             return {"success": False, "error_key": "playlist.not_found"}
-        
+
         tracks = playlist.get("tracks", [])
         playlist["tracks"] = [t for t in tracks if t.get("key") not in track_keys]
         playlist["updated_at"] = time.time()
