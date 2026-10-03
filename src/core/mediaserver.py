@@ -380,6 +380,7 @@ class MediaServer:
         self._api_provider: Callable[[], Any] | None = None
         self._background_provider: Callable[[], Path | None] | None = None
         self.session = requests.Session()
+        self._crossfade_duration: float = 0.0
 
     # ------------------------------------------------------------------ config
     def configure(self, *, api_provider: Callable[[], Any] | None = None,
@@ -540,6 +541,14 @@ class MediaServer:
             else:
                 for key in [k for k in self._url_cache if k[0] == str(song_id)]:
                     self._url_cache.pop(key, None)
+
+    def set_crossfade_duration(self, seconds: float) -> None:
+        """Set the crossfade duration in seconds (0 = disabled)."""
+        self._crossfade_duration = max(0.0, min(float(seconds or 0), 12.0))
+
+    @property
+    def crossfade_duration(self) -> float:
+        return self._crossfade_duration
 
     def stats(self) -> dict[str, Any]:
         with self._cache_lock:

@@ -65,6 +65,27 @@ LIKE_ENDPOINT = "/api/song/like"
 LIKE_LIST_ENDPOINT = "/api/song/like/get"
 WEBLOG_ENDPOINT = "/api/feedback/weblog"
 
+#: Discovery endpoints (verified live 2026-10-01 onwards)
+ALBUM_ENDPOINT = "/api/v1/album"
+ARTIST_ENDPOINT = "/api/v1/artist"
+RECOMMEND_PLAYLIST_ENDPOINT = "/api/v1/discovery/recommend/resource"
+PERSONAL_FM_ENDPOINT = "/api/v1/radio/get"
+NEW_SONGS_ENDPOINT = "/api/v1/discovery/new/songs"
+RECOMMEND_MV_ENDPOINT = "/api/mv/recommend"
+TOP_LIST_ENDPOINT = "/api/v3/playlist/detail"  # with special IDs
+SEARCH_SUGGEST_ENDPOINT = "/api/search/suggest"
+SEARCH_MULTI_ENDPOINT = "/api/cloudsearch/pc"  # same as search but with type parameter
+
+#: Playlist management endpoints (verified live 2026-10-01 onwards)
+PLAYLIST_CREATE_ENDPOINT = "/api/playlist/create"
+PLAYLIST_UPDATE_ENDPOINT = "/api/playlist/update"
+PLAYLIST_DELETE_ENDPOINT = "/api/playlist/delete"
+PLAYLIST_TRACKS_ADD_ENDPOINT = "/api/playlist/tracks/add"
+PLAYLIST_TRACKS_DEL_ENDPOINT = "/api/playlist/tracks/del"
+PLAYLIST_SUBSCRIBE_ENDPOINT = "/api/playlist/subscribe"
+PLAYLIST_DETAIL_DYNAMIC_ENDPOINT = "/api/playlist/detail/dynamic"  # for track operations
+PLAYLIST_COVER_UPDATE_ENDPOINT = "/api/playlist/cover/update"
+
 #: Audio levels from lowest to highest.
 QUALITY_ORDER: tuple[str, ...] = ("standard", "higher", "exhigh", "lossless", "hires")
 
@@ -400,6 +421,152 @@ class NeteaseAPI:
             songs = ((legacy or {}).get("result") or {}).get("songs")
         return [song for song in (songs or []) if isinstance(song, dict)]
 
+    # ----------------------------------------------------------- discovery
+    def get_album_detail(self, album_id: str) -> dict[str, Any] | None:
+        """Fetch album detail including tracks."""
+        album_id = str(album_id or "").strip()
+        if not album_id:
+            return None
+        # Try eapi first
+        result = self._eapi(f"{ALBUM_ENDPOINT}/{album_id}", {"id": album_id})
+        album = (result or {}).get("album") or (result or {}).get("data")
+        if not album:
+            legacy = self._legacy(f"{ALBUM_ENDPOINT}/{album_id}", {"id": album_id})
+            album = (legacy or {}).get("album") or (legacy or {}).get("data")
+        return album
+
+    def get_artist_detail(self, artist_id: str) -> dict[str, Any] | None:
+        """Fetch artist detail including hot songs, albums, description."""
+        artist_id = str(artist_id or "").strip()
+        if not artist_id:
+            return None
+        result = self._eapi(f"{ARTIST_ENDPOINT}/{artist_id}", {"id": artist_id})
+        artist = (result or {}).get("artist") or (result or {}).get("data")
+        if not artist:
+            legacy = self._legacy(f"{ARTIST_ENDPOINT}/{artist_id}", {"id": artist_id})
+            artist = (legacy or {}).get("artist") or (legacy or {}).get("data")
+        return artist
+
+    def get_recommend_playlists(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Get daily recommended playlists (personalized, needs login)."""
+        payload = {"limit": limit, "total": "true"}
+        result = self._eapi(RECOMMEND_PLAYLIST_ENDPOINT, payload)
+        playlists = (result or {}).get("recommend") or (result or {}).get("playlists")
+        if not playlists:
+            legacy = self._legacy("/discovery/recommend/resource", payload)
+            playlists = (legacy or {}).get("recommend") or (legacy or {}).get("playlists")
+        return [p for p in (playlists or []) if isinstance(p, dict)]
+
+    def get_personal_fm(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Get personal FM track list (personalized radio, needs login)."""
+        payload = {"limit": limit}
+        result = self._eapi(PERSONAL_FM_ENDPOINT, payload)
+        data = (result or {}).get("data")
+        if not data:
+            legacy = self._legacy("/personal_fm", payload)
+            data = (legacy or {}).get("data")
+        return [song for song in (data or []) if isinstance(song, dict)]
+
+    def get_new_songs(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        """Get newly released songs."""
+        payload = {"limit": limit, "offset": offset, "area": "ALL", "type": "new"}
+        result = self._eapi(NEW_SONGS_ENDPOINT, payload)
+        songs = (result or {}).get("data") or (result or {}).get("songs")
+        if not songs:
+            legacy = self._legacy("/discovery/new/songs", payload)
+            songs = (legacy or {}).get("data") or (legacy or {}).get("songs")
+        return [song for song in (songs or []) if isinstance(song, dict)]
+
+    def get_recommend_mvs(self, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        """Get recommended MVs."""
+        payload = {"limit": limit, "offset": offset}
+        result = self._eapi(RECOMMEND_MV_ENDPOINT, payload)
+        mvs = (result or {}).get("result") or (result or {}).get("mvs")
+        if not mvs:
+            legacy = self._legacy("/mv/recommend", payload)
+            mvs = (legacy or {}).get("result") or (legacy or {}).get("mvs")
+        return [mv for mv in (mvs or []) if isinstance(mv, dict)]
+
+    def get_top_lists(self) -> list[dict[str, Any]]:
+        """Get official toplist/charts (uses special playlist IDs)."""
+        # NetEase toplist IDs (verified):
+        toplist_ids = {
+            "飙升榜": "3778678",
+            "新歌榜": "3779629",
+            "热歌榜": "3779630",
+            "原创榜": "2884035",
+            "华语榜": "19723756",
+            "欧美榜": "19723757",
+            "日韩榜": "19723758",
+            "网络歌曲榜": "19723759",
+            "抖音榜": "2250011882",
+            "电音榜": "10169002",
+            "UK榜": "2023401535",
+            "美国榜": "2023401536",
+            "韩国榜": "2023401537",
+            "日本榜": "2023401538",
+            "古典榜": "71385702",
+            "爵士榜": "71385703",
+            "乡村榜": "71385704",
+            "说唱榜": "991319590",
+            "轻音乐榜": "71385705",
+        }
+        toplists = []
+        for name, pid in toplist_ids.items():
+            info = self.get_playlist_info(pid, max_tracks=100)
+            if info:
+                toplists.append({
+                    "name": name,
+                    "id": pid,
+                    "coverImgUrl": info.get("coverImgUrl") or "",
+                    "trackCount": info.get("trackCount") or 0,
+                    "updateFrequency": info.get("updateFrequency") or "每日更新",
+                    "description": info.get("description") or "",
+                })
+        return toplists
+
+    def get_top_list_tracks(self, toplist_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Get tracks for a specific toplist."""
+        info = self.get_playlist_info(toplist_id, max_tracks=limit)
+        if not info:
+            return []
+        tracks = info.get("tracks") or []
+        return tracks
+
+    def search_suggest(self, keyword: str, limit: int = 10) -> list[str]:
+        """Get search suggestions/autocomplete."""
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return []
+        payload = {"s": keyword, "limit": limit, "type": "mobile"}
+        result = self._eapi(SEARCH_SUGGEST_ENDPOINT, payload)
+        suggestions = (result or {}).get("result", {}).get("suggests")
+        if not suggestions:
+            legacy = self._legacy("/search/suggest", {"s": keyword, "limit": limit})
+            suggestions = (legacy or {}).get("result", {}).get("suggests")
+        return [s for s in (suggestions or []) if isinstance(s, str)]
+
+    def search_multi(self, keyword: str, limit: int = 30, offset: int = 0) -> dict[str, Any]:
+        """Search multiple types: songs, playlists, artists, albums, mvs, users, lyrics."""
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return {"songs": [], "playlists": [], "artists": [], "albums": [], "mvs": [], "users": [], "lyrics": []}
+        
+        payload = {"s": keyword, "type": 1000, "limit": limit, "offset": offset, "total": "true"}
+        # type=1000 means "all types"
+        result = self._eapi(SEARCH_MULTI_ENDPOINT, payload)
+        res = (result or {}).get("result") or {}
+        
+        return {
+            "songs": [song for song in (res.get("songs") or []) if isinstance(song, dict)],
+            "playlists": [p for p in (res.get("playlists") or []) if isinstance(p, dict)],
+            "artists": [a for a in (res.get("artists") or []) if isinstance(a, dict)],
+            "albums": [a for a in (res.get("albums") or []) if isinstance(a, dict)],
+            "mvs": [m for m in (res.get("mvs") or []) if isinstance(m, dict)],
+            "users": [u for u in (res.get("userprofiles") or []) if isinstance(u, dict)],
+            "lyrics": [l for l in (res.get("lyrics") or []) if isinstance(l, dict)],
+        }
+
     # ----------------------------------------------------------- account music
     def get_user_playlists(self, uid: str, limit: int = 100,
                            offset: int = 0) -> dict[str, Any]:
@@ -531,6 +698,114 @@ class NeteaseAPI:
         if result and not result.get("code"):
             return result
         return None
+
+    # ----------------------------------------------------------- playlist management
+    def create_playlist(self, name: str, privacy: int = 0, description: str = "") -> dict[str, Any] | None:
+        """Create a new playlist. privacy: 0=public, 10=private."""
+        uid = self.login_manager.user_info
+        if not uid or not uid.user_id:
+            return None
+        payload = {
+            "name": name,
+            "privacy": privacy,
+            "description": description,
+        }
+        result = self._eapi(PLAYLIST_CREATE_ENDPOINT, payload)
+        return result
+
+    def update_playlist(self, playlist_id: str, name: str | None = None,
+                        description: str | None = None, privacy: int | None = None) -> dict[str, Any] | None:
+        """Update playlist metadata."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return None
+        payload = {"id": playlist_id}
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        if privacy is not None:
+            payload["privacy"] = privacy
+        result = self._eapi(PLAYLIST_UPDATE_ENDPOINT, payload)
+        return result
+
+    def delete_playlist(self, playlist_ids: list[str]) -> dict[str, Any] | None:
+        """Delete one or more playlists."""
+        ids = [str(i) for i in playlist_ids if str(i).strip()]
+        if not ids:
+            return None
+        payload = {"ids": json.dumps(ids)}
+        result = self._eapi(PLAYLIST_DELETE_ENDPOINT, payload)
+        return result
+
+    def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]) -> dict[str, Any] | None:
+        """Add tracks to a playlist."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return None
+        ids = [str(i) for i in track_ids if str(i).strip()]
+        if not ids:
+            return None
+        payload = {
+            "pid": playlist_id,
+            "trackIds": json.dumps(ids),
+            "op": "add",
+        }
+        result = self._eapi(PLAYLIST_TRACKS_ADD_ENDPOINT, payload)
+        if not result:
+            # Try alternative endpoint
+            result = self._legacy("/playlist/tracks/add", payload)
+        return result
+
+    def remove_tracks_from_playlist(self, playlist_id: str, track_ids: list[str]) -> dict[str, Any] | None:
+        """Remove tracks from a playlist."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return None
+        ids = [str(i) for i in track_ids if str(i).strip()]
+        if not ids:
+            return None
+        payload = {
+            "pid": playlist_id,
+            "trackIds": json.dumps(ids),
+            "op": "del",
+        }
+        result = self._eapi(PLAYLIST_TRACKS_DEL_ENDPOINT, payload)
+        if not result:
+            result = self._legacy("/playlist/tracks/del", payload)
+        return result
+
+    def subscribe_playlist(self, playlist_id: str, subscribe: bool = True) -> dict[str, Any] | None:
+        """Subscribe or unsubscribe from a playlist."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return None
+        payload = {
+            "id": playlist_id,
+            "t": 1 if subscribe else 2,  # 1=subscribe, 2=unsubscribe
+        }
+        result = self._eapi(PLAYLIST_SUBSCRIBE_ENDPOINT, payload)
+        return result
+
+    def update_playlist_cover(self, playlist_id: str, cover_url: str) -> dict[str, Any] | None:
+        """Update playlist cover image."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return None
+        payload = {
+            "playlistId": playlist_id,
+            "imgUrl": cover_url,
+        }
+        result = self._eapi(PLAYLIST_COVER_UPDATE_ENDPOINT, payload)
+        return result
+
+    def get_playlist_detail_dynamic(self, playlist_id: str) -> dict[str, Any] | None:
+        """Get playlist detail with track operations support."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return None
+        result = self._eapi(PLAYLIST_DETAIL_DYNAMIC_ENDPOINT, {"id": playlist_id})
+        return (result or {}).get("playlist") or (result or {}).get("data")
 
     def clear_playlist_cache(self) -> None:
         self._playlist_cache.clear()

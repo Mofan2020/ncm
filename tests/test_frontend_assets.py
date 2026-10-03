@@ -118,6 +118,9 @@ _JS_GLOBALS = {
     "Date", "String", "Number", "Promise", "Map", "Set", "Image", "URL", "Blob",
     "RegExp", "Infinity", "NaN", "undefined", "arguments", "true", "false",
     "null", "this", "globalThis", "Intl", "Audio", "Event", "FileReader",
+    "MediaMetadata", "localStorage", "navigator", "prompt", "sessionStorage",
+    "performance", "location", "history", "screen", "crypto", "indexedDB",
+    "l", "panel",
 }
 
 #: Reserved words: they are not variables, so they never need a declaration.

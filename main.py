@@ -275,6 +275,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     bridge = GuiBridge()
+    # Inject webview module for desktop lyrics window creation
+    bridge._webview_module = webview
     width, height, x, y = _initial_geometry(
         settings.ui.window_width or DEFAULT_SIZE[0],
         settings.ui.window_height or DEFAULT_SIZE[1],

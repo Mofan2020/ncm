@@ -174,8 +174,11 @@
             <div class="player-layout">
                 <aside class="player-side glass">
                     <div class="source-search inline-form">
-                        <input type="search" id="search-input" data-i18n-placeholder="player.search_placeholder"
-                               autocomplete="off" spellcheck="false">
+                        <div class="search-wrapper">
+                            <input type="search" id="search-input" data-i18n-placeholder="player.search_placeholder"
+                                   autocomplete="off" spellcheck="false">
+                            <div class="search-suggest" id="search-suggest" hidden></div>
+                        </div>
                         <button id="btn-search" class="btn btn-primary" type="button"
                                 data-i18n="player.search_btn"></button>
                     </div>
@@ -185,6 +188,18 @@
                                 data-i18n="player.source_playlists"></button>
                         <button class="source-tab" type="button" data-source="liked"
                                 data-i18n="player.source_liked"></button>
+                        <button class="source-tab" type="button" data-source="recommend"
+                                data-i18n="player.source_recommend"></button>
+                        <button class="source-tab" type="button" data-source="personal_fm"
+                                data-i18n="player.source_personal_fm"></button>
+                        <button class="source-tab" type="button" data-source="new_songs"
+                                data-i18n="player.source_new_songs"></button>
+                        <button class="source-tab" type="button" data-source="recommend_mv"
+                                data-i18n="player.source_recommend_mv"></button>
+                        <button class="source-tab" type="button" data-source="toplist"
+                                data-i18n="player.source_toplist"></button>
+                        <button class="source-tab" type="button" data-source="local_playlists"
+                                data-i18n="player.source_local_playlists"></button>
                         <button class="source-tab" type="button" data-source="local"
                                 data-i18n="player.source_local"></button>
                         <button class="source-tab" type="button" data-source="recent"
@@ -198,13 +213,38 @@
                                 data-i18n-title="player.back" aria-label="back">‹</button>
                         <span id="list-title" class="list-title"></span>
                         <span id="list-count" class="muted"></span>
+                        <div class="source-head-actions" id="playlist-head-actions" hidden>
+                            <button id="btn-create-playlist" class="btn btn-sm btn-primary" type="button"
+                                    data-i18n="player.playlist_create"></button>
+                        </div>
                     </div>
+
+                    <!-- Multi-search type tabs (shown when search source is active) -->
+                    <nav class="search-type-tabs" id="search-type-tabs" hidden>
+                        <button class="search-type-tab is-active" type="button" data-type="all"
+                                data-i18n="player.search_multi_all"></button>
+                        <button class="search-type-tab" type="button" data-type="songs"
+                                data-i18n="player.search_multi_songs"></button>
+                        <button class="search-type-tab" type="button" data-type="playlists"
+                                data-i18n="player.search_multi_playlists"></button>
+                        <button class="search-type-tab" type="button" data-type="artists"
+                                data-i18n="player.search_multi_artists"></button>
+                        <button class="search-type-tab" type="button" data-type="albums"
+                                data-i18n="player.search_multi_albums"></button>
+                        <button class="search-type-tab" type="button" data-type="mvs"
+                                data-i18n="player.search_multi_mvs"></button>
+                    </nav>
 
                     <div class="source-actions" id="local-actions" hidden>
                         <button id="btn-add-folder" class="btn btn-sm" type="button"
                                 data-i18n="player.add_folder"></button>
                         <button id="btn-rescan" class="btn btn-sm" type="button"
                                 data-i18n="player.rescan"></button>
+                    </div>
+
+                    <div class="source-actions" id="local-playlist-actions" hidden>
+                        <button id="btn-create-local-playlist" class="btn btn-sm btn-primary" type="button"
+                                data-i18n="player.playlist_create"></button>
                     </div>
 
                     <div class="list-area">
@@ -238,8 +278,18 @@
                     <section class="lyrics-panel glass">
                         <div class="lyrics-head">
                             <span id="lyrics-source" class="muted"></span>
-                            <button id="btn-save-lyrics" class="btn btn-sm" type="button" hidden
-                                    data-i18n="lyrics.save"></button>
+                            <div class="lyrics-controls">
+                                <button id="btn-lyrics-dual" class="btn btn-sm" type="button"
+                                        data-i18n-title="lyrics.dual_line" aria-label="dual-line">⎯</button>
+                                <button id="btn-lyrics-karaoke" class="btn btn-sm" type="button"
+                                        data-i18n-title="lyrics.karaoke" aria-label="karaoke">♪</button>
+                                <button id="btn-save-lyrics" class="btn btn-sm" type="button" hidden
+                                        data-i18n="lyrics.save"></button>
+                                <button id="btn-desktop-lyrics" class="btn btn-sm" type="button"
+                                        data-i18n="player.desktop_lyrics_open"></button>
+                                <button id="btn-edit-lyrics" class="btn btn-sm" type="button"
+                                        data-i18n="lyrics.edit"></button>
+                            </div>
                         </div>
                         <div class="lyrics" id="lyrics-scroll">
                             <p class="empty" id="lyrics-empty" data-i18n="lyrics.none"></p>
@@ -247,6 +297,24 @@
                     </section>
                 </div>
             </div>
+
+            <!-- Queue drawer (slides from right) -->
+            <aside class="queue-drawer glass" id="queue-drawer" hidden>
+                <div class="queue-drawer-head">
+                    <h3 data-i18n="player.queue_title"></h3>
+                    <div class="queue-drawer-actions">
+                        <button id="btn-queue-save" class="btn btn-sm" type="button" data-i18n="player.queue_save_playlist"></button>
+                        <button id="btn-queue-clear" class="btn btn-sm btn-ghost" type="button" data-i18n="player.queue_clear"></button>
+                        <button id="btn-queue-close" class="btn btn-icon" type="button" data-i18n-title="common.close" aria-label="close">✕</button>
+                    </div>
+                </div>
+                <div class="queue-drawer-body">
+                    <div class="queue-drawer-list" id="queue-drawer-list">
+                        <p class="empty" data-i18n="player.queue_empty"></p>
+                    </div>
+                </div>
+            </aside>
+            <div class="queue-drawer-backdrop" id="queue-drawer-backdrop" hidden></div>
         </section>
     </main>
 
@@ -262,6 +330,8 @@
 
         <div class="pb-center">
             <div class="pb-buttons">
+                <button id="pb-queue" class="btn btn-icon" type="button"
+                        data-i18n-title="player.queue_title" aria-label="queue">☰</button>
                 <button id="pb-mode" class="btn btn-icon" type="button" title=""></button>
                 <button id="pb-prev" class="btn btn-icon" type="button"
                         data-i18n-title="player.prev" aria-label="previous">⏮</button>
@@ -273,6 +343,10 @@
                         data-i18n-title="player.favorite" aria-label="favorite">♡</button>
                 <button id="pb-download" class="btn btn-icon" type="button"
                         data-i18n-title="player.download" aria-label="download">⤓</button>
+                <button id="pb-desktop-lyrics" class="btn btn-icon" type="button"
+                        data-i18n-title="player.desktop_lyrics_open" aria-label="desktop lyrics">📝</button>
+                <button id="pb-sleep-timer" class="btn btn-icon" type="button"
+                        data-i18n-title="player.sleep_timer" aria-label="sleep timer">🌙</button>
             </div>
             <div class="pb-progress">
                 <span id="pb-current" class="time">0:00</span>
@@ -453,6 +527,70 @@
                 </label>
 
                 <div class="group">
+                    <h3 class="group-title" data-i18n="settings.crossfade_duration"></h3>
+                    <label class="option">
+                        <span data-i18n="settings.crossfade_duration"> <span id="crossfade-value" class="muted"></span></span>
+                        <input type="range" id="crossfade-duration" min="0" max="12" step="0.5" value="0">
+                    </label>
+                    <p class="muted" data-i18n="settings.crossfade_hint"></p>
+                </div>
+
+                <div class="group">
+                    <h3 class="group-title" data-i18n="settings.exclusive_mode"></h3>
+                    <label class="option">
+                        <span data-i18n="settings.exclusive_mode"></span>
+                        <select id="exclusive-mode-select">
+                            <option value="off" data-i18n="player.exclusive_mode_off"></option>
+                            <option value="wasapi" data-i18n="player.exclusive_mode_wasapi"></option>
+                            <option value="coreaudio" data-i18n="player.exclusive_mode_coreaudio"></option>
+                            <option value="auto" data-i18n="player.exclusive_mode_auto"></option>
+                        </select>
+                    </label>
+                    <p class="muted" data-i18n="settings.exclusive_mode_hint"></p>
+                </div>
+
+                <div class="group">
+                    <h3 class="group-title" data-i18n="settings.sleep_timer"></h3>
+                    <label class="option">
+                        <span data-i18n="settings.sleep_timer"></span>
+                        <select id="sleep-timer-select">
+                            <option value="0" data-i18n="player.sleep_timer_off"></option>
+                            <option value="15" data-i18n="player.sleep_timer_15"></option>
+                            <option value="30" data-i18n="player.sleep_timer_30"></option>
+                            <option value="60" data-i18n="player.sleep_timer_60"></option>
+                            <option value="90" data-i18n="player.sleep_timer_90"></option>
+                            <option value="120" data-i18n="player.sleep_timer_120"></option>
+                            <option value="track" data-i18n="player.sleep_timer_track"></option>
+                        </select>
+                    </label>
+                </div>
+
+                <div class="group">
+                    <h3 class="group-title" data-i18n="settings.desktop_lyrics"></h3>
+                    <label class="option">
+                        <span data-i18n="settings.desktop_lyrics_font_size"></span>
+                        <input type="range" id="desktop-lyrics-font-size" min="10" max="36" step="1" value="18">
+                    </label>
+                    <label class="option">
+                        <span data-i18n="settings.desktop_lyrics_color"></span>
+                        <input type="color" id="desktop-lyrics-color" value="#ffffff">
+                    </label>
+                    <label class="option">
+                        <span data-i18n="settings.desktop_lyrics_opacity"> <span id="desktop-lyrics-opacity-value" class="muted"></span></span>
+                        <input type="range" id="desktop-lyrics-opacity" min="0.1" max="1" step="0.05" value="0.9">
+                    </label>
+                    <label class="option checkbox">
+                        <input type="checkbox" id="desktop-lyrics-translation-check" checked>
+                        <span data-i18n="settings.desktop_lyrics_show_translation"></span>
+                    </label>
+                    <label class="option">
+                        <span data-i18n="settings.lyrics_offset"> <span id="lyrics-offset-value" class="muted"></span></span>
+                        <input type="range" id="lyrics-offset" min="-5000" max="5000" step="100" value="0">
+                    </label>
+                    <p class="muted" data-i18n="settings.lyrics_offset_hint"></p>
+                </div>
+
+                <div class="group">
                     <h3 class="group-title" data-i18n="settings.local_music"></h3>
                     <p class="muted" data-i18n="settings.local_music_hint"></p>
                     <div class="folder-list" id="folder-list"></div>
@@ -470,6 +608,11 @@
                     <p class="muted" id="play-stats-text"></p>
                     <button id="btn-reset-counts" class="btn btn-danger btn-sm" type="button"
                             data-i18n="settings.reset_play_counts"></button>
+                </div>
+
+                <div class="group">
+                    <h3 class="group-title" data-i18n="settings.playback_stats"></h3>
+                    <div id="playback-stats-dashboard"></div>
                 </div>
             </div>
 
@@ -557,6 +700,250 @@
                     data-i18n="common.cancel"></button>
             <button id="btn-confirm-ok" class="btn btn-danger" type="button"
                     data-i18n="common.ok"></button>
+        </footer>
+    </div>
+</div>
+
+<!-- ============ playlist detail modal ============ -->
+<div class="modal" id="playlist-detail-modal" hidden>
+    <div class="modal-backdrop" data-close="playlist-detail-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="player.playlist_manage"></h2>
+            <button class="btn btn-icon" type="button" data-close="playlist-detail-modal">✕</button>
+        </header>
+        <div class="modal-body">
+            <div class="playlist-detail-tabs">
+                <button class="playlist-detail-tab is-active" type="button" data-tab="info" data-i18n="player.playlist_info"></button>
+                <button class="playlist-detail-tab" type="button" data-tab="tracks" data-i18n="player.playlist_tracks"></button>
+                <button class="playlist-detail-tab" type="button" data-tab="smart" data-i18n="player.smart_playlist_rules"></button>
+            </div>
+            
+            <!-- Info tab -->
+            <div class="playlist-detail-panel is-active" data-panel="info">
+                <label class="option">
+                    <span data-i18n="player.playlist_cover"></span>
+                    <div class="inline-form">
+                        <input type="text" id="playlist-cover-input" readonly placeholder="封面图片 URL">
+                        <button id="btn-choose-playlist-cover" class="btn btn-secondary btn-sm" type="button" data-i18n="settings.choose_background"></button>
+                        <button id="btn-clear-playlist-cover" class="btn btn-ghost btn-sm" type="button" data-i18n="settings.clear_background"></button>
+                    </div>
+                </label>
+                <label class="option">
+                    <span data-i18n="player.playlist_name"></span>
+                    <input type="text" id="playlist-name-input" placeholder="歌单名称">
+                </label>
+                <label class="option">
+                    <span data-i18n="player.playlist_description"></span>
+                    <textarea id="playlist-description-input" rows="3" placeholder="歌单描述"></textarea>
+                </label>
+                <label class="option">
+                    <span data-i18n="player.playlist_privacy"></span>
+                    <select id="playlist-privacy-select">
+                        <option value="0" data-i18n="player.playlist_privacy_public"></option>
+                        <option value="10" data-i18n="player.playlist_privacy_private"></option>
+                    </select>
+                </label>
+            </div>
+            
+            <!-- Tracks tab -->
+            <div class="playlist-detail-panel" data-panel="tracks" hidden>
+                <div class="playlist-tracks-toolbar">
+                    <button id="btn-playlist-add-tracks" class="btn btn-sm btn-primary" type="button" data-i18n="player.playlist_add_tracks"></button>
+                    <button id="btn-playlist-remove-selected" class="btn btn-sm btn-danger" type="button" hidden data-i18n="player.playlist_remove_tracks"></button>
+                    <button id="btn-playlist-sort" class="btn btn-sm" type="button" data-i18n="player.playlist_sort"></button>
+                    <select id="playlist-sort-select" class="sort-select" hidden>
+                        <option value="manual" data-i18n="player.sort_manual"></option>
+                        <option value="name" data-i18n="player.sort_name"></option>
+                        <option value="artist" data-i18n="player.sort_artist"></option>
+                        <option value="album" data-i18n="player.sort_album"></option>
+                        <option value="date_added" data-i18n="player.sort_date_added"></option>
+                    </select>
+                </div>
+                <div class="playlist-tracks-list" id="playlist-tracks-list"></div>
+            </div>
+            
+            <!-- Smart playlist tab -->
+            <div class="playlist-detail-panel" data-panel="smart" hidden>
+                <p class="muted" data-i18n="player.smart_playlist_hint"></p>
+                <div class="smart-rules" id="smart-rules-list"></div>
+                <button id="btn-add-smart-rule" class="btn btn-sm btn-primary" type="button" data-i18n="player.smart_playlist_add_rule"></button>
+                <div class="smart-rule-preview">
+                    <span data-i18n="player.smart_playlist_preview"></span>
+                    <span id="smart-rule-preview-count" class="muted">0 首</span>
+                </div>
+            </div>
+        </div>
+        <footer class="modal-foot">
+            <button id="btn-playlist-import" class="btn btn-sm" type="button" data-i18n="player.playlist_import"></button>
+            <button id="btn-playlist-export" class="btn btn-sm" type="button" data-i18n="player.playlist_export"></button>
+            <button id="btn-playlist-sync" class="btn btn-sm btn-primary" type="button" data-i18n="player.playlist_sync"></button>
+            <button id="btn-playlist-save" class="btn btn-primary" type="button" data-i18n="common.save"></button>
+        </footer>
+    </div>
+</div>
+
+<!-- ============ add tracks to playlist modal ============ -->
+<div class="modal" id="playlist-add-tracks-modal" hidden>
+    <div class="modal-backdrop" data-close="playlist-add-tracks-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="player.playlist_add_tracks"></h2>
+            <button class="btn btn-icon" type="button" data-close="playlist-add-tracks-modal">✕</button>
+        </header>
+        <div class="modal-body">
+            <div class="source-search inline-form">
+                <input type="search" id="playlist-add-tracks-search" data-i18n-placeholder="player.search_placeholder" autocomplete="off" spellcheck="false">
+                <button id="btn-playlist-add-tracks-search" class="btn btn-primary btn-sm" type="button" data-i18n="player.search_btn"></button>
+            </div>
+            <div class="playlist-add-tracks-tabs">
+                <button class="playlist-add-tracks-tab is-active" type="button" data-source="library" data-i18n="player.source_local"></button>
+                <button class="playlist-add-tracks-tab" type="button" data-source="liked" data-i18n="player.source_liked"></button>
+                <button class="playlist-add-tracks-tab" type="button" data-source="recent" data-i18n="player.source_recent"></button>
+            </div>
+            <div class="playlist-add-tracks-list" id="playlist-add-tracks-list"></div>
+        </div>
+        <footer class="modal-foot">
+            <span id="playlist-add-tracks-selected-count" class="muted">0 首已选</span>
+            <button id="btn-playlist-add-tracks-confirm" class="btn btn-primary" type="button" data-i18n="common.ok"></button>
+        </footer>
+    </div>
+</div>
+
+<!-- ============ smart rule editor modal ============ -->
+<div class="modal" id="smart-rule-modal" hidden>
+    <div class="modal-backdrop" data-close="smart-rule-modal"></div>
+    <div class="modal-box modal-box-sm glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="player.smart_playlist_add_rule"></h2>
+            <button class="btn btn-icon" type="button" data-close="smart-rule-modal">✕</button>
+        </header>
+        <div class="modal-body">
+            <label class="option">
+                <span data-i18n="player.smart_playlist_rule_field"></span>
+                <select id="smart-rule-field">
+                    <option value="play_count" data-i18n="player.field_play_count"></option>
+                    <option value="is_favorite" data-i18n="player.field_is_favorite"></option>
+                    <option value="artist" data-i18n="player.field_artist"></option>
+                    <option value="album" data-i18n="player.field_album"></option>
+                    <option value="genre" data-i18n="player.field_genre"></option>
+                    <option value="year" data-i18n="player.field_year"></option>
+                    <option value="rating" data-i18n="player.field_rating"></option>
+                    <option value="last_played" data-i18n="player.field_last_played"></option>
+                    <option value="date_added" data-i18n="player.field_date_added"></option>
+                </select>
+            </label>
+            <label class="option">
+                <span data-i18n="player.smart_playlist_rule_operator"></span>
+                <select id="smart-rule-operator">
+                    <option value="gt" data-i18n="player.op_gt"></option>
+                    <option value="lt" data-i18n="player.op_lt"></option>
+                    <option value="eq" data-i18n="player.op_eq"></option>
+                    <option value="ne" data-i18n="player.op_ne"></option>
+                    <option value="contains" data-i18n="player.op_contains"></option>
+                    <option value="not_contains" data-i18n="player.op_not_contains"></option>
+                    <option value="in_range" data-i18n="player.op_in_range"></option>
+                </select>
+            </label>
+            <label class="option" id="smart-rule-value-container">
+                <span data-i18n="player.smart_playlist_rule_value"></span>
+                <input type="text" id="smart-rule-value" placeholder="值">
+            </label>
+            <label class="option" id="smart-rule-value2-container" hidden>
+                <span>到</span>
+                <input type="text" id="smart-rule-value2" placeholder="最大值">
+            </label>
+        </div>
+        <footer class="modal-foot">
+            <button id="btn-smart-rule-cancel" class="btn btn-ghost" type="button" data-i18n="common.cancel"></button>
+            <button id="btn-smart-rule-ok" class="btn btn-primary" type="button" data-i18n="common.ok"></button>
+        </footer>
+    </div>
+</div>
+
+<!-- ============ import/export playlist modal ============ -->
+<div class="modal" id="playlist-ie-modal" hidden>
+    <div class="modal-backdrop" data-close="playlist-ie-modal"></div>
+    <div class="modal-box modal-box-sm glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 id="playlist-ie-title"></h2>
+            <button class="btn btn-icon" type="button" data-close="playlist-ie-modal">✕</button>
+        </header>
+        <div class="modal-body">
+            <div class="playlist-ie-tabs">
+                <button class="playlist-ie-tab is-active" type="button" data-mode="import" data-i18n="player.playlist_import"></button>
+                <button class="playlist-ie-tab" type="button" data-mode="export" data-i18n="player.playlist_export"></button>
+            </div>
+            <div class="playlist-ie-panels">
+                <div class="playlist-ie-panel is-active" data-panel="import">
+                    <label class="option">
+                        <span data-i18n="player.playlist_import_format"></span>
+                        <select id="playlist-import-format">
+                            <option value="m3u" data-i18n="player.playlist_export_format_m3u"></option>
+                            <option value="json" data-i18n="player.playlist_export_format_json"></option>
+                            <option value="pls" data-i18n="player.playlist_export_format_pls"></option>
+                        </select>
+                    </label>
+                    <label class="option">
+                        <span data-i18n="player.playlist_import_file"></span>
+                        <input type="file" id="playlist-import-file" accept=".m3u,.m3u8,.json,.pls">
+                    </label>
+                    <label class="option checkbox">
+                        <input type="checkbox" id="playlist-import-merge" checked>
+                        <span data-i18n="player.playlist_import_merge"></span>
+                    </label>
+                </div>
+                <div class="playlist-ie-panel" data-panel="export" hidden>
+                    <label class="option">
+                        <span data-i18n="player.playlist_export_format"></span>
+                        <select id="playlist-export-format">
+                            <option value="m3u" data-i18n="player.playlist_export_format_m3u"></option>
+                            <option value="json" data-i18n="player.playlist_export_format_json"></option>
+                            <option value="pls" data-i18n="player.playlist_export_format_pls"></option>
+                        </select>
+                    </label>
+                    <label class="option">
+                        <span data-i18n="player.playlist_export_playlist"></span>
+                        <select id="playlist-export-select"></select>
+                    </label>
+                    <label class="option checkbox">
+                        <input type="checkbox" id="playlist-export-extended" checked>
+                        <span data-i18n="player.playlist_export_extended"></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+        <footer class="modal-foot">
+            <button id="btn-playlist-ie-cancel" class="btn btn-ghost" type="button" data-i18n="common.cancel"></button>
+            <button id="btn-playlist-ie-confirm" class="btn btn-primary" type="button" data-i18n="common.ok"></button>
+        </footer>
+    </div>
+</div>
+
+</div>
+
+<!-- ============ lyrics editor modal ============ -->
+<div class="modal" id="lyrics-editor-modal" hidden>
+    <div class="modal-backdrop" data-close="lyrics-editor-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="lyrics.editor_title"></h2>
+            <button class="btn btn-icon" type="button" data-close="lyrics-editor-modal">✕</button>
+        </header>
+        <div class="modal-body">
+            <div class="lyrics-editor-toolbar">
+                <button id="btn-lyrics-editor-play" class="btn btn-sm" type="button" data-i18n-title="player.play" aria-label="play">▶</button>
+                <button id="btn-lyrics-editor-pause" class="btn btn-sm" type="button" hidden data-i18n-title="player.pause" aria-label="pause">❚❚</button>
+                <input type="range" id="lyrics-editor-seek" min="0" max="100" step="1" value="0" style="flex: 1;">
+                <span id="lyrics-editor-time" class="muted">0:00 / 0:00</span>
+            </div>
+            <div class="lyrics-editor-timeline" id="lyrics-editor-timeline"></div>
+            <div class="lyrics-editor-lines" id="lyrics-editor-lines"></div>
+        </div>
+        <footer class="modal-foot">
+            <button id="btn-lyrics-editor-cancel" class="btn btn-ghost" type="button" data-i18n="common.cancel"></button>
+            <button id="btn-lyrics-editor-apply" class="btn btn-primary" type="button" data-i18n="lyrics.editor_apply"></button>
+            <button id="btn-lyrics-editor-save" class="btn btn-primary" type="button" data-i18n="lyrics.editor_save"></button>
         </footer>
     </div>
 </div>

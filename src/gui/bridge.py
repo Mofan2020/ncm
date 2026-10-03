@@ -83,6 +83,7 @@ class GuiBridge:
         #: Hook installed by main.py so the OS window chrome follows the theme.
         self.apply_theme: Callable[[str], bool] | None = None
         self._lock = threading.RLock()
+        self._webview_module: Any = None  # Injected by main.py
 
         # ---- player state ----------------------------------------------------
         self.library = get_library()
@@ -1055,6 +1056,397 @@ class GuiBridge:
             "tracks": [self._track_payload(index, song) for index, song in enumerate(songs)],
         }
 
+    # -- discovery ---------------------------------------------------------------
+    def get_album_detail(self, album_id: str) -> dict[str, Any]:
+        """Fetch album detail including tracks."""
+        album_id = str(album_id or "").strip()
+        if not album_id.isdigit():
+            return {"success": False, "error_key": "player.invalid_album_id", "album": None}
+        album = self._safe("album detail", self.api.get_album_detail, album_id)
+        if not album:
+            return {"success": False, "error_key": "player.album_not_found", "album": None}
+        return {
+            "success": True,
+            "album": self._album_payload(album),
+            "tracks": [self._track_payload(index, song) for index, song in enumerate(album.get("songs") or [])],
+        }
+
+    @staticmethod
+    def _album_payload(album: dict[str, Any]) -> dict[str, Any]:
+        artist = album.get("artist") or {}
+        return {
+            "id": str(album.get("id", "")),
+            "name": album.get("name") or "Unknown",
+            "cover_url": album.get("picUrl") or album.get("coverImgUrl") or "",
+            "description": album.get("description") or "",
+            "artist": artist.get("name") or "Unknown",
+            "artist_id": str(artist.get("id") or ""),
+            "publish_time": album.get("publishTime") or 0,
+            "size": album.get("size") or 0,
+            "status": album.get("status") or 0,
+            "sub_type": album.get("subType") or "",
+        }
+
+    def get_artist_detail(self, artist_id: str) -> dict[str, Any]:
+        """Fetch artist detail including hot songs, albums, description."""
+        artist_id = str(artist_id or "").strip()
+        if not artist_id.isdigit():
+            return {"success": False, "error_key": "player.invalid_artist_id", "artist": None}
+        artist = self._safe("artist detail", self.api.get_artist_detail, artist_id)
+        if not artist:
+            return {"success": False, "error_key": "player.artist_not_found", "artist": None}
+        return {
+            "success": True,
+            "artist": self._artist_payload(artist),
+            "hot_songs": [self._track_payload(index, song) for index, song in enumerate(artist.get("hotSongs") or [])],
+            "albums": [self._album_payload_mini(album) for album in (artist.get("albums") or [])],
+        }
+
+    @staticmethod
+    def _artist_payload(artist: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": str(artist.get("id", "")),
+            "name": artist.get("name") or "Unknown",
+            "cover_url": artist.get("picUrl") or artist.get("img1v1Url") or "",
+            "description": artist.get("briefDesc") or artist.get("description") or "",
+            "alias": artist.get("alias") or [],
+            "trans": artist.get("trans") or "",
+            "music_size": artist.get("musicSize") or 0,
+            "mv_size": artist.get("mvSize") or 0,
+            "album_size": artist.get("albumSize") or 0,
+        }
+
+    @staticmethod
+    def _album_payload_mini(album: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": str(album.get("id", "")),
+            "name": album.get("name") or "Unknown",
+            "cover_url": album.get("picUrl") or album.get("coverImgUrl") or "",
+            "publish_time": album.get("publishTime") or 0,
+            "size": album.get("size") or 0,
+        }
+
+    def get_recommend_playlists(self) -> dict[str, Any]:
+        """Get daily recommended playlists (personalized, needs login)."""
+        user = self.login_manager.user_info
+        if not user or not user.user_id:
+            return {"success": False, "error_key": "player.login_required", "playlists": []}
+        playlists = self._safe("recommend playlists", self.api.get_recommend_playlists)
+        if playlists is None:
+            return {"success": False, "error_key": "error.network", "playlists": []}
+        return {
+            "success": True,
+            "playlists": [self._playlist_payload(p) for p in playlists],
+        }
+
+    def get_personal_fm(self) -> dict[str, Any]:
+        """Get personal FM track list (personalized radio, needs login)."""
+        user = self.login_manager.user_info
+        if not user or not user.user_id:
+            return {"success": False, "error_key": "player.login_required", "tracks": []}
+        tracks = self._safe("personal fm", self.api.get_personal_fm)
+        if tracks is None:
+            return {"success": False, "error_key": "error.network", "tracks": []}
+        return {
+            "success": True,
+            "tracks": [self._track_payload(index, song) for index, song in enumerate(tracks)],
+        }
+
+    def get_new_songs(self, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """Get newly released songs."""
+        songs = self._safe("new songs", self.api.get_new_songs, limit, offset)
+        if songs is None:
+            return {"success": False, "error_key": "error.network", "tracks": []}
+        return {
+            "success": True,
+            "tracks": [self._track_payload(index, song) for index, song in enumerate(songs)],
+        }
+
+    def get_recommend_mvs(self, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        """Get recommended MVs."""
+        mvs = self._safe("recommend mvs", self.api.get_recommend_mvs, limit, offset)
+        if mvs is None:
+            return {"success": False, "error_key": "error.network", "mvs": []}
+        return {
+            "success": True,
+            "mvs": [self._mv_payload(mv) for mv in mvs],
+        }
+
+    @staticmethod
+    def _mv_payload(mv: dict[str, Any]) -> dict[str, Any]:
+        artist = mv.get("artist") or mv.get("artists") or [{}]
+        artist_name = artist[0].get("name") if artist else "Unknown"
+        return {
+            "id": str(mv.get("id", "")),
+            "name": mv.get("name") or "Unknown",
+            "cover_url": mv.get("cover") or mv.get("img") or "",
+            "artist": artist_name,
+            "duration": mv.get("duration") or 0,
+            "play_count": mv.get("playCount") or 0,
+        }
+
+    def get_top_lists(self) -> dict[str, Any]:
+        """Get official toplist/charts."""
+        toplists = self._safe("top lists", self.api.get_top_lists)
+        if toplists is None:
+            return {"success": False, "error_key": "error.network", "toplists": []}
+        return {
+            "success": True,
+            "toplists": toplists,
+        }
+
+    def get_top_list_tracks(self, toplist_id: str) -> dict[str, Any]:
+        """Get tracks for a specific toplist."""
+        toplist_id = str(toplist_id or "").strip()
+        if not toplist_id.isdigit():
+            return {"success": False, "error_key": "playlist.invalid_input", "tracks": []}
+        tracks = self._safe("top list tracks", self.api.get_top_list_tracks, toplist_id)
+        if tracks is None:
+            return {"success": False, "error_key": "error.network", "tracks": []}
+        return {
+            "success": True,
+            "tracks": [self._track_payload(index, song) for index, song in enumerate(tracks)],
+        }
+
+    def search_suggest(self, keyword: str) -> dict[str, Any]:
+        """Get search suggestions/autocomplete."""
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return {"success": True, "suggestions": []}
+        suggestions = self._safe("search suggest", self.api.search_suggest, keyword)
+        if suggestions is None:
+            return {"success": False, "error_key": "error.network", "suggestions": []}
+        return {"success": True, "suggestions": suggestions}
+
+    def search_multi(self, keyword: str, limit: int = 30, offset: int = 0) -> dict[str, Any]:
+        """Search multiple types: songs, playlists, artists, albums, mvs, users, lyrics."""
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return {"success": False, "error_key": "player.search_empty", "results": {}}
+        result = self._safe("search multi", self.api.search_multi, keyword, limit, offset)
+        if result is None:
+            return {"success": False, "error_key": "error.network", "results": {}}
+        return {
+            "success": True,
+            "keyword": keyword,
+            "results": {
+                "songs": [self._track_payload(index, song) for index, song in enumerate(result.get("songs") or [])],
+                "playlists": [self._playlist_payload(p) for p in (result.get("playlists") or [])],
+                "artists": [self._artist_payload(a) for a in (result.get("artists") or [])],
+                "albums": [self._album_payload_mini(a) for a in (result.get("albums") or [])],
+                "mvs": [self._mv_payload(m) for m in (result.get("mvs") or [])],
+            },
+        }
+
+    # -- playlist management ---------------------------------------------------
+    def create_playlist(self, name: str, privacy: int = 0, description: str = "") -> dict[str, Any]:
+        """Create a new playlist."""
+        user = self.login_manager.user_info
+        if not user or not user.user_id:
+            return {"success": False, "error_key": "player.login_required"}
+        name = str(name or "").strip()
+        if not name:
+            return {"success": False, "error_key": "player.playlist_name_empty"}
+        result = self._safe("create playlist", self.api.create_playlist, name, privacy, description or "")
+        if not result:
+            return {"success": False, "error_key": "error.network"}
+        if result.get("code") != 200:
+            return {"success": False, "error_key": "player.create_failed", "message": result.get("msg") or ""}
+        return {"success": True, "playlist_id": str(result.get("id") or result.get("playlistId") or "")}
+
+    def update_playlist(self, playlist_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Update playlist metadata."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return {"success": False, "error_key": "playlist.invalid_input"}
+        name = data.get("name")
+        description = data.get("description")
+        privacy = data.get("privacy")
+        result = self._safe("update playlist", self.api.update_playlist, playlist_id, name, description, privacy)
+        if not result:
+            return {"success": False, "error_key": "error.network"}
+        if result.get("code") != 200:
+            return {"success": False, "error_key": "player.update_failed", "message": result.get("msg") or ""}
+        return {"success": True}
+
+    def delete_playlist(self, playlist_ids: list[str]) -> dict[str, Any]:
+        """Delete one or more playlists."""
+        ids = [str(i) for i in (playlist_ids or []) if str(i).strip()]
+        if not ids:
+            return {"success": False, "error_key": "playlist.invalid_input"}
+        result = self._safe("delete playlist", self.api.delete_playlist, ids)
+        if not result:
+            return {"success": False, "error_key": "error.network"}
+        if result.get("code") != 200:
+            return {"success": False, "error_key": "player.delete_failed", "message": result.get("msg") or ""}
+        return {"success": True}
+
+    def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]) -> dict[str, Any]:
+        """Add tracks to a playlist."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return {"success": False, "error_key": "playlist.invalid_input"}
+        ids = [str(i) for i in (track_ids or []) if str(i).strip()]
+        if not ids:
+            return {"success": False, "error_key": "player.no_tracks_to_add"}
+        result = self._safe("add tracks to playlist", self.api.add_tracks_to_playlist, playlist_id, ids)
+        if not result:
+            return {"success": False, "error_key": "error.network"}
+        if result.get("code") != 200:
+            return {"success": False, "error_key": "player.add_failed", "message": result.get("msg") or ""}
+        return {"success": True}
+
+    def remove_tracks_from_playlist(self, playlist_id: str, track_ids: list[str]) -> dict[str, Any]:
+        """Remove tracks from a playlist."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return {"success": False, "error_key": "playlist.invalid_input"}
+        ids = [str(i) for i in (track_ids or []) if str(i).strip()]
+        if not ids:
+            return {"success": False, "error_key": "player.no_tracks_to_remove"}
+        result = self._safe("remove tracks from playlist", self.api.remove_tracks_from_playlist, playlist_id, ids)
+        if not result:
+            return {"success": False, "error_key": "error.network"}
+        if result.get("code") != 200:
+            return {"success": False, "error_key": "player.remove_failed", "message": result.get("msg") or ""}
+        return {"success": True}
+
+    def subscribe_playlist(self, playlist_id: str, subscribe: bool = True) -> dict[str, Any]:
+        """Subscribe or unsubscribe from a playlist."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return {"success": False, "error_key": "playlist.invalid_input"}
+        result = self._safe("subscribe playlist", self.api.subscribe_playlist, playlist_id, subscribe)
+        if not result:
+            return {"success": False, "error_key": "error.network"}
+        if result.get("code") != 200:
+            return {"success": False, "error_key": "player.subscribe_failed", "message": result.get("msg") or ""}
+        return {"success": True, "subscribed": subscribe}
+
+    def update_playlist_cover(self, playlist_id: str, cover_url: str) -> dict[str, Any]:
+        """Update playlist cover image."""
+        playlist_id = str(playlist_id or "").strip()
+        if not playlist_id:
+            return {"success": False, "error_key": "playlist.invalid_input"}
+        cover_url = str(cover_url or "").strip()
+        if not cover_url:
+            return {"success": False, "error_key": "player.cover_url_empty"}
+        result = self._safe("update playlist cover", self.api.update_playlist_cover, playlist_id, cover_url)
+        if not result:
+            return {"success": False, "error_key": "error.network"}
+        if result.get("code") != 200:
+            return {"success": False, "error_key": "player.cover_update_failed", "message": result.get("msg") or ""}
+        return {"success": True}
+
+    # -- local playlist management ---------------------------------------------
+    def get_local_playlists(self) -> dict[str, Any]:
+        """Get all local playlists."""
+        lp = self.settings.local_playlists
+        return {
+            "success": True,
+            "playlists": lp.playlists,
+            "sort_order": lp.sort_order,
+        }
+
+    def create_local_playlist(self, name: str) -> dict[str, Any]:
+        """Create a new local playlist."""
+        name = str(name or "").strip()
+        if not name:
+            return {"success": False, "error_key": "player.playlist_name_empty"}
+        lp = self.settings.local_playlists
+        new_id = f"local_{int(time.time() * 1000)}"
+        playlist = {
+            "id": new_id,
+            "name": name,
+            "tracks": [],
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+        lp.playlists.append(playlist)
+        self.settings.update_local_playlists(playlists=lp.playlists)
+        return {"success": True, "playlist": playlist}
+
+    def update_local_playlist(self, playlist_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Update a local playlist."""
+        lp = self.settings.local_playlists
+        playlist = next((p for p in lp.playlists if p["id"] == playlist_id), None)
+        if not playlist:
+            return {"success": False, "error_key": "playlist.not_found"}
+        if "name" in data:
+            playlist["name"] = str(data["name"] or "").strip() or playlist["name"]
+        if "tracks" in data:
+            playlist["tracks"] = data["tracks"]
+        if "sort_order" in data:
+            lp.sort_order = data["sort_order"]
+        playlist["updated_at"] = time.time()
+        self.settings.update_local_playlists(playlists=lp.playlists, sort_order=lp.sort_order)
+        return {"success": True, "playlist": playlist}
+
+    def delete_local_playlist(self, playlist_id: str) -> dict[str, Any]:
+        """Delete a local playlist."""
+        lp = self.settings.local_playlists
+        lp.playlists = [p for p in lp.playlists if p["id"] != playlist_id]
+        self.settings.update_local_playlists(playlists=lp.playlists)
+        return {"success": True}
+
+    def reorder_local_playlist_tracks(self, playlist_id: str, from_index: int, to_index: int) -> dict[str, Any]:
+        """Reorder tracks in a local playlist."""
+        lp = self.settings.local_playlists
+        playlist = next((p for p in lp.playlists if p["id"] == playlist_id), None)
+        if not playlist:
+            return {"success": False, "error_key": "playlist.not_found"}
+        tracks = playlist.get("tracks", [])
+        if from_index < 0 or from_index >= len(tracks) or to_index < 0 or to_index >= len(tracks):
+            return {"success": False, "error_key": "player.invalid_index"}
+        track = tracks.pop(from_index)
+        tracks.insert(to_index, track)
+        playlist["updated_at"] = time.time()
+        self.settings.update_local_playlists(playlists=lp.playlists)
+        return {"success": True}
+
+    def add_tracks_to_local_playlist(self, playlist_id: str, track_keys: list[str]) -> dict[str, Any]:
+        """Add tracks to a local playlist by their keys."""
+        lp = self.settings.local_playlists
+        playlist = next((p for p in lp.playlists if p["id"] == playlist_id), None)
+        if not playlist:
+            return {"success": False, "error_key": "playlist.not_found"}
+        
+        # Resolve track keys to track info
+        existing_keys = {t.get("key") for t in playlist.get("tracks", [])}
+        new_tracks = []
+        for key in track_keys:
+            if key in existing_keys:
+                continue
+            # Try local music first
+            if key.startswith("local:"):
+                path = key[6:]
+                track = self.local_music.track(path)
+                if track:
+                    new_tracks.append(track)
+                    existing_keys.add(key)
+            else:
+                # Online track - store minimal info
+                new_tracks.append({"key": key})
+                existing_keys.add(key)
+        
+        playlist.setdefault("tracks", []).extend(new_tracks)
+        playlist["updated_at"] = time.time()
+        self.settings.update_local_playlists(playlists=lp.playlists)
+        return {"success": True, "added": len(new_tracks)}
+
+    def remove_tracks_from_local_playlist(self, playlist_id: str, track_keys: list[str]) -> dict[str, Any]:
+        """Remove tracks from a local playlist."""
+        lp = self.settings.local_playlists
+        playlist = next((p for p in lp.playlists if p["id"] == playlist_id), None)
+        if not playlist:
+            return {"success": False, "error_key": "playlist.not_found"}
+        
+        tracks = playlist.get("tracks", [])
+        playlist["tracks"] = [t for t in tracks if t.get("key") not in track_keys]
+        playlist["updated_at"] = time.time()
+        self.settings.update_local_playlists(playlists=lp.playlists)
+        return {"success": True, "removed": len(tracks) - len(playlist["tracks"])}
+
     # -- local music -----------------------------------------------------------
     def get_local_tracks(self, query: str = "", limit: int = 200,
                          offset: int = 0) -> dict[str, Any]:
@@ -1181,3 +1573,163 @@ class GuiBridge:
     # --------------------------------------------------------------- utilities
     def get_api_stats(self) -> dict[str, Any]:
         return self.api.get_request_stats()
+
+    # -- queue management --------------------------------------------------------
+    def save_queue_as_playlist(self, name: str, queue: list[dict[str, Any]]) -> dict[str, Any]:
+        """Save the given queue as a local playlist (M3U/JSON)."""
+        if not name or not queue:
+            return {"success": False, "error_key": "error.unknown"}
+        try:
+            from src.config import get_settings
+            settings = get_settings()
+            playlist_dir = settings.config_path.parent / "playlists"
+            playlist_dir.mkdir(exist_ok=True)
+            safe_name = re.sub(r'[<>:"/\\|?*]', "_", name)
+            m3u_path = playlist_dir / f"{safe_name}.m3u"
+            with open(m3u_path, "w", encoding="utf-8") as f:
+                f.write("#EXTM3U\n")
+                for track in queue:
+                    if track.get("source") == "local" and track.get("path"):
+                        f.write(f"{track['path']}\n")
+                    elif track.get("source") == "online" and track.get("id"):
+                        f.write(f"#EXTINF:-1,{track.get('artists', '')} - {track.get('name', '')}\n")
+                        f.write(f"https://music.163.com/song?id={track['id']}\n")
+            return {"success": True, "path": str(m3u_path), "message": t("player.queue_saved_as_playlist", {"name": name})}
+        except Exception as exc:
+            self.logger.warning("save_queue_as_playlist failed: %s", exc)
+            return {"success": False, "error_key": "error.unknown", "message": str(exc)}
+
+    # -- desktop lyrics window ---------------------------------------------------
+    _desktop_lyrics_window: Any = None
+
+    def open_desktop_lyrics(self) -> dict[str, Any]:
+        """Open the desktop lyrics window as a native pywebview window."""
+        if self._desktop_lyrics_window is not None:
+            try:
+                # Check if window still exists (pywebview doesn't have a direct way)
+                self._desktop_lyrics_window.restore()
+                return {"success": True}
+            except Exception:
+                self._desktop_lyrics_window = None
+
+        if self._webview_module is None:
+            # Fallback to JS-based window.open
+            self._call_js("onOpenDesktopLyrics", {})
+            return {"success": True}
+
+        try:
+            from src.resources import resource_path
+            html_path = resource_path("src", "gui", "assets", "desktop-lyrics.html")
+            if not html_path.exists():
+                self.logger.warning("Desktop lyrics HTML not found at %s", html_path)
+                self._call_js("onOpenDesktopLyrics", {})
+                return {"success": True}
+
+            settings = self.settings
+            ui = settings.ui
+            font_size = ui.desktop_lyrics_font_size
+            color = ui.desktop_lyrics_color
+            opacity = ui.desktop_lyrics_opacity
+            show_translation = ui.desktop_lyrics_show_translation
+
+            url = f"{html_path.as_uri()}?fontSize={font_size}&color={color}&opacity={opacity}&showTranslation={show_translation}"
+
+            self._desktop_lyrics_window = self._webview_module.create_window(
+                title="Desktop Lyrics",
+                url=url,
+                js_api=self,
+                width=600,
+                height=120,
+                min_size=(300, 80),
+                resizable=True,
+                frameless=True,
+                easy_drag=True,
+                on_top=True,
+                transparent=True,
+                background_color="#00000000",
+            )
+
+            # Store reference to this bridge for the desktop lyrics window
+            self._desktop_lyrics_window.events.closed += self._on_desktop_lyrics_closed
+
+            # Push current lyrics if available
+            self._call_js("onOpenDesktopLyrics", {})
+            return {"success": True}
+        except Exception as exc:
+            self.logger.warning("Failed to create desktop lyrics window: %s", exc)
+            self._call_js("onOpenDesktopLyrics", {})
+            return {"success": True}
+
+    def _on_desktop_lyrics_closed(self) -> None:
+        self._desktop_lyrics_window = None
+        self._call_js("onCloseDesktopLyrics", {})
+
+    def close_desktop_lyrics(self) -> dict[str, Any]:
+        """Close the desktop lyrics window."""
+        if self._desktop_lyrics_window is not None:
+            try:
+                self._desktop_lyrics_window.destroy()
+            except Exception:
+                pass
+            self._desktop_lyrics_window = None
+        self._call_js("onCloseDesktopLyrics", {})
+        return {"success": True}
+
+    def update_desktop_lyrics(self, lines: list[dict[str, Any]], index: int) -> dict[str, Any]:
+        """Push lyric update to the desktop lyrics window."""
+        self._call_js("onDesktopLyricsUpdate", {"lines": lines, "index": index})
+        return {"success": True}
+
+    # -- sleep timer -------------------------------------------------------------
+    def set_sleep_timer(self, minutes: int, action: str = "pause") -> dict[str, Any]:
+        """Set a sleep timer (0 to cancel). Action: stop|pause|quit."""
+        self.settings.update_playback(sleep_timer_minutes=max(0, int(minutes or 0)))
+        self._call_js("onSleepTimerSet", {"minutes": minutes, "action": action})
+        return {"success": True, "minutes": minutes, "action": action}
+
+    def get_sleep_timer(self) -> dict[str, Any]:
+        """Get the current sleep timer setting."""
+        return {"success": True, "minutes": self.settings.playback.sleep_timer_minutes}
+
+    # -- detailed playback stats -------------------------------------------------
+    def get_detailed_playback_stats(self) -> dict[str, Any]:
+        """Return detailed playback statistics for the dashboard."""
+        stats = self.library.stats()
+        # Add time-based stats (would need library enhancement)
+        return {
+            "success": True,
+            "tracks": stats.get("tracks", 0),
+            "total_plays": stats.get("total_plays", 0),
+            "favorites": stats.get("favorites", 0),
+            "recent": stats.get("recent", 0),
+            # Placeholder for future enhancements
+            "total_time_hours": 0,
+            "this_week_plays": 0,
+            "this_month_plays": 0,
+            "top_artists": [],
+            "top_albums": [],
+            "top_genres": [],
+        }
+
+    # -- crossfade / preload -----------------------------------------------------
+    def set_crossfade_duration(self, seconds: float) -> dict[str, Any]:
+        """Set crossfade duration (0-12 seconds)."""
+        seconds = max(0.0, min(float(seconds or 0), 12.0))
+        self.settings.update_playback(crossfade_duration=seconds)
+        if self.media.running:
+            self.media.set_crossfade_duration(seconds)
+        return {"success": True, "crossfade_duration": seconds}
+
+    def preload_next_track(self, song_id: str, quality: str = "standard") -> dict[str, Any]:
+        """Pre-resolve and warm up the next track's URL."""
+        if not song_id:
+            return {"success": False, "error_key": "error.unknown"}
+        try:
+            info = self.api.get_song_url_info(song_id, quality)
+            if info and info.get("url"):
+                # Warm up the connection
+                self.media.resolve_online(song_id, quality, force=True)
+                return {"success": True, "preloaded": True}
+        except Exception as exc:
+            self.logger.debug("preload_next_track failed: %s", exc)
+        return {"success": False, "preloaded": False}

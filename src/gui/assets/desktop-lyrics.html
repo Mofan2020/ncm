@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>桌面歌词</title>
+    <script>
+        // Read initial settings from URL params before styles load
+        (function() {
+            const params = new URLSearchParams(window.location.search);
+            const fontSize = parseInt(params.get('fontSize') || '18', 10);
+            const color = decodeURIComponent(params.get('color') || '#ffffff');
+            const opacity = parseFloat(params.get('opacity') || '0.9');
+            const showTranslation = params.get('showTranslation') !== 'false';
+            
+            // Store in localStorage for desktop-lyrics.js to read
+            localStorage.setItem('ncm:desktop-lyrics:settings', JSON.stringify({
+                fontSize: fontSize,
+                color: color,
+                opacity: opacity,
+                showTranslation: showTranslation
+            }));
+        })();
+    </script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; overflow: hidden; background: transparent; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; user-select: none; }
+        
+        .desktop-lyrics-window {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2147483647;
+            pointer-events: none;
+        }
+        .desktop-lyrics-window.draggable { pointer-events: auto; }
+        
+        .desktop-lyrics-content {
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 999px;
+            font-size: 18px;
+            font-weight: 500;
+            white-space: nowrap;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            transition: background-color 0.3s, color 0.3s, opacity 0.3s;
+        }
+        .desktop-lyrics-content .lyric-line {
+            opacity: 0.5;
+            transform: scale(0.95);
+            transition: opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1), transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .desktop-lyrics-content .lyric-line.current {
+            opacity: 1;
+            transform: scale(1.03);
+        }
+        .desktop-lyrics-content .lyric-line.translation {
+            display: block;
+            font-size: 0.7em;
+            color: rgba(255, 255, 255, 0.7);
+            margin-top: 2px;
+            font-weight: 400;
+        }
+        .desktop-lyrics-drag-handle {
+            position: absolute;
+            top: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 36px;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            cursor: grab;
+        }
+        .desktop-lyrics-drag-handle:active { cursor: grabbing; }
+        
+        .desktop-lyrics-hidden .desktop-lyrics-content { opacity: 0; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div class="desktop-lyrics-window" id="dl-window">
+        <div class="desktop-lyrics-drag-handle" id="dl-drag-handle" title="拖拽移动位置"></div>
+        <div class="desktop-lyrics-content" id="dl-content">
+            <div class="lyric-line current" id="dl-current">桌面歌词就绪</div>
+            <div class="lyric-line translation" id="dl-translation" hidden></div>
+        </div>
+    </div>
+    <script src="desktop-lyrics.js"></script>
+</body>
+</html>

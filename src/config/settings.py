@@ -82,6 +82,12 @@ class PlaybackSettings:
     last_local_dir: str = ""
     scan_depth: int = 6
     show_translation: bool = True
+    #: Crossfade duration in seconds (0 = disabled, 1-12).
+    crossfade_duration: float = 0.0
+    #: Exclusive audio output mode: off|wasapi|coreaudio|auto
+    exclusive_mode: str = "off"
+    #: Sleep timer duration in minutes (0 = disabled, persisted per session).
+    sleep_timer_minutes: int = 0
 
 
 @dataclass
@@ -102,6 +108,23 @@ class UISettings:
     glass: bool = True
     #: Wallpaper accent is sampled from the background image when available.
     accent_from_background: bool = True
+    #: Desktop lyrics window settings
+    desktop_lyrics_font_size: int = 18
+    desktop_lyrics_color: str = "#ffffff"
+    desktop_lyrics_opacity: float = 0.9
+    desktop_lyrics_show_translation: bool = True
+
+
+@dataclass
+class LocalPlaylistSettings:
+    """Local playlist settings (stored in config, independent of cloud)."""
+
+    # List of local playlists, each: {"id", "name", "tracks": [{"id", "name", "artists", "album", "duration", "path"}]}
+    playlists: list[dict[str, Any]] = field(default_factory=list)
+    # Current local playlist sort order
+    sort_order: str = "manual"  # manual|name|artist|album|date_added
+    # Auto-save local playlists to JSON file in config dir
+    auto_save: bool = True
 
 
 @dataclass
@@ -121,6 +144,7 @@ class AppSettings:
     playback: PlaybackSettings = field(default_factory=PlaybackSettings)
     ui: UISettings = field(default_factory=UISettings)
     auth: AuthSettings = field(default_factory=AuthSettings)
+    local_playlists: LocalPlaylistSettings = field(default_factory=LocalPlaylistSettings)
     debug: bool = False
 
 
@@ -200,6 +224,7 @@ class Settings:
                 playback=PlaybackSettings(**_filtered(PlaybackSettings, raw.get("playback"))),
                 ui=UISettings(**_filtered(UISettings, raw.get("ui"))),
                 auth=AuthSettings(**_filtered(AuthSettings, raw.get("auth"))),
+                local_playlists=LocalPlaylistSettings(**_filtered(LocalPlaylistSettings, raw.get("local_playlists"))),
                 debug=bool(raw.get("debug", False)),
             )
             self._normalize()
@@ -214,6 +239,12 @@ class Settings:
         ui.background_dim = self._clamp_range(ui.background_dim, 0, 80, 30)
         for flag in ("remember_window_size", "glass", "accent_from_background"):
             setattr(ui, flag, _as_bool(getattr(ui, flag)))
+        ui.desktop_lyrics_font_size = self._clamp_range(ui.desktop_lyrics_font_size, 10, 36, 18)
+        ui.desktop_lyrics_opacity = self._clamp_float(ui.desktop_lyrics_opacity, 0.1, 1.0, 0.9)
+        if not ui.desktop_lyrics_color or not str(ui.desktop_lyrics_color).startswith("#"):
+            ui.desktop_lyrics_color = "#ffffff"
+        setattr(ui, "desktop_lyrics_show_translation", _as_bool(getattr(ui, "desktop_lyrics_show_translation", True)))
+
         playback = self._data.playback
         for flag in ("prefer_online", "resume_playback", "report_play_count",
                      "show_translation"):
@@ -230,11 +261,22 @@ class Settings:
         playback.local_dirs = [str(item) for item in playback.local_dirs if str(item or "").strip()]
         for flag in ("overwrite", "download_lyrics", "lyrics_translation"):
             setattr(self._data.download, flag, _as_bool(getattr(self._data.download, flag)))
+        playback.crossfade_duration = self._clamp_float(playback.crossfade_duration, 0.0, 12.0, 0.0)
+        if playback.exclusive_mode not in ("off", "wasapi", "coreaudio", "auto"):
+            playback.exclusive_mode = "off"
+        playback.sleep_timer_minutes = self._clamp_range(playback.sleep_timer_minutes, 0, 720, 0)
 
     @staticmethod
     def _clamp_range(value: Any, low: int, high: int, fallback: int) -> int:
         try:
             return max(low, min(int(value), high))
+        except (TypeError, ValueError):
+            return fallback
+
+    @staticmethod
+    def _clamp_float(value: Any, low: float, high: float, fallback: float) -> float:
+        try:
+            return max(low, min(float(value), high))
         except (TypeError, ValueError):
             return fallback
 
@@ -245,6 +287,7 @@ class Settings:
                 "playback": asdict(self._data.playback),
                 "ui": asdict(self._data.ui),
                 "auth": asdict(self._data.auth),
+                "local_playlists": asdict(self._data.local_playlists),
                 "debug": self._data.debug,
             }
             try:
@@ -269,6 +312,10 @@ class Settings:
     @property
     def auth(self) -> AuthSettings:
         return self._data.auth
+
+    @property
+    def local_playlists(self) -> LocalPlaylistSettings:
+        return self._data.local_playlists
 
     @property
     def debug(self) -> bool:
@@ -312,6 +359,11 @@ class Settings:
     def update_auth(self, **kwargs: Any) -> None:
         for key, value in _filtered(AuthSettings, kwargs).items():
             setattr(self._data.auth, key, value)
+        self.save()
+
+    def update_local_playlists(self, **kwargs: Any) -> None:
+        for key, value in _filtered(LocalPlaylistSettings, kwargs).items():
+            setattr(self._data.local_playlists, key, value)
         self.save()
 
     # ---------------------------------------------------------------- wallpaper
