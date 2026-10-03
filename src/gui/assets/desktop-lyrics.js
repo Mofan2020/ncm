@@ -191,7 +191,10 @@
     function handleMessage(payload) {
         switch (payload.action) {
             case 'update':
-                updateLyrics(payload.lines, payload.index);
+                // Only accept index, not full lines array (lines are already loaded)
+                if (typeof payload.index === 'number') {
+                    updateLyricsIndex(payload.index);
+                }
                 break;
             case 'settings':
                 state.settings = { ...state.settings, ...payload.settings };
@@ -211,9 +214,17 @@
 
     function updateLyrics(lines, index) {
         state.lines = lines || [];
+        updateLyricsIndex(index);
+    }
+
+    function updateLyricsIndex(index) {
+        // Skip if index hasn't changed
+        if (state.currentIndex === index) {
+            return;
+        }
         state.currentIndex = index;
 
-        const currentLine = lines[index];
+        const currentLine = state.lines[index];
         if (currentLine) {
             elements.current.textContent = currentLine.text || '♪';
             elements.current.classList.add('current');

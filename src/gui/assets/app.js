@@ -3835,17 +3835,25 @@ function closeDesktopLyrics() {
     player.desktopLyricsWindow = null;
 }
 
+let pushLyricsToDesktopDebounce = 0;
+
 function pushLyricsToDesktop() {
-    // Push via backend to native pywebview window
+    // Debounce to avoid too frequent updates (max 30fps ~ 33ms)
+    const now = Date.now();
+    if (now - pushLyricsToDesktopDebounce < 33) {
+        return;
+    }
+    pushLyricsToDesktopDebounce = now;
+
+    // Push via backend to native pywebview window - only send index
     if (state.api && state.api.update_desktop_lyrics) {
-        state.api.update_desktop_lyrics(player.lyrics, player.lyricIndex).catch(() => { /* ignore */ });
+        state.api.update_desktop_lyrics([], player.lyricIndex).catch(() => { /* ignore */ });
     }
 
-    // Also try direct window communication as fallback
+    // Also try direct window communication as fallback - only send index
     if (player.desktopLyricsWindow && !player.desktopLyricsWindow.closed) {
         const payload = {
             action: 'update',
-            lines: player.lyrics,
             index: player.lyricIndex
         };
         try {

@@ -1676,8 +1676,12 @@ class GuiBridge:
         return {"success": True}
 
     def update_desktop_lyrics(self, lines: list[dict[str, Any]], index: int) -> dict[str, Any]:
-        """Push lyric update to the desktop lyrics window."""
-        self._call_js("onDesktopLyricsUpdate", {"lines": lines, "index": index})
+        """Push lyric update to the desktop lyrics window.
+        
+        Only sends the index to avoid sending the full lyrics array repeatedly.
+        The desktop window already has the lyrics loaded.
+        """
+        self._call_js("onDesktopLyricsUpdate", {"index": index})
         return {"success": True}
 
     # -- sleep timer -------------------------------------------------------------
