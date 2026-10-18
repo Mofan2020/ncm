@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
     <meta name="color-scheme" content="light dark">
     <title>网易云音乐歌单下载器</title>
     <link rel="stylesheet" href="style.css">
@@ -48,6 +48,8 @@
         </nav>
 
         <div class="header-actions">
+            <button id="btn-sidebar-toggle" class="btn btn-icon" type="button"
+                    data-i18n-title="player.collapse_sidebar" aria-label="sidebar">☰</button>
             <button id="btn-theme" class="btn btn-icon" type="button"
                     data-i18n-title="settings.theme_toggle" aria-label="theme">◐</button>
             <button id="btn-login" class="btn btn-primary" type="button" data-i18n="login.title"></button>
@@ -372,6 +374,71 @@
 </div>
 
 <audio id="audio" preload="metadata"></audio>
+
+<!-- ============================================================
+     Mobile full-screen "now playing" view.
+     Hidden on desktop (>=601px).  On mobile, tapping the player-bar
+     title or cover slides this view up; tapping the close button or
+     swiping down slides it back out.  The same lyrics panel lives in
+     the desktop layout -- this is a separate, larger render.
+     ============================================================ -->
+<section class="now-playing-mobile" id="now-playing-mobile" hidden aria-label="now playing">
+    <div class="npm-bg" id="npm-bg"></div>
+    <header class="npm-head">
+        <button id="btn-npm-close" class="btn btn-icon" type="button"
+                data-i18n-title="common.close" aria-label="close">‹</button>
+        <div class="npm-meta">
+            <span class="npm-source" id="npm-source"></span>
+            <span class="npm-title" id="npm-title" data-i18n="player.nothing_playing"></span>
+        </div>
+        <button id="btn-npm-more" class="btn btn-icon" type="button"
+                aria-label="more" hidden>⋯</button>
+    </header>
+    <div class="npm-cover-wrap">
+        <img id="npm-cover" class="npm-cover" src="" alt="">
+    </div>
+    <div class="npm-info">
+        <h2 id="npm-track-title" data-i18n="player.nothing_playing">未在播放</h2>
+        <p id="npm-track-artist"></p>
+        <div class="npm-badges">
+            <span class="pill" id="npm-kind"></span>
+            <span class="pill" id="npm-quality"></span>
+        </div>
+    </div>
+    <div class="npm-lyrics" id="npm-lyrics">
+        <p class="empty" data-i18n="lyrics.none"></p>
+    </div>
+    <footer class="npm-controls">
+        <div class="npm-progress">
+            <span id="npm-current" class="time">0:00</span>
+            <div class="progress-track is-clickable" id="npm-track">
+                <div class="progress-fill" id="npm-fill"></div>
+            </div>
+            <span id="npm-duration" class="time">0:00</span>
+        </div>
+        <div class="npm-buttons">
+            <button id="npm-mode" class="btn btn-icon" type="button"></button>
+            <button id="npm-prev" class="btn btn-icon" type="button"
+                    data-i18n-title="player.prev" aria-label="previous">⏮</button>
+            <button id="npm-play" class="btn btn-icon btn-play" type="button"
+                    data-i18n-title="player.play" aria-label="play">▶</button>
+            <button id="npm-next" class="btn btn-icon" type="button"
+                    data-i18n-title="player.next" aria-label="next">⏭</button>
+            <button id="npm-fav" class="btn btn-icon" type="button"
+                    data-i18n-title="player.favorite" aria-label="favorite">♡</button>
+        </div>
+        <div class="npm-secondary">
+            <button id="npm-desktop-lyrics" class="btn btn-icon" type="button"
+                    data-i18n-title="player.desktop_lyrics_open" aria-label="desktop lyrics">📝</button>
+            <button id="npm-queue" class="btn btn-icon" type="button"
+                    data-i18n-title="player.queue_title" aria-label="queue">☰</button>
+            <button id="npm-download" class="btn btn-icon" type="button"
+                    data-i18n-title="player.download" aria-label="download">⤓</button>
+            <button id="npm-sleep-timer" class="btn btn-icon" type="button"
+                    data-i18n-title="player.sleep_timer" aria-label="sleep timer">🌙</button>
+        </div>
+    </footer>
+</section>
 
 <!-- ============ login modal ============ -->
 <div class="modal" id="login-modal" hidden>

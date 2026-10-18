@@ -52,6 +52,15 @@
     --accent: var(--brand);
     --accent-text: #fff;
 
+    /* Safe-area insets (iOS notch / Android nav bar).  Both default to
+       0 on desktop and become nonzero on touch devices that report
+       `env(safe-area-inset-*)`.  The mobile breakpoint overrides them below
+       so that a fixed bottom bar never hides behind the home indicator. */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+
     color-scheme: light;
 }
 
@@ -1460,7 +1469,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* Sidebar feels more like a rail when it gets a soft inner shadow and
    the section headings pick up the same accent as the active item. */
-.player-sidebar {
+.player-side {
     display: flex; flex-direction: column; gap: 10px;
     border-radius: var(--radius);
     padding: 12px;
@@ -1468,21 +1477,21 @@ input[type="range"]::-webkit-slider-thumb {
     overflow-y: auto;
     overscroll-behavior: contain;
 }
-.player-sidebar .sidebar-header {
+.player-side .sidebar-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 0 2px;
 }
-.player-sidebar .sidebar-header h3 {
+.player-side .sidebar-header h3 {
     font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
     color: var(--text-2); text-transform: uppercase;
 }
-.player-sidebar .sidebar-nav {
+.player-side .sidebar-nav {
     display: flex; flex-direction: column; gap: 14px;
 }
-.player-sidebar .sidebar-section {
+.player-side .sidebar-section {
     display: flex; flex-direction: column; gap: 2px;
 }
-.player-sidebar .sidebar-section-title {
+.player-side .sidebar-section-title {
     margin: 6px 10px 4px;
     font-size: 11px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.04em;
@@ -1520,8 +1529,8 @@ input[type="range"]::-webkit-slider-thumb {
 /* The duplicate source-tabs row is hidden when the new sidebar layout is
    active (the HTML ships both for back-compat), but kept visible when the
    sidebar is absent.  The presence of `#player-sidebar` is the signal. */
-#player-sidebar ~ * .source-tabs,
-.player-layout:has(#player-sidebar) .source-tabs {
+.player-layout:has(#player-sidebar) .source-tabs,
+.player-side:has(~ * #player-sidebar) .source-tabs {
     display: none;
 }
 
@@ -1589,3 +1598,447 @@ input[type="range"]::-webkit-slider-thumb {
     color: var(--text);
 }
 .lyrics .lyric-line .lyric-translation { font-size: 12.5px; }
+
+/* ============================================================
+   Mobile (Android / iOS via pywebview) -- <= 720px wide.
+   Targets: 360-414 dp phones in portrait, 600-720 dp tablets.
+   Visual language: Apple HIG + liquid glass.  iOS Safari / Android
+   Chrome 60+ handle every property below.  Anything older is not a
+   target (pywebview 6 ships with system WKWebView >= 17 / Chrome >= 90).
+   ============================================================ */
+
+@media (max-width: 720px) {
+
+    /* ---------- token overrides (bigger, softer, more "touch") ---------- */
+    :root {
+        --header-h: 52px;
+        --status-h: 0px;       /* hidden on mobile -- header carries status */
+        --playerbar-h: 64px;
+        --radius: 22px;
+        --radius-sm: 14px;
+        --radius-xs: 10px;
+        --glass-blur: 32px;
+        --glass-saturate: 200%;
+    }
+
+    /* Default body: hide everything desktop-only and stretch. */
+    body {
+        font-size: 15px;
+        -webkit-tap-highlight-color: transparent;
+    }
+    #status-bar { display: none; }        /* no separate status row on mobile */
+    .footer,
+    footer.status-bar { display: none !important; }
+
+    /* The top header shrinks and re-stacks. */
+    .app-header {
+        min-height: var(--header-h);
+        padding: 6px 14px;
+        gap: 8px;
+    }
+    .brand h1 { font-size: 15px; }
+    .subtitle { display: none; }
+    .top-tabs { padding: 2px; }
+    .top-tab { padding: 5px 12px; font-size: 13px; }
+
+    /* The hamburger that toggles the sidebar drawer.  Hidden on desktop
+       (covered by the desktop-specific rule below the @media block). */
+    #btn-sidebar-toggle { display: inline-flex; }
+
+    /* ---------- sidebar becomes a slide-in drawer ---------- */
+    .player-side {
+        position: fixed;
+        top: 0; bottom: 0; left: 0;
+        width: min(82vw, 360px);
+        padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px 14px;
+        padding-left: calc(14px + env(safe-area-inset-left, 0px));
+        z-index: 60;
+        border-radius: 0 22px 22px 0;
+        transform: translateX(-100%);
+        transition: transform .28s cubic-bezier(.22,1,.36,1);
+        box-shadow: 0 0 0 1px var(--glass-border), 0 24px 60px rgba(0,0,0,.18);
+    }
+    body.is-mobile[data-sidebar-open="1"] .player-side {
+        transform: translateX(0);
+    }
+
+    /* Backdrop that blurs + dims the main content behind the drawer. */
+    .sidebar-backdrop {
+        position: fixed; inset: 0; z-index: 55;
+        background: rgba(0, 0, 0, 0.25);
+        -webkit-backdrop-filter: blur(8px) saturate(140%);
+        backdrop-filter: blur(8px) saturate(140%);
+        opacity: 0; pointer-events: none;
+        transition: opacity .28s ease;
+    }
+    body.is-mobile[data-sidebar-open="1"] .sidebar-backdrop {
+        opacity: 1; pointer-events: auto;
+    }
+
+    /* Bigger tap targets inside the sidebar. */
+    .sidebar-item {
+        padding: 12px 14px 12px 18px;
+        font-size: 15px;
+        border-radius: 11px;
+        min-height: 44px;
+    }
+
+    /* ---------- main content + player view ---------- */
+    .app-main { padding: 0; }
+    .player-layout {
+        display: flex;
+        flex-direction: column;
+        grid-template-columns: none;
+        padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px calc(env(safe-area-inset-bottom, 0px) + 12px);
+        gap: 8px;
+        overflow-y: auto;
+    }
+    .player-main-content {
+        min-width: 0;
+    }
+    .content-header {
+        padding: 4px 4px 0;
+        gap: 6px;
+    }
+    .content-title { font-size: 18px; font-weight: 700; }
+
+    /* Source/playlist-list/track-list area collapses into one scrollable
+       column.  The playlist list (when shown) gets a fixed top section. */
+    .content-area > .content-panel {
+        padding: 0;
+    }
+    .source-tabs { display: none !important; }   /* sidebar replaces it */
+
+    /* Track row: touch-sized, no hover affordance. */
+    .track-row {
+        grid-template-columns: 36px 1fr auto;
+        min-height: 56px;
+        padding: 8px 10px;
+        border-radius: 10px;
+    }
+    .track-row + .track-row { margin-top: 3px; }
+    .track-row .idx { font-size: 13px; }
+    .track-row .track-name { font-size: 15px; }
+    .track-row .track-sub { font-size: 12.5px; }
+    /* Hover actions never make sense on touch -- make them always visible
+       but small.  Tap-friendly actions use the .track-actions button. */
+    .track-row .track-actions { opacity: 1; }
+    .track-row .track-actions .btn { padding: 6px 9px; font-size: 14px; }
+
+    .playlist-row {
+        padding: 8px 10px;
+        gap: 12px;
+        min-height: 56px;
+    }
+    .playlist-row img { width: 48px; height: 48px; border-radius: 10px; }
+    .playlist-row .pl-name { font-size: 15px; }
+
+    /* Hide the desktop lyrics + now-playing panel -- mobile uses the
+       full-screen npm view instead. */
+    .player-main { display: none !important; }
+
+    /* Player-bar becomes a compact 64 px strip. */
+    .player-bar {
+        position: fixed;
+        left: 0; right: 0; bottom: 0;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        padding: 6px calc(12px + env(safe-area-inset-right, 0px))
+                 calc(6px + env(safe-area-inset-bottom, 0px))
+                 calc(12px + env(safe-area-inset-left, 0px));
+        min-height: calc(var(--playerbar-h) + env(safe-area-inset-bottom, 0px));
+        border-radius: 0;
+        box-shadow: 0 -1px 0 var(--glass-border), 0 -10px 30px rgba(0,0,0,.10);
+        z-index: 40;
+    }
+    .player-bar .pb-left { min-width: 0; gap: 10px; }
+    .player-bar .pb-cover {
+        width: 40px; height: 40px;
+        border-radius: 9px;
+    }
+    .player-bar .pb-meta { min-width: 0; }
+    .player-bar .pb-title {
+        font-size: 14px; font-weight: 600;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        cursor: pointer;             /* hint: tap opens full-screen view */
+    }
+    .player-bar .pb-artist {
+        font-size: 12px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* Hide every secondary button on the bar; mobile uses npm instead. */
+    .player-bar .pb-center { display: none !important; }
+    .player-bar .pb-right { display: none !important; }
+    /* Keep a single play/pause button on the right of the bar. */
+    .player-bar #pb-play {
+        position: absolute;
+        right: calc(14px + env(safe-area-inset-right, 0px));
+        top: 50%; transform: translateY(-50%);
+        width: 44px; height: 44px;
+        font-size: 16px;
+        border-radius: 999px;
+        box-shadow: 0 1px 2px rgba(0,0,0,.10), 0 6px 18px rgba(236, 65, 65, 0.35);
+    }
+    .player-bar #pb-play:active { transform: translateY(-50%) scale(.94); }
+
+    /* Make sure the player-bar doesn't overlap the bottom of the
+       content area. */
+    .app-main { padding-bottom: calc(var(--playerbar-h) + env(safe-area-inset-bottom, 0px)); }
+
+    /* ---------- modals become full-width bottom sheets ---------- */
+    .modal {
+        align-items: flex-end;
+        padding: 0;
+    }
+    .modal-backdrop {
+        background: rgba(0, 0, 0, 0.35);
+        -webkit-backdrop-filter: blur(10px) saturate(140%);
+        backdrop-filter: blur(10px) saturate(140%);
+    }
+    .modal-box {
+        width: 100%;
+        max-width: none;
+        max-height: 90vh;
+        margin: 0;
+        border-radius: 22px 22px 0 0;
+        padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+        animation: modal-slide-up .28s cubic-bezier(.22,1,.36,1);
+    }
+    .modal-box.modal-box-lg,
+    .modal-box.modal-box-sm {
+        max-width: none;
+    }
+    @keyframes modal-slide-up {
+        from { transform: translateY(100%); opacity: .4; }
+        to   { transform: translateY(0); opacity: 1; }
+    }
+
+    /* ---------- toasts pull up from above the player-bar ---------- */
+    #toast-container {
+        bottom: calc(var(--playerbar-h) + env(safe-area-inset-bottom, 0px) + 12px);
+        left: 12px; right: 12px;
+        align-items: stretch;
+    }
+    .toast {
+        border-radius: 14px;
+        padding: 12px 16px;
+        font-size: 14px;
+    }
+
+    /* ---------- queue drawer floats above the player-bar ---------- */
+    .queue-drawer {
+        width: 100%;
+        max-width: none;
+        right: 0; left: 0; bottom: 0;
+        top: auto;
+        max-height: 70vh;
+        border-radius: 22px 22px 0 0;
+        padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+        animation: modal-slide-up .28s cubic-bezier(.22,1,.36,1);
+    }
+    .queue-drawer-backdrop { background: rgba(0,0,0,.35); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+
+    /* ---------- lyrics editor modal: pin play/seek to the top so the
+       rest of the modal can scroll if the timeline + lines get tall. */
+    #lyrics-editor-modal .modal-box {
+        max-height: 92vh;
+        display: flex; flex-direction: column;
+    }
+    #lyrics-editor-modal .modal-body { overflow-y: auto; }
+
+    /* ---------- settings form: bigger tap targets ---------- */
+    .option { padding: 8px 0; }
+    .option input[type="range"] { height: 28px; }
+    .btn { min-height: 36px; }
+
+    /* ---------- search input + suggest box ---------- */
+    .sidebar-search input[type="search"] {
+        height: 40px; font-size: 15px; padding: 0 14px;
+    }
+    .search-suggest { font-size: 14px; }
+}
+
+/* ============================================================
+   Mobile "now playing" full-screen view -- shown only on mobile.
+   The JS toggles `hidden`; the visual slides up via transform.
+   ============================================================ */
+
+.now-playing-mobile {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex; flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+    transform: translateY(100%);
+    transition: transform .32s cubic-bezier(.22,1,.36,1);
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    overflow: hidden;
+}
+.now-playing-mobile.is-open {
+    transform: translateY(0);
+}
+
+.npm-bg {
+    position: absolute; inset: -20px;
+    background-size: cover;
+    background-position: center;
+    filter: blur(60px) saturate(140%) brightness(.55);
+    transform: scale(1.1);
+    opacity: .55;
+    z-index: 0;
+    pointer-events: none;
+    transition: opacity .4s;
+}
+
+.now-playing-mobile .npm-head {
+    position: relative; z-index: 1;
+    display: grid;
+    grid-template-columns: 44px 1fr 44px;
+    align-items: center;
+    padding: 4px 8px;
+    flex: 0 0 auto;
+}
+.now-playing-mobile .npm-meta {
+    display: flex; flex-direction: column; align-items: center;
+    min-width: 0;
+}
+.now-playing-mobile .npm-source {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--text-3);
+}
+.now-playing-mobile .npm-title {
+    font-size: 13px; font-weight: 500;
+    max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.now-playing-mobile .npm-cover-wrap {
+    position: relative; z-index: 1;
+    flex: 1 1 auto;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 0;
+    padding: 24px;
+}
+.now-playing-mobile .npm-cover {
+    width: min(72vw, 320px);
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 22px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+    background: var(--sunken);
+}
+
+.now-playing-mobile .npm-info {
+    position: relative; z-index: 1;
+    flex: 0 0 auto;
+    padding: 0 22px 8px;
+    text-align: center;
+}
+.now-playing-mobile .npm-info h2 {
+    font-size: 22px; font-weight: 700; letter-spacing: -.01em;
+    margin: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.now-playing-mobile .npm-info p {
+    margin: 4px 0 0; font-size: 15px; color: var(--text-2);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.now-playing-mobile .npm-badges {
+    display: flex; justify-content: center; gap: 6px;
+    margin-top: 8px;
+}
+
+.now-playing-mobile .npm-lyrics {
+    position: relative; z-index: 1;
+    flex: 1 1 auto;
+    min-height: 60px;
+    overflow-y: auto;
+    padding: 8px 22px 12px;
+    text-align: center;
+    -webkit-overflow-scrolling: touch;
+    mask-image: linear-gradient(to bottom, transparent 0, black 24px, black calc(100% - 32px), transparent 100%);
+}
+.now-playing-mobile .npm-lyrics .lyric-line {
+    padding: 6px 0;
+    font-size: 17px;
+    color: var(--text-2);
+    line-height: 1.5;
+    transition: color .25s, transform .25s, opacity .25s;
+}
+.now-playing-mobile .npm-lyrics .lyric-line.is-active {
+    color: var(--text);
+    font-weight: 700;
+    font-size: 20px;
+    transform: scale(1.02);
+}
+.now-playing-mobile .npm-lyrics .lyric-line .lyric-translation {
+    display: block; font-size: 13.5px; color: var(--text-3);
+    font-weight: 400; margin-top: 2px;
+}
+
+.now-playing-mobile .npm-controls {
+    position: relative; z-index: 1;
+    flex: 0 0 auto;
+    padding: 4px 18px calc(10px + env(safe-area-inset-bottom, 0px));
+    background: linear-gradient(to top, var(--surface-strong) 0%, transparent 100%);
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    backdrop-filter: blur(var(--glass-blur));
+}
+.now-playing-mobile .npm-progress {
+    display: grid; grid-template-columns: 44px 1fr 44px;
+    align-items: center; gap: 10px;
+    margin-bottom: 14px;
+}
+.now-playing-mobile .npm-progress .time {
+    font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+.now-playing-mobile .npm-buttons {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+    align-items: center;
+    justify-items: center;
+}
+.now-playing-mobile .npm-buttons .btn {
+    width: 48px; height: 48px;
+    border-radius: 999px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 18px;
+}
+.now-playing-mobile #npm-play {
+    width: 64px; height: 64px;
+    font-size: 22px;
+    background: var(--brand);
+    color: var(--accent-text);
+    box-shadow: 0 1px 3px rgba(0,0,0,.15), 0 10px 26px rgba(236, 65, 65, 0.45);
+}
+.now-playing-mobile .npm-secondary {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    align-items: center;
+    justify-items: center;
+    margin-top: 16px;
+}
+.now-playing-mobile .npm-secondary .btn {
+    width: 42px; height: 42px;
+    border-radius: 999px;
+    font-size: 15px;
+    color: var(--text-2);
+}
+
+/* Hide the full-screen now-playing on desktop -- mobile users reach it
+   via tap on the player-bar; on desktop the existing layout already
+   covers it.  The JS still creates + updates the elements (so data stays
+   in sync) but they never become visible. */
+@media (min-width: 721px) {
+    .now-playing-mobile { display: none !important; }
+    #btn-sidebar-toggle { display: none !important; }
+}
+
+/* When running inside pywebview's desktop window the sidebar is part
+   of the regular layout; on mobile we toggle the drawer via the data
+   attribute set in JS. */

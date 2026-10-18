@@ -118,6 +118,7 @@ async function boot() {
         await loadPlayerExtras();
         await restoreSession();
         startSessionTimer();
+        initMobileLayout();      // responsive shell (drawer / npm view)
         // Pick a starting source that always shows data on first paint:
         // logged-in users start in their own playlists; anonymous users get
         // the local music tab so the screen is never blank.
@@ -1191,6 +1192,335 @@ async function selectSource(source) {
     else if (source === 'local') await loadLocal();
     else if (source === 'recent') await loadRecent();
     else if (source === 'search') await showSearchResults();
+}
+
+/* ============================================================
+   Responsive shell (mobile drawer + full-screen now-playing).
+   The CSS owns the actual layout; this module only:
+     - toggles `<body class="is-mobile">` so JS can branch cheaply
+     - wires the sidebar hamburger + backdrop
+     - mirrors the desktop renderers into the mobile now-playing panel
+   Mirroring avoids a separate "mobile render" path; the npm elements
+   just observe the same state as the desktop ones.
+   ============================================================ */
+const MOBILE_QUERY = window.matchMedia('(max-width: 720px)');
+let mobileSidebarBackdrop = null;
+
+function setMobile(isMobile) {
+    document.body.classList.toggle('is-mobile', isMobile);
+    if (!isMobile) {
+        // Closing the drawer when the window resizes back to desktop
+        // avoids a stuck drawer that the desktop layout can't see.
+        document.body.removeAttribute('data-sidebar-open');
+    }
+}
+
+function ensureSidebarBackdrop() {
+    if (mobileSidebarBackdrop) return mobileSidebarBackdrop;
+    const backdrop = document.createElement('div');
+    backdrop.className = 'sidebar-backdrop';
+    document.body.appendChild(backdrop);
+    backdrop.addEventListener('click', () => closeMobileSidebar());
+    mobileSidebarBackdrop = backdrop;
+    return backdrop;
+}
+
+function openMobileSidebar() {
+    if (!MOBILE_QUERY.matches) return;
+    ensureSidebarBackdrop();
+    document.body.setAttribute('data-sidebar-open', '1');
+}
+
+function closeMobileSidebar() {
+    document.body.removeAttribute('data-sidebar-open');
+}
+
+function initMobileLayout() {
+    // Backdrop only exists on mobile, but the body class lets JS cheaply
+    // branch on layout -- e.g. `renderNowPlaying` only paints the npm
+    // mirrors when `is-mobile` is active, saving the work on desktop.
+    setMobile(MOBILE_QUERY.matches);
+    if (typeof MOBILE_QUERY.addEventListener === 'function') {
+        MOBILE_QUERY.addEventListener('change', (event) => setMobile(event.matches));
+    } else if (typeof MOBILE_QUERY.addListener === 'function') {
+        // Safari < 14 fallback -- safe to drop after pywebview 6 EOL.
+        MOBILE_QUERY.addListener((event) => setMobile(event.matches));
+    }
+
+    // Sidebar hamburger -- the same button works in two layouts:
+    //   mobile  -> drawer (this function)
+    //   desktop -> toggle the .is-collapsed class (the existing
+    //              CSS rule was already there but had no JS handler).
+    const sidebarToggle = document.getElementById('btn-sidebar-toggle');
+    if (sidebarToggle) {
+        sidebarToggle.addEventListener('click', () => {
+            if (MOBILE_QUERY.matches) {
+                if (document.body.getAttribute('data-sidebar-open') === '1') {
+                    closeMobileSidebar();
+                } else {
+                    openMobileSidebar();
+                }
+            } else {
+                document.body.classList.toggle('is-sidebar-collapsed');
+            }
+        });
+    }
+
+    // Sidebar items auto-close the drawer on mobile so the chosen source
+    // becomes visible immediately.  The desktop layout does not close.
+    document.querySelectorAll('#sidebar-nav .sidebar-item').forEach((item) => {
+        item.addEventListener('click', () => {
+            if (MOBILE_QUERY.matches) closeMobileSidebar();
+        });
+    });
+
+    // The player-bar title and cover open the full-screen now-playing
+    // view on mobile.  Desktop already shows everything inline.
+    const pbTitle = document.getElementById('pb-title');
+    const pbCover = document.getElementById('pb-cover');
+    const openFromBar = () => {
+        if (MOBILE_QUERY.matches) openNowPlayingMobile();
+    };
+    if (pbTitle) pbTitle.addEventListener('click', openFromBar);
+    if (pbCover) pbCover.addEventListener('click', openFromBar);
+
+    initNowPlayingMobile();
+    initMobileLyricsRenderer();
+}
+
+/* ---------- full-screen now-playing (mobile only) ---------- */
+function openNowPlayingMobile() {
+    const view = document.getElementById('now-playing-mobile');
+    if (!view) return;
+    view.hidden = false;
+    // Force a reflow before adding the class so the slide-up transition
+    // runs from the initial state.
+    void view.offsetWidth;
+    view.classList.add('is-open');
+    renderNowPlayingMobile();
+    renderMobileLyrics();
+}
+
+function closeNowPlayingMobile() {
+    const view = document.getElementById('now-playing-mobile');
+    if (!view) return;
+    view.classList.remove('is-open');
+    // Wait for the transition before re-hiding so the user sees it
+    // slide down instead of vanishing.
+    setTimeout(() => {
+        if (!view.classList.contains('is-open')) view.hidden = true;
+    }, 320);
+}
+
+function initNowPlayingMobile() {
+    const view = document.getElementById('now-playing-mobile');
+    if (!view) return;
+
+    document.getElementById('btn-npm-close')?.addEventListener('click', closeNowPlayingMobile);
+    document.getElementById('npm-play')?.addEventListener('click', togglePlay);
+    document.getElementById('npm-prev')?.addEventListener('click', playPrevious);
+    document.getElementById('npm-next')?.addEventListener('click', playNext);
+    document.getElementById('npm-mode')?.addEventListener('click', cycleMode);
+    document.getElementById('npm-fav')?.addEventListener('click', () => {
+        if (player.current) toggleFavorite(player.current);
+    });
+    document.getElementById('npm-desktop-lyrics')?.addEventListener('click', toggleDesktopLyrics);
+    document.getElementById('npm-queue')?.addEventListener('click', toggleQueueDrawer);
+    document.getElementById('npm-download')?.addEventListener('click', () => {
+        if (player.current) downloadTrack(player.current);
+    });
+    document.getElementById('npm-sleep-timer')?.addEventListener('click', showSleepTimerPopover);
+
+    const track = document.getElementById('npm-track');
+    if (track) {
+        track.addEventListener('click', (event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            seekToFraction((event.clientX - rect.left) / rect.width);
+        });
+    }
+
+    // Swipe-down closes the view, swipe-up is a no-op (no need to fight
+    // the scroll).  The 60-px threshold is enough that a tiny accidental
+    // tap on the cover doesn't dismiss the view.
+    let startY = null;
+    view.addEventListener('touchstart', (event) => {
+        if (event.touches.length !== 1) { startY = null; return; }
+        startY = event.touches[0].clientY;
+    }, { passive: true });
+    view.addEventListener('touchend', (event) => {
+        if (startY === null) return;
+        const endY = event.changedTouches[0].clientY;
+        const delta = endY - startY;
+        if (delta > 60) closeNowPlayingMobile();
+        startY = null;
+    }, { passive: true });
+}
+
+/**
+ * Mirror the desktop now-playing state into the mobile panel.  The body
+ * class flips with the viewport, so calling this on every render is cheap
+ * when the panel is hidden.
+ */
+function renderNowPlayingMobile() {
+    if (!document.body.classList.contains('is-mobile')) return;
+    const track = player.current;
+    const resolved = player.resolved || {};
+    const titleEl = document.getElementById('npm-track-title');
+    const artistEl = document.getElementById('npm-track-artist');
+    const coverEl = document.getElementById('npm-cover');
+    const bgEl = document.getElementById('npm-bg');
+    const kindEl = document.getElementById('npm-kind');
+    const qualityEl = document.getElementById('npm-quality');
+    const sourceEl = document.getElementById('npm-source');
+    const titleBar = document.getElementById('npm-title');
+    const favBtn = document.getElementById('npm-fav');
+    if (!titleEl || !coverEl) return;
+
+    if (!track) {
+        if (titleEl) titleEl.textContent = t('player.nothing_playing');
+        if (artistEl) artistEl.textContent = '';
+        if (kindEl) kindEl.textContent = '';
+        if (qualityEl) qualityEl.textContent = '';
+        if (sourceEl) sourceEl.textContent = '';
+        if (titleBar) titleBar.textContent = t('player.nothing_playing');
+        coverEl.removeAttribute('src');
+        coverEl.classList.add('is-empty');
+        if (bgEl) bgEl.style.backgroundImage = '';
+        if (favBtn) {
+            favBtn.textContent = '♡';
+            favBtn.classList.remove('fav-on');
+        }
+        return;
+    }
+
+    titleEl.textContent = track.name || '-';
+    artistEl.textContent = track.artists || '';
+    if (kindEl) kindEl.textContent = t('player.badge_' + (resolved.kind || track.source || 'online'));
+    if (qualityEl) qualityEl.textContent = levelText(resolved.quality || resolved.level);
+    if (sourceEl) {
+        const srcName = (player.source && player.source.name) || '';
+        sourceEl.textContent = srcName ? srcName.slice(0, 32) : '';
+    }
+    if (titleBar) titleBar.textContent = track.name || '-';
+
+    const art = resolved.cover_url || track.cover_url || '';
+    // background-image: url(...) can't safely hold a JS template literal
+    // with embedded regex + escaped quotes (the JS scanner in the frontend
+    // test would mis-parse the regex body and treat the rest of the file
+    // as one giant string).  Escape the value once and inline it.
+    if (art) {
+        coverEl.src = art;
+        coverEl.classList.remove('is-empty');
+        coverEl.onerror = () => { coverEl.removeAttribute('src'); coverEl.classList.add('is-empty'); };
+        if (bgEl) {
+            const safeArt = art.replace(/"/g, '%22');
+            bgEl.style.backgroundImage = 'url("' + safeArt + '")';
+        }
+    } else {
+        coverEl.removeAttribute('src');
+        coverEl.classList.add('is-empty');
+        if (bgEl) bgEl.style.backgroundImage = '';
+    }
+    if (favBtn) {
+        const key = trackKeyOf(track);
+        const favorite = player.favoriteKeys.has(key);
+        favBtn.textContent = favorite ? '♥' : '♡';
+        favBtn.classList.toggle('fav-on', favorite);
+        favBtn.classList.toggle('fav-off', !favorite);
+    }
+
+    // Reflect play/pause + mode button state.
+    updateMobileControlStates();
+}
+
+function updateMobileControlStates() {
+    const playBtn = document.getElementById('npm-play');
+    if (playBtn) {
+        const playing = !audio.paused && !audio.ended;
+        playBtn.textContent = playing ? '❚❚' : '▶';
+    }
+    const modeBtn = document.getElementById('npm-mode');
+    if (modeBtn) {
+        modeBtn.textContent = MODE_ICONS[player.mode] || MODE_ICONS.list;
+        modeBtn.title = t('player.mode_' + player.mode);
+    }
+    const current = document.getElementById('npm-current');
+    const duration = document.getElementById('npm-duration');
+    const fill = document.getElementById('npm-fill');
+    const total = isFinite(audio.duration) ? audio.duration : 0;
+    const ratio = total ? (audio.currentTime / total) * 100 : 0;
+    if (fill) fill.style.width = `${Math.min(100, Math.max(0, ratio))}%`;
+    if (current) current.textContent = fmtTime(audio.currentTime);
+    if (duration) {
+        duration.textContent = total
+            ? fmtTime(total)
+            : (player.current ? fmtDuration(player.current.duration) : '0:00');
+    }
+}
+
+/* ---------- mobile lyrics renderer ----------
+ * Reuses player.lyrics but writes into the npm scroll container.  Same
+ * timing logic as the desktop panel (player.lyricOffset + active index).
+ */
+function initMobileLyricsRenderer() {
+    const box = document.getElementById('npm-lyrics');
+    if (!box) return;
+    // Use the existing desktop highlight cadence but render into the npm
+    // container.  updateLyricHighlight already does the binary search and
+    // scroll math; this just renders.
+    player.lyrics = player.lyrics || [];
+    box.innerHTML = '';
+    if (!player.lyrics.length) {
+        const empty = document.createElement('p');
+        empty.className = 'empty';
+        empty.textContent = t('lyrics.none');
+        box.appendChild(empty);
+        return;
+    }
+    const showTranslation = (state.settings && state.settings.playback.show_translation) !== false;
+    const fragment = document.createDocumentFragment();
+    player.lyrics.forEach((line) => {
+        const element = document.createElement('div');
+        element.className = 'lyric-line';
+        element.dataset.time = String(line.time);
+        element.textContent = line.text || '♪';
+        if (showTranslation && line.translation) {
+            const t = document.createElement('span');
+            t.className = 'lyric-translation';
+            t.textContent = line.translation;
+            element.appendChild(t);
+        }
+        fragment.appendChild(element);
+    });
+    box.appendChild(fragment);
+}
+
+function renderMobileLyrics() {
+    if (!document.body.classList.contains('is-mobile')) return;
+    initMobileLyricsRenderer();
+}
+
+function updateMobileLyricHighlight() {
+    if (!document.body.classList.contains('is-mobile')) return;
+    const box = document.getElementById('npm-lyrics');
+    if (!box) return;
+    const ms = audio.currentTime * 1000 - (player.lyricOffset || 0);
+    let low = 0, high = player.lyrics.length - 1, found = -1;
+    while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (player.lyrics[mid].time <= ms) { found = mid; low = mid + 1; }
+        else high = mid - 1;
+    }
+    const prev = box.querySelector('.lyric-line.is-active');
+    if (prev) prev.classList.remove('is-active');
+    player.lyricIndex = found;
+    const lines = box.querySelectorAll('.lyric-line');
+    const line = lines[found];
+    if (!line) return;
+    line.classList.add('is-active');
+    // Keep the active line centred, like Apple Music's now-playing.
+    const top = line.offsetTop - box.clientHeight / 2 + line.clientHeight / 2;
+    box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
 }
 
 async function loadPlaylists() {
@@ -2958,6 +3288,7 @@ function updateModeButton() {
     const label = t('player.mode_' + player.mode);
     button.title = label;
     button.setAttribute('aria-label', label);
+    updateMobileControlStates();
 }
 
 function seekBy(seconds) {
@@ -3044,6 +3375,9 @@ function renderLyricsLoading() {
     player.lyricIndex = -1;
     const save = document.getElementById('btn-save-lyrics');
     if (save) save.hidden = true;
+    // Mobile mirror: clear the npm lyrics too.
+    const npmBox = document.getElementById('npm-lyrics');
+    if (npmBox) npmBox.innerHTML = `<p class="empty">${t('lyrics.loading')}</p>`;
 }
 
 function renderLyricSource() {
@@ -3073,6 +3407,7 @@ async function loadLyrics(track, save) {
         const saveButton = document.getElementById('btn-save-lyrics');
         if (saveButton) saveButton.hidden = true;
         renderLyricSource();
+        renderMobileLyrics();
         return;
     }
     player.lyrics = result.lines || [];
@@ -3087,6 +3422,7 @@ async function loadLyrics(track, save) {
             && !result.lyrics_path);
     }
     if (result.lyrics_path) showToast('success', t('lyrics.saved'), 2600);
+    renderMobileLyrics();
 }
 
 function renderLyricLines() {
@@ -3141,6 +3477,9 @@ function renderLyricLines() {
     
     box.appendChild(fragment);
     box.scrollTop = 0;
+    // Mobile mirror: the npm view renders the same lyrics in a separate
+    // container; rebind whenever the desktop panel re-renders.
+    renderMobileLyrics();
 }
 
 function renderKaraokeLines(fragment) {
@@ -3374,6 +3713,9 @@ function updateLyricHighlight() {
         const top = line.offsetTop - box.clientHeight / 2 + line.clientHeight / 2;
         box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     }
+    // Mobile mirror: the full-screen now-playing view has its own lyrics
+    // container; share the same found index.
+    updateMobileLyricHighlight();
 }
 
 /* ------------------------------------------------------------- now playing */
@@ -3401,6 +3743,7 @@ function renderNowPlaying() {
         if (barTitle) barTitle.textContent = t('player.nothing_playing');
         if (barArtist) barArtist.textContent = '';
         updateFavoriteButton();
+        renderNowPlayingMobile();
         return;
     }
 
@@ -3432,6 +3775,7 @@ function renderNowPlaying() {
     if (barTitle) barTitle.textContent = track.name || '-';
     if (barArtist) barArtist.textContent = track.artists || '';
     updateFavoriteButton();
+    renderNowPlayingMobile();
 }
 
 function updateFavoriteButton() {
@@ -3474,6 +3818,7 @@ function updatePlayButton() {
     const label = playing ? t('player.pause') : t('player.play');
     button.title = label;
     button.setAttribute('aria-label', label);
+    updateMobileControlStates();
 }
 
 function updateProgressUi() {
@@ -3485,6 +3830,7 @@ function updateProgressUi() {
     if (fill) fill.style.width = `${Math.min(100, Math.max(0, ratio))}%`;
     if (current) current.textContent = fmtTime(audio.currentTime);
     if (duration) duration.textContent = total ? fmtTime(total) : (player.current ? fmtDuration(player.current.duration) : '0:00');
+    updateMobileControlStates();
 }
 
 /* ------------------------------------------------------ session persistence */

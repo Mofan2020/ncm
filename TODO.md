@@ -237,3 +237,33 @@
 - ✅ Core functionality verified
 - ✅ All `tests/test_frontend_assets.py` checks pass (element IDs / i18n / bridge / handlers / identifiers)
 - ⏳ 实际 UI 手测（macOS pywebview 启动 + 视觉验证）由星空喵完成
+
+---
+
+## Mobile / responsive shell (2026-10-18)
+
+### 新增
+- [x] `<meta name="viewport">` 扩 `viewport-fit=cover, user-scalable=no`
+- [x] CSS `@media (max-width: 720px)` 整套移动端布局：sidebar 抽屉 / 全屏 now-playing / bottom sheet 模态 / 安全区 inset
+- [x] `<section id="now-playing-mobile">` 全屏播放页（封面 + 大字歌词 + 大圆按钮 + 模糊背景）
+- [x] sidebar 抽屉：左→右滑入 + backdrop blur + 选择 source 后自动关闭
+- [x] 模态（设置 / 登录 / 歌单详情 / 歌词编辑器 / 队列抽屉）手机端全部 bottom sheet
+- [x] 触摸手势：npm 全屏页 swipe-down 关闭
+- [x] 桌面 navbar `#btn-sidebar-toggle` 复用：mobile = 抽屉，desktop = 折叠侧边栏
+- [x] 苹果液态玻璃：mobile 用现有 `--glass` token + 加深 blur（32px） + 加大圆角（22px） + 大触摸区（44-56px）
+- [x] safe-area inset（iOS notch / Android nav bar）所有 bottom-fixed 元素都让出
+- [x] npm lyrics 镜像 `player.lyrics` + 应用 `player.lyricOffset`，与桌面共用 highlight 时机
+- [x] npm 控件镜像 `pb-play / pb-prev / pb-next / pb-mode / pb-fav / 进度条 / 时长`
+- [x] 所有 desktop render（renderNowPlaying / renderLyricLines / updateProgressUi / updatePlayButton / updateModeButton / renderLyricsLoading）末尾调 mobile mirror，桌面无开销
+
+### 不做（边界）
+- ❌ 不实现 Android 编译（用户后续单独规划）
+- ❌ 不引入新依赖（用 matchMedia + CSS）
+- ❌ 不动 desktop lyrics / lyrics editor modal 高级功能
+- ❌ 不重写 app.js（mobile 是加法不是改写）
+
+### 验证
+- ✅ 327 tests passed, 6 skipped（与 3.1.5 一致）
+- ✅ self-test OK
+- ✅ node -c JS 语法 OK
+- ⏳ 手机端实测由星空喵在 Android Chrome / iOS Safari WebView 完成
