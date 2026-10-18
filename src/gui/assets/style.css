@@ -1451,3 +1451,141 @@ input[type="range"]::-webkit-slider-thumb {
     flex: 1;
     min-width: 0;
 }
+
+/* ============================================================
+   Player polish (2026-10-18): visual density + sidebar affordance.
+   These rules do not change layout -- they only refine what the
+   previous styles already define.
+   ============================================================ */
+
+/* Sidebar feels more like a rail when it gets a soft inner shadow and
+   the section headings pick up the same accent as the active item. */
+.player-sidebar {
+    display: flex; flex-direction: column; gap: 10px;
+    border-radius: var(--radius);
+    padding: 12px;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+.player-sidebar .sidebar-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 2px;
+}
+.player-sidebar .sidebar-header h3 {
+    font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
+    color: var(--text-2); text-transform: uppercase;
+}
+.player-sidebar .sidebar-nav {
+    display: flex; flex-direction: column; gap: 14px;
+}
+.player-sidebar .sidebar-section {
+    display: flex; flex-direction: column; gap: 2px;
+}
+.player-sidebar .sidebar-section-title {
+    margin: 6px 10px 4px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--text-3);
+}
+.sidebar-item {
+    position: relative;
+    display: flex; align-items: center;
+    padding: 7px 12px 7px 16px;
+    border: none; background: transparent; color: var(--text-2);
+    font: inherit; font-size: 13px; font-weight: 500;
+    border-radius: 9px; cursor: pointer;
+    text-align: left;
+    transition: background .18s cubic-bezier(.22,1,.36,1),
+                color .18s, transform .18s;
+}
+.sidebar-item:hover {
+    color: var(--text);
+    background: var(--hover);
+}
+.sidebar-item.is-active {
+    color: var(--text);
+    background: var(--brand-soft);
+    font-weight: 600;
+}
+.sidebar-item.is-active::before {
+    content: '';
+    position: absolute; left: 4px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 16px;
+    border-radius: 2px;
+    background: var(--accent, var(--brand));
+}
+.sidebar-item.is-active:active { transform: scale(0.985); }
+
+/* The duplicate source-tabs row is hidden when the new sidebar layout is
+   active (the HTML ships both for back-compat), but kept visible when the
+   sidebar is absent.  The presence of `#player-sidebar` is the signal. */
+#player-sidebar ~ * .source-tabs,
+.player-layout:has(#player-sidebar) .source-tabs {
+    display: none;
+}
+
+/* Larger touch targets + crisper hover affordance for track rows. */
+.track-row {
+    min-height: 46px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border-bottom: none;
+}
+.track-row + .track-row {
+    margin-top: 2px;
+}
+.track-row .track-name { font-size: 13.5px; }
+.track-row .track-sub { font-size: 11.5px; }
+.track-row .track-actions .btn { padding: 4px 7px; }
+
+/* Now-playing cover: deeper shadow, larger by default. */
+.np-cover {
+    width: clamp(112px, 11vw, 148px);
+    height: clamp(112px, 11vw, 148px);
+    box-shadow: var(--shadow);
+    transition: transform .4s cubic-bezier(.22,1,.36,1);
+}
+.np-meta h2 {
+    font-weight: 700;
+    letter-spacing: -0.015em;
+}
+
+/* Player bar: bigger play button + better spacing. */
+.player-bar {
+    padding: 8px clamp(12px, 1.6vw, 22px);
+    gap: 14px;
+}
+.player-bar .pb-buttons { gap: 4px; }
+.player-bar .pb-buttons .btn { padding: 6px 10px; font-size: 14px; }
+.player-bar #pb-play {
+    width: 40px; height: 40px;
+    border-radius: 999px;
+    font-size: 15px;
+    background: var(--brand);
+    color: var(--accent-text);
+    box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 8px 22px rgba(236, 65, 65, 0.35);
+    transition: transform .18s, box-shadow .18s, background .18s;
+}
+.player-bar #pb-play:hover {
+    background: var(--brand-hover);
+    transform: scale(1.04);
+    box-shadow: 0 2px 4px rgba(0,0,0,.14), 0 12px 28px rgba(236, 65, 65, 0.45);
+}
+
+/* Lyrics panel: bigger active line + smoother transitions. */
+.lyrics-panel { padding: 12px 8px 14px; }
+.lyrics .lyric-line {
+    font-size: 14.5px;
+    line-height: 1.9;
+    transition: opacity .28s cubic-bezier(.22,1,.36,1),
+                transform .28s cubic-bezier(.22,1,.36,1),
+                color .28s;
+}
+.lyrics .lyric-line.is-active {
+    font-size: 19px;
+    font-weight: 600;
+    transform: translateZ(0) scale(1.02);
+    color: var(--text);
+}
+.lyrics .lyric-line .lyric-translation { font-size: 12.5px; }

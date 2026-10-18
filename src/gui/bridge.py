@@ -1613,8 +1613,9 @@ class GuiBridge:
                 self._desktop_lyrics_window = None
 
         if self._webview_module is None:
-            # Fallback to JS-based window.open
-            self._call_js("onOpenDesktopLyrics", {})
+            # Fallback to JS-based window.open -- happens only in the
+            # browser/dev environment, not in a packaged build.
+            self._open_desktop_lyrics_browser_fallback()
             return {"success": True}
 
         try:
@@ -1622,7 +1623,7 @@ class GuiBridge:
             html_path = resource_path("src", "gui", "assets", "desktop-lyrics.html")
             if not html_path.exists():
                 self.logger.warning("Desktop lyrics HTML not found at %s", html_path)
-                self._call_js("onOpenDesktopLyrics", {})
+                self._open_desktop_lyrics_browser_fallback()
                 return {"success": True}
 
             settings = self.settings
@@ -1649,20 +1650,37 @@ class GuiBridge:
                 # Remove transparent/background_color for better compatibility
             )
 
+            # Track a freshly opened window so the first lyrics push after
+            # this call carries the full lines array (see update_desktop_lyrics).
+            self._desktop_lyrics_payload_id = -1
+
             # Store reference to this bridge for the desktop lyrics window
             self._desktop_lyrics_window.events.closed += self._on_desktop_lyrics_closed
 
-            # Push current lyrics if available
-            self._call_js("onOpenDesktopLyrics", {})
+            # The previous code invoked `onOpenDesktopLyrics` here, but that just
+            # delegated back to the main window's `openDesktopLyrics()`
+            # -> infinite recursion.  We now signal the main window via a
+            # uniquely named event so the JS side can `pushLyricsToDesktop`
+            # exactly once without re-creating the window.  `update_desktop_lyrics`
+            # then evaluates directly on the new window.
+            self._call_js("onDesktopLyricsWindowReady", {})
             return {"success": True}
         except Exception as exc:
             self.logger.warning("Failed to create desktop lyrics window: %s", exc)
-            self._call_js("onOpenDesktopLyrics", {})
+            self._open_desktop_lyrics_browser_fallback()
             return {"success": True}
+
+    def _open_desktop_lyrics_browser_fallback(self) -> None:
+        """Dev-only path: open via JS `window.open`.  The main window then
+        pushes updates directly to the returned window object via postMessage
+        (the only way a vanilla browser tab can reach the popup)."""
+        self._call_js("openDesktopLyricsFallback", {})
 
     def _on_desktop_lyrics_closed(self) -> None:
         self._desktop_lyrics_window = None
-        self._call_js("onCloseDesktopLyrics", {})
+        # Reset the payload tracker so the next open will receive the full
+        # lyrics array again instead of the stale "index-only" payload.
+        self._desktop_lyrics_payload_id = -1
 
     def close_desktop_lyrics(self) -> dict[str, Any]:
         """Close the desktop lyrics window."""
@@ -1672,16 +1690,66 @@ class GuiBridge:
             except Exception:
                 pass
             self._desktop_lyrics_window = None
-        self._call_js("onCloseDesktopLyrics", {})
         return {"success": True}
 
     def update_desktop_lyrics(self, lines: list[dict[str, Any]], index: int) -> dict[str, Any]:
         """Push lyric update to the desktop lyrics window.
-        Only sends the index to avoid sending the full lyrics array repeatedly.
-        The desktop window already has the lyrics loaded.
+
+        The desktop window is a separate pywebview instance with its own
+        JS context, so it cannot receive callbacks fired on the main
+        window -- ``window.opener`` is ``null`` and localStorage is not
+        shared.  We therefore evaluate the lyrics payload directly on the
+        desktop window, where ``window.handleLyricsUpdate`` (set by
+        ``desktop-lyrics.js``) dispatches into the IIFE.
         """
-        self._call_js("onDesktopLyricsUpdate", {"index": index})
-        return {"success": True}
+        target = self._desktop_lyrics_window
+        if target is None:
+            return {"success": False, "reason": "desktop_lyrics_window_closed"}
+        try:
+            # Track whether this window has ever received lyrics so we can
+            # resend the lines after the window is reopened without an
+            # intervening source switch (the previous code used a global
+            # counter that broke the moment the user closed & reopened
+            # the desktop lyrics window mid-track).
+            target_id = id(target)
+            if not hasattr(self, '_desktop_lyrics_payload_id'):
+                self._desktop_lyrics_payload_id = -1
+            if self._desktop_lyrics_payload_id != target_id:
+                self._desktop_lyrics_payload_id = target_id
+                payload = {
+                    "action": "update",
+                    "full": True,
+                    "lines": lines,
+                    "index": index,
+                }
+            else:
+                # Subsequent updates: only the active line index moves,
+                # which keeps the per-update payload tiny (a couple of
+                # ints instead of the whole lines array).
+                payload = {"action": "update", "index": index, "full": False}
+            args = json.dumps(payload, ensure_ascii=False)
+            target.evaluate_js(f"handleLyricsUpdate({args})")
+            return {"success": True}
+        except Exception as exc:
+            self.logger.debug("desktop lyrics push failed: %s", exc)
+            return {"success": False, "reason": str(exc)}
+
+    def update_desktop_lyrics_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        """Push a styling tweak (font size / color / opacity / showTranslation)
+        to the open desktop window.  Mirrors `update_desktop_lyrics` but only
+        carries the settings dictionary; the JS side merges it into its own
+        state and reapplies the styles."""
+        target = self._desktop_lyrics_window
+        if target is None:
+            return {"success": False, "reason": "desktop_lyrics_window_closed"}
+        try:
+            payload = {"action": "settings", "settings": settings}
+            args = json.dumps(payload, ensure_ascii=False)
+            target.evaluate_js(f"handleLyricsUpdate({args})")
+            return {"success": True}
+        except Exception as exc:
+            self.logger.debug("desktop lyrics settings push failed: %s", exc)
+            return {"success": False, "reason": str(exc)}
 
     # -- sleep timer -------------------------------------------------------------
     def set_sleep_timer(self, minutes: int, action: str = "pause") -> dict[str, Any]:

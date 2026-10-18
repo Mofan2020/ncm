@@ -41,6 +41,7 @@
 - [x] 前端：歌词同步高亮、翻译开关、字体/大小/颜色/透明度设置
 - [x] 前端：主窗口"桌面歌词"按钮切换（播放栏 + 歌词面板）
 - [x] 本地存储同步设置/位置/状态
+- [x] **优化**：只发送歌词索引而非全量数组，33ms防抖，索引未变跳过更新
 
 ### 1.7 独占音频输出选项
 - [x] 后端：Settings 添加 `exclusive_mode`（off/wasapi/coreaudio/auto）
@@ -49,7 +50,7 @@
 
 ### 1.8 其他新增设置
 - [x] 桌面歌词设置面板（字体大小、颜色、透明度、显示翻译）
-- [x] 跨语言 i18n 完整支持（314 keys）
+- [x] 跨语言 i18n 完整支持（490 keys）
 - [x] 所有测试通过（332 passed）
 
 ---
@@ -113,7 +114,7 @@
 
 ### i18n ✅
 - [x] 中英双语新增 80+ 个 keys（云端/本地歌单、创建/更新/删除/收藏/封面/智能歌单/导入导出/同步/编辑/重命名/删除/收藏/取消收藏/导入/导出/智能规则/本地歌单管理）
-- [x] 总计 439 字符串
+- [x] 总计 490 字符串
 - [x] 所有测试通过（332 passed）
 
 ### 前端 UI ✅
@@ -137,10 +138,10 @@
 - [x] 双行歌词模式（原文+翻译并排显示，可切换开启/关闭）
 - [x] 逐字/卡拉OK模式（逐字高亮跟随播放，占位实现）
 - [x] 歌词偏移调整（-5000ms 到 +5000ms 滑块，实时生效）
-- [x] 歌词编辑器模态框（时间轴、逐行编辑、播放控制、应用/保存）
+- [x] 歌词编辑器模态框（时间轴标记、逐行编辑、播放控制、应用/保存）
 - [x] 桌面歌词窗口（Phase 1.6 已完成）
 - [x] 歌词偏移设置（设置面板，-5000ms 到 +5000ms）
-- [x] 歌词控制面板（双行/卡拉OK/编辑/桌面歌词/保存按钮）
+- [x] 歌词控制面板（双行/卡拉OK/编辑/桌面歌词/保存 五大按钮）
 - [x] 歌词偏移设置（设置面板，-5000ms 到 +5000ms）
 - [x] 歌词控制面板（双行/卡拉OK/编辑/桌面歌词/保存按钮）
 - [x] 歌词偏移设置（设置面板，-5000ms 到 +5000ms）
@@ -154,7 +155,7 @@
 
 ### i18n ✅
 - [x] 中英双语新增 20+ keys
-- [x] 总计 460 字符串
+- [x] 总计 490 字符串
 - [x] 所有测试通过（332 passed）
 
 ---
@@ -174,14 +175,14 @@
 
 ### i18n ✅
 - [x] 中英双语新增 25+ keys（均衡器、ReplayGain、输出设备、播放速度、预设、自定义频段）
-- [x] 总计 485 字符串
+- [x] 总计 490 字符串
 - [x] 所有测试通过（332 passed）
 
 ### 前端 UI ✅
 - [x] 均衡器设置面板：启用开关、预设选择、10段自定义频段滑块（60Hz-16kHz）
 - [x] ReplayGain 设置：启用开关、模式选择、前置增益、库扫描按钮
-- [x] 输出设备选择：下拉列表枚举可用音频输出设备
-- [x] 播放速度滑块：0.5x - 2.0x，实时生效
+- [x] 输出设备选择：Web Audio API 设备枚举选择
+- [x] 播放速度滑块：0.5x-2.0x，实时生效
 - [x] 设置面板新增分组：均衡器、ReplayGain、输出设备、播放速度
 
 ---
@@ -196,6 +197,43 @@
 
 ## 技术债
 - [ ] 前端 ES Module + TypeScript 重构
-- [ ] 虚拟列表
+- [x] 虚拟列表 (曲目列表 >200 行启用 windowed render, 2026-10-18)
 - [ ] E2E 测试
 - [ ] 无障碍
+- [x] **app.js / index.html 混合布局统一** (2026-10-18: selectSource 同时切 .source-tab + .sidebar-item, track-list 进入时清空; 旧 source-tabs 在 sidebar 存在时隐藏但保留 fallback)
+
+---
+
+## Player polish (2026-10-18)
+
+### 修复
+- [x] 启动后 player view 默认 source 智能选择：登录后从「我的歌单」开始，未登录从「本地音乐」开始，避免空白首屏 (boot 加 `state.loggedIn` 探测 + 默认 source 切换)
+- [x] 歌单末尾残留前 source 的曲目：selectSource 进入时清 `track-list` + `player.visible = []` (200+ 混入根因)
+- [x] 歌词偏移 slider 不再触发重新网络请求 (`loadLyrics` → 仅写 `player.lyricOffset`，由 updateLyricHighlight 应用)
+- [x] `updateLyricHighlight` 应用 `player.lyricOffset` (-5000~+5000ms 真的生效了)
+- [x] 桌面歌词窗口：收到完整 lyrics 后真渲染 DOM (prev / current / next 三行 + 翻译)，index-only 更新走 4 个 querySelector 增量
+- [x] desktop-lyrics.js 旧元素引用 (`dl-current` / `dl-translation`) 替换为 class-based 选择
+
+### 内存优化
+- [x] 曲目列表虚拟化：>200 行时只渲染可视区 ±6 行，scroll listener rAF 防抖
+- [x] 切歌时显式 `audio.removeAttribute('src') + audio.load()`，防止字节缓存堆积
+- [x] crossfade 第二 audio 元素按需创建（默认关闭时不创建）
+- [x] session 保存从 `setInterval(5000)` 改为 `timeupdate → scheduleSessionSave`（暂停时不写）
+- [x] toast 容器上限 5 个，超出立即移除最早的
+- [x] cover `<img>` 全部加 `loading="lazy"` + `decoding="async"`
+
+### UI 精修
+- [x] sidebar item 加左侧 3px accent 条 + active brand-soft 背景
+- [x] 曲目行 min-height 46px + 圆角 8px + 2px 间距
+- [x] now-playing 封面 112~148px + 更深阴影
+- [x] player-bar #pb-play 圆形 40px 按钮 + brand 色 + hover scale
+- [x] 歌词当前行 19px + scale 1.02 + 平滑过渡
+
+---
+
+## 验证状态
+- ✅ 327 tests passed, 6 skipped
+- ✅ Self-test passes (490 strings)
+- ✅ Core functionality verified
+- ✅ All `tests/test_frontend_assets.py` checks pass (element IDs / i18n / bridge / handlers / identifiers)
+- ⏳ 实际 UI 手测（macOS pywebview 启动 + 视觉验证）由星空喵完成

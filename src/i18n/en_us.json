@@ -383,7 +383,12 @@
     "playlist_unsubscribed": "Unsubscribed from playlist",
     "playlist_delete": "Delete",
     "playlist_subscribe": "Subscribe",
-    "playlist_unsubscribe": "Unsubscribe"
+    "playlist_unsubscribe": "Unsubscribe",
+    "collapse_sidebar": "Collapse Sidebar",
+    "library": "Library",
+    "local_sources": "Local Sources",
+    "online_sources": "Online Sources",
+    "search": "Search"
   },
   "lyrics": {
     "loading": "Loading lyrics...",

@@ -131,6 +131,11 @@
     "source_search": "搜索",
     "source_local_playlists": "本地歌单",
     "playlist_empty": "没有获取到歌单，请先登录账号",
+    "collapse_sidebar": "折叠侧边栏",
+    "library": "音乐库",
+    "local_sources": "本地来源",
+    "online_sources": "在线来源",
+    "search": "搜索",
     "playlist_meta": "{count} 首 · {creator}",
     "login_required": "请先登录账号",
     "back": "返回歌单列表",
@@ -373,7 +378,12 @@
     "playlist_unsubscribed": "已取消收藏歌单",
     "playlist_delete": "删除",
     "playlist_subscribe": "收藏",
-    "playlist_unsubscribe": "取消收藏"
+    "playlist_unsubscribe": "取消收藏",
+    "collapse_sidebar": "折叠侧边栏",
+    "library": "音乐库",
+    "local_sources": "本地来源",
+    "online_sources": "在线来源",
+    "search": "搜索"
   },
   "lyrics": {
     "loading": "正在加载歌词...",

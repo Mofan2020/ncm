@@ -105,6 +105,8 @@ async function boot() {
         await loadTranslations();
         state.appInfo = await state.api.get_app_info();
         await loadSettings();
+        const loginStatus = await state.api.get_login_status();
+        state.loggedIn = !!(loginStatus && loginStatus.is_logged_in);
         await refreshLoginStatus();
         watchSystemTheme();
         initMediaSession();
@@ -116,6 +118,12 @@ async function boot() {
         await loadPlayerExtras();
         await restoreSession();
         startSessionTimer();
+        // Pick a starting source that always shows data on first paint:
+        // logged-in users start in their own playlists; anonymous users get
+        // the local music tab so the screen is never blank.
+        if (!player.sourceTab || player.sourceTab === 'playlists' && !state.loggedIn) {
+            player.sourceTab = state.loggedIn ? 'playlists' : 'local';
+        }
     } catch (err) {
         console.error(err);
         showToast('error', t('app.init_failed', { message: err.message || err }));
@@ -286,6 +294,17 @@ function levelText(level) {
 function showToast(type, message, timeoutMs = 3200) {
     if (!message) return;
     const container = document.getElementById('toast-container');
+    if (!container) return;
+    // Cap the visible queue: spam (e.g. dozens of download failures in a row)
+    // would otherwise leak DOM and listeners indefinitely.  The oldest fades
+    // out as soon as the cap is exceeded.
+    const MAX_TOASTS = 5;
+    while (container.children.length >= MAX_TOASTS) {
+        const oldest = container.firstElementChild;
+        if (!oldest) break;
+        oldest.classList.add('toast-dismiss');
+        oldest.remove();
+    }
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
     toast.textContent = message;
@@ -1143,13 +1162,23 @@ async function selectSource(source) {
     player.sourceTab = source;
     player.playlistOpen = null;
     player.currentLocalPlaylist = null;
-    document.querySelectorAll('.source-tab').forEach((tab) =>
+    // Mirror the active state in both the old `.source-tab` row and the new
+    // `.sidebar-item` list -- they share `data-source` but live in different
+    // containers, so toggling one would leave the other stale.
+    document.querySelectorAll('.source-tab, .sidebar-item').forEach((tab) =>
         tab.classList.toggle('is-active', tab.dataset.source === source));
     document.getElementById('local-actions').hidden = source !== 'local';
     document.getElementById('local-playlist-actions').hidden = source !== 'local_playlists';
     document.getElementById('btn-list-back').hidden = true;
     document.getElementById('btn-list-more').hidden = true;
     document.getElementById('search-type-tabs').hidden = true;
+    // Switching sources must clear the previous track list.  Without this the
+    // last tab's tracks stay on screen and bleed into whatever list opens next
+    // (the symptom: a couple of playlists later, ~200 stale tracks reappear).
+    const trackList = document.getElementById('track-list');
+    if (trackList) trackList.innerHTML = '';
+    player.visible = [];
+    player.visibleSource = null;
 
     if (source === 'playlists') await loadPlaylists();
     else if (source === 'liked') await loadLiked();
@@ -1201,6 +1230,8 @@ function renderPlaylists(playlists) {
         const isOwn = playlist.creator_id === (player.currentUserId || '') || playlist.subscribed;
         const cover = document.createElement('img');
         cover.alt = '';
+        cover.loading = 'lazy';
+        cover.decoding = 'async';
         if (playlist.cover_url) cover.src = playlist.cover_url;
         cover.onerror = () => cover.removeAttribute('src');
         const meta = document.createElement('div');
@@ -1665,56 +1696,11 @@ async function removeTrackFromLocalPlaylist(playlist, track, item) {
 
 /* ----------------------------------------------------------- playlist management */
 
-async function createPlaylist() {
-    const name = prompt(t('player.playlist_name_prompt'));
-    if (!name) return;
-    
-    const result = await state.api.create_playlist(name, 0, '');
-    if (result.success) {
-        showToast('success', t('player.playlist_created', { name }));
-        await loadPlaylists();
-    } else {
-        showError(result, 'player.create_failed');
-    }
-}
-
-async function editPlaylist(playlist) {
-    const name = prompt(t('player.playlist_rename'), playlist.name);
-    if (!name || name === playlist.name) return;
-    
-    const result = await state.api.update_playlist(playlist.id, { name });
-    if (result.success) {
-        showToast('success', t('player.playlist_renamed', { name }));
-        playlist.name = name;
-        renderPlaylists(player.playlists);
-    } else {
-        showError(result, 'player.update_failed');
-    }
-}
-
-async function deletePlaylist(playlist) {
-    if (!confirm(t('player.playlist_delete_confirm', { name: playlist.name }))) return;
-    
-    const result = await state.api.delete_playlist([playlist.id]);
-    if (result.success) {
-        showToast('success', t('player.playlist_deleted', { name: playlist.name }));
-        await loadPlaylists();
-    } else {
-        showError(result, 'player.delete_failed');
-    }
-}
-
-async function toggleSubscribePlaylist(playlist) {
-    const subscribe = !playlist.subscribed;
-    const result = await state.api.subscribe_playlist(playlist.id, subscribe);
-    if (result.success) {
-        playlist.subscribed = subscribe;
-        showToast('success', subscribe ? t('player.playlist_subscribed') : t('player.playlist_unsubscribed'));
-        renderPlaylists(player.playlists);
-    } else {
-        showError(result, subscribe ? 'player.subscribe_failed' : 'player.unsubscribe_failed');
-    }
-}
+/* The four playlist CRUD helpers (createPlaylist / editPlaylist /
+   deletePlaylist / toggleSubscribePlaylist) are defined earlier in this
+   file -- a second copy used to live here.  They were removed in the
+   2026-10-18 cleanup because keeping both silently masked which one the
+   UI actually calls. */
 
 function openPlaylistDetailModal(playlist) {
     player.currentPlaylist = playlist;
@@ -2613,11 +2599,73 @@ function renderTrackList() {
     if (!list || !player.visible) return;
     list.innerHTML = '';
     const playing = currentKey();
+    // For large lists, mount only a window of rows around the viewport so a
+    // 1000-track playlist costs ~30 DOM nodes instead of 1000.  Below the
+    // threshold we keep the original full render to avoid a scroll listener
+    // (the win is small and the regression risk is not).
+    const total = player.visible.length;
+    if (total > 200) {
+        mountVirtualTrackList(list, player.visible, playing);
+        return;
+    }
     const fragment = document.createDocumentFragment();
     player.visible.forEach((track, index) => {
         fragment.appendChild(buildTrackRow(track, index, playing));
     });
     list.appendChild(fragment);
+}
+
+/**
+ * Windowed track-list renderer.  Pads above + below the visible scroll
+ * position so the scroll bar's perceived size and ratio stay correct.
+ * The pad is intentionally small (6 rows) so the row lookup is O(1) and
+ * we still get most of the memory win.
+ */
+function mountVirtualTrackList(container, tracks, playingKey) {
+    const ROW_H = 50;        // matches `.track-row` (6px*2 padding + ~38px content)
+    const PAD = 6;
+    const total = tracks.length;
+    let topIndex = Math.max(0, Math.floor(container.scrollTop / ROW_H) - PAD);
+    let bottomIndex = Math.min(total, topIndex + 1 +
+        Math.ceil(container.clientHeight / ROW_H) + PAD * 2);
+
+    const totalHeight = total * ROW_H;
+    const topPad = topIndex * ROW_H;
+    const bottomPad = totalHeight - bottomIndex * ROW_H;
+
+    const placeholderTop = document.createElement('div');
+    placeholderTop.style.height = topPad + 'px';
+    placeholderTop.setAttribute('aria-hidden', 'true');
+    const placeholderBottom = document.createElement('div');
+    placeholderBottom.style.height = bottomPad + 'px';
+    placeholderBottom.setAttribute('aria-hidden', 'true');
+
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(placeholderTop);
+    for (let index = topIndex; index < bottomIndex; index += 1) {
+        fragment.appendChild(buildTrackRow(tracks[index], index, playingKey));
+    }
+    fragment.appendChild(placeholderBottom);
+    container.appendChild(fragment);
+
+    // Single passive scroll listener that re-renders the window.  Guarded
+    // against a stack overflow when the user drags the thumb fast (rAF
+    // coalesces multiple events into one repaint).
+    if (!container.dataset.virtualBound) {
+        container.dataset.virtualBound = '1';
+        let pending = false;
+        container.addEventListener('scroll', () => {
+            if (pending) return;
+            pending = true;
+            requestAnimationFrame(() => {
+                pending = false;
+                // Re-render only if the window actually changed.
+                if (Math.floor(container.scrollTop / ROW_H) !== topIndex) {
+                    renderTrackList();
+                }
+            });
+        }, { passive: true });
+    }
 }
 
 /** The rendered row for a track key, if that track is on screen. */
@@ -2772,6 +2820,14 @@ async function loadCurrent(options) {
     const opts = options || {};
     const track = player.queue[player.index];
     if (!track) return false;
+    // Drop any previously buffered media.  Without this, the previous track's
+    // bytes stay reachable from the audio element and inflate RSS -- the
+    // user-facing symptom is steady memory growth across many tracks.
+    try {
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+    } catch (err) { /* not all platforms allow this before the first src */ }
     player.current = track;
     player.resolved = null;
     player.pendingPosition = opts.position || 0;
@@ -3174,8 +3230,10 @@ function closeLyricsEditor() {
 
 function buildLyricsEditorTimeline() {
     const timeline = document.getElementById('lyrics-editor-timeline');
-    if (!timeline) return;
+    const linesContainer = document.getElementById('lyrics-editor-lines');
+    if (!timeline || !linesContainer) return;
     timeline.innerHTML = '';
+    linesContainer.innerHTML = '';
     
     if (!audio.duration) return;
     
@@ -3183,13 +3241,64 @@ function buildLyricsEditorTimeline() {
     const pixelsPerSecond = timeline.clientWidth / duration;
     
     player.lyrics.forEach((line, index) => {
+        // Timeline marker
         const marker = document.createElement('div');
         marker.className = 'lyrics-editor-marker';
         marker.style.left = (line.time / 1000) * pixelsPerSecond + 'px';
         marker.dataset.index = index;
         marker.title = fmtTime(line.time / 1000) + ' - ' + (line.text || '');
         timeline.appendChild(marker);
+        
+        // Editable lyrics line
+        const lineEl = document.createElement('div');
+        lineEl.className = 'lyrics-editor-line';
+        lineEl.dataset.index = index;
+        
+        const timeInput = document.createElement('input');
+        timeInput.type = 'number';
+        timeInput.step = '1';
+        timeInput.min = '0';
+        timeInput.max = Math.floor(audio.duration * 1000);
+        timeInput.value = line.time;
+        timeInput.title = '时间 (毫秒)';
+        
+        const textInput = document.createElement('input');
+        textInput.type = 'text';
+        textInput.value = line.text || '';
+        textInput.placeholder = '歌词文本';
+        textInput.style.flex = '1';
+        
+        const translationInput = document.createElement('input');
+        translationInput.type = 'text';
+        translationInput.value = line.translation || '';
+        translationInput.placeholder = '翻译 (可选)';
+        translationInput.style.width = '200px';
+        
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'btn btn-icon btn-sm';
+        deleteBtn.type = 'button';
+        deleteBtn.textContent = '🗑';
+        deleteBtn.title = '删除';
+        deleteBtn.addEventListener('click', () => {
+            player.lyrics.splice(index, 1);
+            buildLyricsEditorTimeline();
+        });
+        
+        lineEl.append(timeInput, textInput, translationInput, deleteBtn);
+        linesContainer.appendChild(lineEl);
     });
+    
+    // Add new line button
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn btn-sm btn-secondary';
+    addBtn.type = 'button';
+    addBtn.textContent = '+ 添加歌词行';
+    addBtn.addEventListener('click', () => {
+        const newLine = { time: Math.floor(audio.currentTime * 1000), text: '', translation: '' };
+        player.lyrics.push(newLine);
+        buildLyricsEditorTimeline();
+    });
+    linesContainer.appendChild(addBtn);
     
     // Seek bar for editor
     const seekBar = document.getElementById('lyrics-editor-seek');
@@ -3240,7 +3349,9 @@ function applyLyricsEditorChanges() {
 
 function updateLyricHighlight() {
     if (!player.lyrics.length) return;
-    const ms = audio.currentTime * 1000;
+    // Apply the per-track offset (-5000 .. +5000 ms) so the slider works in
+    // real time instead of forcing a fresh network lookup on every nudge.
+    const ms = audio.currentTime * 1000 - (player.lyricOffset || 0);
     let low = 0;
     let high = player.lyrics.length - 1;
     let found = -1;
@@ -3392,10 +3503,24 @@ function saveSession(force) {
     });
 }
 
-function startSessionTimer() {
-    setInterval(() => {
-        if (!audio.paused) saveSession(false);
+/**
+ * Schedule the next session snapshot.  Each call replaces the pending
+ * timeout, so a steady stream of `timeupdate` events collapses into a
+ * single 5s-delayed save (matching the previous setInterval cadence) with
+ * no wakeup while playback is paused.  This keeps memory flat when the
+ * app sits idle with the window in the background.
+ */
+function scheduleSessionSave() {
+    if (player._sessionSaveTimer) clearTimeout(player._sessionSaveTimer);
+    player._sessionSaveTimer = setTimeout(() => {
+        player._sessionSaveTimer = null;
+        saveSession(false);
     }, 5000);
+}
+
+function startSessionTimer() {
+    // Persist on tab close -- still the cheapest moment to capture the
+    // last position; the in-window persistence now happens on timeupdate.
     window.addEventListener('beforeunload', () => saveSession(true));
 }
 
@@ -3838,60 +3963,65 @@ function closeDesktopLyrics() {
 let pushLyricsToDesktopDebounce = 0;
 
 function pushLyricsToDesktop() {
-    // Debounce to avoid too frequent updates (max 30fps ~ 33ms)
+    // Debounce to ~30fps.  Anything tighter than ~33 ms is invisible on the
+    // 60 Hz (or lower) refresh of the desktop window.
     const now = Date.now();
     if (now - pushLyricsToDesktopDebounce < 33) {
         return;
     }
     pushLyricsToDesktopDebounce = now;
 
-    // Push via backend to native pywebview window - only send index
-    if (state.api && state.api.update_desktop_lyrics) {
-        state.api.update_desktop_lyrics([], player.lyricIndex).catch(() => { /* ignore */ });
-    }
-
-    // Also try direct window communication as fallback - only send index
-    if (player.desktopLyricsWindow && !player.desktopLyricsWindow.closed) {
-        const payload = {
-            action: 'update',
-            index: player.lyricIndex
-        };
-        try {
-            player.desktopLyricsWindow.postMessage({ type: 'ncm:desktop-lyrics', payload }, '*');
-        } catch (e) {
-            try {
-                localStorage.setItem('ncm:desktop-lyrics:update', JSON.stringify(payload));
-            } catch (e2) { /* ignore */ }
-        }
-    }
+    if (!state.api || !state.api.update_desktop_lyrics) return;
+    // The backend now evaluates the payload directly on the desktop window
+    // (see src/gui/bridge.py::update_desktop_lyrics); we just hand it the
+    // current lyrics + active index.  The earlier `postMessage` and
+    // `localStorage` fallbacks were dead code in pywebview (each window has
+    // its own JS context; `window.opener` is null and localStorage is not
+    // shared between windows).
+    state.api.update_desktop_lyrics(player.lyrics || [], player.lyricIndex)
+        .catch(() => { /* ignore */ });
 }
 
-function onOpenDesktopLyrics() {
-    // Called from backend when user clicks desktop lyrics button
-    // The backend already opened the native window, we just need to push current lyrics
-    setTimeout(() => pushLyricsToDesktop(), 500);
-}
-
-function onCloseDesktopLyrics() {
-    player.desktopLyricsWindow = null;
-}
-
-function onDesktopLyricsUpdate(payload) {
-    // Called from backend when lyrics update
-    pushLyricsToDesktop();
-}
+// NOTE: there used to be duplicate definitions of `onOpenDesktopLyrics`,
+// `onCloseDesktopLyrics`, and `onDesktopLyricsUpdate` in this section --
+// they conflicted with the canonical versions defined further down and
+// were the root cause of the desktop lyrics window never receiving data.
+// The backend now calls `handleLyricsUpdate` directly on the desktop
+// window, so the main window does not need a push handler at all.
 
 /* ----------------------------------------------------------- Crossfade */
 
-function initCrossfade() {
-    // Create second audio element for crossfade
-    player.crossfadeAudio = document.createElement('audio');
-    player.crossfadeAudio.preload = 'metadata';
-    player.crossfadeAudio.style.display = 'none';
-    document.body.appendChild(player.crossfadeAudio);
+/**
+ * Lazily create the second audio element used for crossfade.  Most users
+ * leave crossfade off, so paying for a second <audio> plus its decoder
+ * state would be a steady ~30 MB waste for nothing.  The element is built
+ * on demand and removed when crossfade is disabled again.
+ */
+function ensureCrossfadeAudio() {
+    if (player.crossfadeAudio) return;
+    const second = document.createElement('audio');
+    second.preload = 'metadata';
+    second.style.display = 'none';
+    document.body.appendChild(second);
+    player.crossfadeAudio = second;
+}
 
-    // Load crossfade duration from settings
+function dropCrossfadeAudio() {
+    if (!player.crossfadeAudio) return;
+    try {
+        player.crossfadeAudio.pause();
+        player.crossfadeAudio.removeAttribute('src');
+        player.crossfadeAudio.load();
+        player.crossfadeAudio.remove();
+    } catch (err) { /* ignore */ }
+    player.crossfadeAudio = null;
+}
+
+function initCrossfade() {
+    // Load crossfade duration from settings; only spin up the second audio
+    // element when the feature is actually enabled.
     player.crossfadeDuration = state.settings?.playback?.crossfade_duration || 0;
+    if (player.crossfadeDuration > 0) ensureCrossfadeAudio();
     updateCrossfadeLabel();
 }
 
@@ -3962,6 +4092,8 @@ const originalLoadCurrent = loadCurrent;
 loadCurrent = loadCurrentWithCrossfade;
 
 async function crossfadeTo(newSrc, autoplay) {
+    // The user just enabled crossfade -- build the second <audio> on demand.
+    ensureCrossfadeAudio();
     const currentAudio = audio;
     const nextAudio = player.crossfadeAudio;
     const duration = player.crossfadeDuration * 1000; // ms
@@ -4301,16 +4433,20 @@ function updateDesktopLyricsOpacityLabel() {
 
 /* ----------------------------------------------------------- Backend Callbacks */
 
-function onOpenDesktopLyrics() {
-    openDesktopLyrics();
-}
-
-function onCloseDesktopLyrics() {
-    closeDesktopLyrics();
-}
-
-function onDesktopLyricsUpdate(payload) {
+function onDesktopLyricsWindowReady() {
+    // Called from the bridge immediately after `open_desktop_lyrics` creates
+    // a new pywebview window.  Pushing once here seeds the desktop with the
+    // current lyrics (if any); from then on `updateLyricHighlight` updates
+    // keep it in sync via `pushLyricsToDesktop`.
     pushLyricsToDesktop();
+}
+
+function openDesktopLyricsFallback() {
+    // Dev-only: when pywebview is not available the bridge asks the main
+    // window to use `window.open` instead.  We just call the same entry
+    // point the toolbar button uses; the popup then receives lyrics via
+    // postMessage because every window shares the same JS context here.
+    openDesktopLyrics();
 }
 
 function onSleepTimerSet(payload) {
@@ -4483,41 +4619,39 @@ function bindStaticEvents() {
         }
     });
 
-    // desktop lyrics settings
-    document.getElementById('desktop-lyrics-font-size').addEventListener('input', (event) => {
-        const val = parseInt(event.target.value, 10);
-        if (player.desktopLyricsWindow && !player.desktopLyricsWindow.closed) {
-            player.desktopLyricsWindow.postMessage({ type: 'ncm:desktop-lyrics', payload: { action: 'settings', settings: { fontSize: val } } }, '*');
+    // desktop lyrics settings -- the four sliders/inputs push their value to
+    // the open desktop window via the bridge.  In pywebview the main window
+    // does not hold a reference to the desktop window (it lives in the
+    // Python bridge), so the previous `player.desktopLyricsWindow.postMessage`
+    // call was always a no-op for the packaged build.
+    const pushDesktopSettings = (settings) => {
+        if (state.api && state.api.update_desktop_lyrics_settings) {
+            state.api.update_desktop_lyrics_settings(settings).catch(() => { /* ignore */ });
         }
+    };
+    document.getElementById('desktop-lyrics-font-size').addEventListener('input', (event) => {
+        pushDesktopSettings({ fontSize: parseInt(event.target.value, 10) });
     });
     document.getElementById('desktop-lyrics-color').addEventListener('input', (event) => {
-        const val = event.target.value;
-        if (player.desktopLyricsWindow && !player.desktopLyricsWindow.closed) {
-            player.desktopLyricsWindow.postMessage({ type: 'ncm:desktop-lyrics', payload: { action: 'settings', settings: { color: val } } }, '*');
-        }
+        pushDesktopSettings({ color: event.target.value });
     });
     document.getElementById('desktop-lyrics-opacity').addEventListener('input', (event) => {
         updateDesktopLyricsOpacityLabel();
-        const val = parseFloat(event.target.value);
-        if (player.desktopLyricsWindow && !player.desktopLyricsWindow.closed) {
-            player.desktopLyricsWindow.postMessage({ type: 'ncm:desktop-lyrics', payload: { action: 'settings', settings: { opacity: val } } }, '*');
-        }
+        pushDesktopSettings({ opacity: parseFloat(event.target.value) });
     });
     document.getElementById('desktop-lyrics-translation-check').addEventListener('change', (event) => {
-        const val = event.target.checked;
-        if (player.desktopLyricsWindow && !player.desktopLyricsWindow.closed) {
-            player.desktopLyricsWindow.postMessage({ type: 'ncm:desktop-lyrics', payload: { action: 'settings', settings: { showTranslation: val } } }, '*');
-        }
+        pushDesktopSettings({ showTranslation: event.target.checked });
     });
 
     document.getElementById('lyrics-offset').addEventListener('input', (event) => {
         const val = parseInt(event.target.value, 10);
+        // Real-time local offset: just nudge `lyricOffset`, the next
+        // timeupdate picks it up via `updateLyricHighlight`.  The old code
+        // re-fetched lyrics from the network on every slider tick, which was
+        // both slow and wrong (lyrics_offset is a *playback* offset, not a
+        // request parameter).
         player.lyricOffset = val;
         updateLyricsOffsetLabel();
-        // Apply offset to current lyrics rendering
-        if (player.current) {
-            loadLyrics(player.current, false);
-        }
     });
 
     // lyrics controls: dual-line, karaoke, edit
@@ -4610,6 +4744,9 @@ function bindStaticEvents() {
     audio.addEventListener('timeupdate', () => {
         updateProgressUi();
         updateLyricHighlight();
+        // Session persistence is now driven by playback: each `timeupdate`
+        // schedules (debounced) a save, so paused tracks do not write.
+        if (!audio.paused) scheduleSessionSave();
     });
     audio.addEventListener('loadedmetadata', onAudioLoadedMetadata);
     audio.addEventListener('durationchange', updateProgressUi);

@@ -153,6 +153,11 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
 - **The resume session is only written when it actually changed** (queue/index/mode, or
   the position moved by more than a second), otherwise the player rewrites it every few
   seconds.
+- **Lyric highlight must apply `player.lyricOffset` before comparing times.** The offset is a
+  per-track playback shift (-5000..+5000 ms); the slider writes it in real time and
+  `updateLyricHighlight()` is the only place that should subtract it from
+  `audio.currentTime * 1000`.  Re-fetching lyrics on slider input is wrong: it is a
+  *playback* offset, not a request parameter.
 
 ---
 

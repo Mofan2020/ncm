@@ -22,9 +22,25 @@
         window: document.getElementById('dl-window'),
         dragHandle: document.getElementById('dl-drag-handle'),
         content: document.getElementById('dl-content'),
-        current: document.getElementById('dl-current'),
-        translation: document.getElementById('dl-translation')
+        current: null,
+        translation: null,
     };
+
+    /**
+     * Resolve the rows that may exist at any time.  Built lazily because the
+     * initial markup only ships the current row, and the rest are appended
+     * when the first lyrics payload arrives.
+     */
+    function rows() {
+        const root = elements.content;
+        if (!root) return null;
+        return {
+            prev: root.querySelector('.lyric-prev'),
+            current: root.querySelector('.lyric-current'),
+            next: root.querySelector('.lyric-next'),
+            translation: root.querySelector('.lyric-translation'),
+        };
+    }
 
     // Initialize from URL params or localStorage
     function init() {
@@ -51,9 +67,15 @@
         content.style.fontSize = s.fontSize + 'px';
         content.style.color = s.color;
         content.style.opacity = s.opacity;
-        // Update current line color
-        if (elements.current) elements.current.style.color = s.color;
-        if (elements.translation) elements.translation.style.color = s.color;
+        // The three rows (prev/current/next) and translation inherit the
+        // container's color; the only thing that needs an explicit style
+        // assignment is the visual differentiation by opacity/size.
+        const r = rows();
+        if (r) {
+            ['prev', 'current', 'next', 'translation'].forEach((k) => {
+                if (r[k]) r[k].style.color = s.color;
+            });
+        }
     }
 
     function bindDragEvents() {
@@ -191,7 +213,12 @@
     function handleMessage(payload) {
         switch (payload.action) {
             case 'update':
-                // Only accept index, not full lines array (lines are already loaded)
+                // Handle both full lyrics load and index updates.  The first
+                // call from the bridge carries `lines`; later calls only carry
+                // `index` (the desktop window already has the lyrics).
+                if (payload.full && payload.lines) {
+                    renderLyricLines(payload.lines || []);
+                }
                 if (typeof payload.index === 'number') {
                     updateLyricsIndex(payload.index);
                 }
@@ -213,8 +240,51 @@
     }
 
     function updateLyrics(lines, index) {
-        state.lines = lines || [];
+        renderLyricLines(lines || []);
         updateLyricsIndex(index);
+    }
+
+    /**
+     * Build (or rebuild) the prev/current/next lyric lines DOM from a fresh
+     * lyrics array.  Only three rows are needed because the desktop window is
+     * narrow and high-DPI -- the full scrolling list lives in the main
+     * player panel.  We rebuild only when the line count actually changes,
+     * so subsequent index-only updates stay free.
+     */
+    function renderLyricLines(lines) {
+        state.lines = lines || [];
+        const container = elements.content;
+        if (!container) return;
+
+        const prev = container.querySelector('.lyric-prev');
+        const current = container.querySelector('.lyric-current');
+        const next = container.querySelector('.lyric-next');
+        const translation = container.querySelector('.lyric-translation');
+
+        if (!prev || !current || !next) {
+            // First build -- the static markup is missing the new rows.
+            container.innerHTML = `
+                <div class="lyric-prev"></div>
+                <div class="lyric-current"></div>
+                <div class="lyric-next"></div>
+                <div class="lyric-translation" hidden></div>
+            `;
+        }
+
+        const newCurrent = container.querySelector('.lyric-current');
+        const newTranslation = container.querySelector('.lyric-translation');
+
+        const line = state.lines[state.currentIndex >= 0 ? state.currentIndex : 0];
+        if (line) {
+            newCurrent.textContent = line.text || '♪';
+            newTranslation.hidden = !state.settings.showTranslation || !line.translation;
+            newTranslation.textContent = line.translation || '';
+        } else {
+            newCurrent.textContent = '♪';
+            newTranslation.hidden = true;
+        }
+
+        updateLyricsIndex(state.currentIndex);
     }
 
     function updateLyricsIndex(index) {
@@ -225,27 +295,33 @@
         state.currentIndex = index;
 
         const currentLine = state.lines[index];
-        if (currentLine) {
-            elements.current.textContent = currentLine.text || '♪';
-            elements.current.classList.add('current');
-        } else {
-            elements.current.textContent = state.hidden ? '' : '♪';
-            elements.current.classList.remove('current');
+        const container = elements.content;
+        if (!container) return;
+        const currentEl = container.querySelector('.lyric-current');
+        const prevEl = container.querySelector('.lyric-prev');
+        const nextEl = container.querySelector('.lyric-next');
+        const translationEl = container.querySelector('.lyric-translation');
+
+        if (currentEl) {
+            currentEl.textContent = (currentLine && currentLine.text) || '♪';
+        }
+        if (prevEl) {
+            const prevLine = state.lines[index - 1];
+            prevEl.textContent = (prevLine && prevLine.text) || '';
+        }
+        if (nextEl) {
+            const nextLine = state.lines[index + 1];
+            nextEl.textContent = (nextLine && nextLine.text) || '';
         }
 
-        // Handle translation
-        if (state.settings.showTranslation && currentLine && currentLine.translation) {
-            elements.translation.textContent = currentLine.translation;
-            elements.translation.hidden = false;
-        } else {
-            elements.translation.hidden = true;
+        if (translationEl) {
+            if (state.settings.showTranslation && currentLine && currentLine.translation) {
+                translationEl.hidden = false;
+                translationEl.textContent = currentLine.translation;
+            } else {
+                translationEl.hidden = true;
+            }
         }
-
-        // Update previous/next lines opacity
-        const allLines = elements.content.querySelectorAll('.lyric-line');
-        allLines.forEach((el, i) => {
-            el.classList.toggle('current', i === index);
-        });
     }
 
     function setVisibility(visible) {
@@ -335,4 +411,14 @@
     } else {
         init();
     }
+
+    // Expose a tiny bridge for the Python host.  The desktop window is
+    // created by pywebview's `create_window` (see src/gui/bridge.py), which
+    // has no `window.opener` and does not share localStorage with the main
+    // window.  `GuiBridge.update_desktop_lyrics` therefore calls
+    // `_desktop_lyrics_window.evaluate_js("handleLyricsUpdate(<json>)")`
+    // directly; the IIFE keeps the rest of the module private.
+    window.handleLyricsUpdate = function (payload) {
+        handleMessage(payload);
+    };
 })();
