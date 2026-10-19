@@ -134,6 +134,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._local(query.get("p", [""])[0], send_body)
             elif route == "art":
                 self._art(query.get("p", [""])[0], send_body)
+            elif route == "cover":
+                # Remote cover proxy -- plain NetEase picUrl, served through
+                # the loopback so the webview never has to talk to the CDN
+                # and the bytes land in the persistent cache for next time.
+                self._cover(query.get("u", [""])[0], query.get("ext", ["jpg"])[0],
+                            send_body)
             elif route == "bg":
                 self._background(send_body)
             else:
@@ -261,6 +267,36 @@ class _Handler(BaseHTTPRequestHandler):
         if send_body:
             self.wfile.write(data)
 
+    def _cover(self, url: str, ext: str, send_body: bool) -> None:
+        # Remote cover proxy.  The persistent cache keeps a copy on disk so
+        # scrolling through a long list of albums does not slam the CDN.
+        if not url or not url.startswith(("http://", "https://")):
+            self._error(400, "bad url")
+            return
+        safe_ext = _safe_cover_ext(ext)
+        cached = self.media.cached_cover(url, safe_ext)
+        if cached is not None:
+            data, mime = cached
+            self._send_cover_bytes(data, mime, send_body)
+            return
+        try:
+            response = self.media.session.get(url, timeout=(10, 20))
+        except requests.exceptions.RequestException as exc:
+            log.debug("cover fetch failed for %s: %s", url, exc)
+            self._error(502, "upstream error")
+            return
+        if response.status_code != 200 or not response.content:
+            response.close()
+            self._error(response.status_code, "upstream refused")
+            return
+        data = response.content
+        mime = response.headers.get("content-type", "image/jpeg")
+        response.close()
+        # Persist for next time.  Failure to write must not break the
+        # response we are about to send to the webview.
+        self.media.write_cover_cache(url, data, mime)
+        self._send_cover_bytes(data, mime, send_body)
+
     def _background(self, send_body: bool) -> None:
         path = self.media.background_path()
         if path is None or not path.is_file():
@@ -268,18 +304,39 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._stream_file(path, _content_type_for(path), send_body)
 
+    def _send_cover_bytes(self, data: bytes, mime: str, send_body: bool) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", mime or "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        # Covers do not change between launches; the browser is allowed to
+        # keep its own copy for a week.
+        self.send_header("Cache-Control", "public, max-age=604800")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        if send_body:
+            self.wfile.write(data)
+
     def _online(self, song_id: str, quality: str, send_body: bool) -> None:
         if not song_id:
             self._error(400, "missing song id")
+            return
+        # When the bytes for this song/quality are already on disk we can
+        # short-circuit the CDN entirely.  Saving the upstream round-trip
+        # is the whole point.
+        cached = self.media.cached_audio_path(song_id, quality)
+        if cached is not None:
+            self._stream_file(cached, _content_type_for(cached), send_body)
             return
         upstream = self.media.resolve_online(song_id, quality)
         if not upstream:
             self._error(404, "no playable url")
             return
-        self._proxy(upstream, send_body, retry=song_id, quality=quality)
+        self._proxy(upstream, send_body, retry=song_id, quality=quality,
+                    cache_song_id=song_id)
 
     def _proxy(self, url: str, send_body: bool, *, retry: str | None = None,
-               quality: str = "standard") -> None:
+               quality: str = "standard", cache_song_id: str | None = None,
+               cache_ext: str | None = None) -> None:
         headers = {
             "User-Agent": _UA,
             "Referer": "https://music.163.com/",
@@ -301,7 +358,8 @@ class _Handler(BaseHTTPRequestHandler):
             response.close()
             fresh = self.media.resolve_online(retry, quality, force=True)
             if fresh and fresh != url:
-                self._proxy(fresh, send_body, quality=quality)
+                self._proxy(fresh, send_body, quality=quality,
+                            cache_song_id=cache_song_id, cache_ext=cache_ext)
                 return
 
         if response.status_code not in (200, 206):
@@ -310,6 +368,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         length = response.headers.get("content-length")
+        # Cache only complete (non-Range) responses so the disk copy is always
+        # the whole song -- otherwise seek/play-from-middle would write a
+        # truncated file that the next request serves as a corrupt song.
+        cacheable = (cache_song_id and not range_header
+                     and response.status_code == 200)
         extra = {"Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
                  "Cache-Control": "no-store"}
         content_range = response.headers.get("content-range")
@@ -321,9 +384,24 @@ class _Handler(BaseHTTPRequestHandler):
             response.close()
             return
         try:
-            for chunk in response.iter_content(CHUNK):
-                if chunk:
+            if cacheable:
+                # Tee into a BytesIO that is handed off to the cache writer
+                # after the bytes hit the wire.  The user pays no latency for
+                # the disk write because the chunk is already in memory.
+                buffer = bytearray()
+                for chunk in response.iter_content(CHUNK):
+                    if not chunk:
+                        continue
                     self.wfile.write(chunk)
+                    buffer.extend(chunk)
+                if len(buffer) >= 1024:  # ignore empty / aborted responses
+                    ext = cache_ext or _ext_from_url(url)
+                    self.media.write_audio_cache(cache_song_id, quality,
+                                                 bytes(buffer), ext)
+            else:
+                for chunk in response.iter_content(CHUNK):
+                    if chunk:
+                        self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
         finally:
@@ -349,6 +427,38 @@ def _content_type_for(path: Path) -> str:
         return known[suffix]
     guessed, _ = mimetypes.guess_type(str(path))
     return guessed or "application/octet-stream"
+
+
+def _ext_from_url(url: str) -> str:
+    """Best-effort guess of the file suffix for an upstream audio URL.
+
+    The CDN signs URLs and may append query parameters that strip the real
+    file suffix (``?auth=...`` etc.).  The picker below ignores the query
+    string and falls back to ``mp3`` when nothing recognisable is there.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url or "")
+    suffix = Path(parsed.path).suffix.lower()
+    if suffix.startswith("."):
+        suffix = suffix[1:]
+    if suffix in {"mp3", "flac", "m4a", "aac", "wav", "ogg", "oga", "opus",
+                  "ape", "wma", "aiff", "alac"}:
+        return suffix
+    # Some upstream responses drop the suffix entirely when the CDN is happy
+    # with a content-type; the typical NetEase case is mp3.
+    return "mp3"
+
+
+_COVER_EXTS = {"jpg", "png", "webp", "gif", "bmp", "heic", "jpeg"}
+
+
+def _safe_cover_ext(ext: str) -> str:
+    """Whitelist the cover file suffix; anything else becomes ``jpg``."""
+    raw = (ext or "").lstrip(".").lower()
+    if raw in _COVER_EXTS:
+        return "jpg" if raw == "jpeg" else raw
+    return "jpg"
 
 
 class MediaServer:
@@ -381,6 +491,11 @@ class MediaServer:
         self._background_provider: Callable[[], Path | None] | None = None
         self.session = requests.Session()
         self._crossfade_duration: float = 0.0
+        # Imported lazily so unit tests can monkey-patch the module before the
+        # server is first touched.
+        from src.core.cache import get_media_cache
+
+        self._media_cache = get_media_cache()
 
     # ------------------------------------------------------------------ config
     def configure(self, *, api_provider: Callable[[], Any] | None = None,
@@ -454,6 +569,20 @@ class MediaServer:
 
     def url_for_cover(self, path: str | Path) -> str:
         return f"{self.base_url}/art?p={quote(str(path), safe='')}"
+
+    def url_for_remote_cover(self, url: str, ext: str = "jpg") -> str | None:
+        """Proxy a remote NetEase cover URL through the loopback server.
+
+        ``url`` is opaque to the player -- the only constraint is that it is
+        safe to embed in a query string.  We do not let the webview talk to
+        the CDN directly: a single signed CORS-tainted ``Referer`` mismatch
+        is enough to fail every cross-origin ``<img>`` request, and going
+        through 127.0.0.1 also gets the bytes into the on-disk cache.
+        """
+        if not url:
+            return None
+        safe_ext = _safe_cover_ext(ext)
+        return f"{self.base_url}/cover?u={quote(url, safe='')}&ext={quote(safe_ext)}"
 
     def url_for_background(self) -> str:
         return f"{self.base_url}/bg"
@@ -538,9 +667,51 @@ class MediaServer:
         with self._cache_lock:
             if song_id is None:
                 self._url_cache.clear()
+                # Drop every cached audio file as well so a "forget all"
+                # really returns to a clean slate.
+                try:
+                    self._media_cache.forget_audio(None)
+                except Exception as exc:  # pragma: no cover - defensive
+                    log.debug("audio cache clear failed: %s", exc)
             else:
                 for key in [k for k in self._url_cache if k[0] == str(song_id)]:
                     self._url_cache.pop(key, None)
+                # The on-disk audio cache is keyed by song id too, so a
+                # "forget this one" must drop both -- otherwise the next
+                # request would still find bytes on disk and never call
+                # back into the resolver.
+                try:
+                    self._media_cache.forget_audio(song_id)
+                except Exception as exc:  # pragma: no cover - defensive
+                    log.debug("audio cache forget failed for %s: %s", song_id, exc)
+
+    # ------------------------------------------------------------------ cache
+    def cached_audio_path(self, song_id: str, quality: str,
+                          ext: str = "mp3") -> Path | None:
+        """Return the on-disk audio file when this song/quality is cached."""
+        try:
+            return self._media_cache.open_audio(song_id, quality, ext)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("cache lookup failed for %s/%s: %s", song_id, quality, exc)
+            return None
+
+    def write_audio_cache(self, song_id: str, quality: str, data: bytes,
+                          ext: str = "mp3") -> Path | None:
+        """Persist ``data`` to the cache so the next play is offline."""
+        return self._media_cache.write_audio(song_id, quality, data, ext)
+
+    def cached_cover(self, url: str, ext: str = "jpg") -> tuple[bytes, str] | None:
+        """Return (bytes, mime) for a cached remote cover image, or ``None``."""
+        return self._media_cache.open_cover(url, ext)
+
+    def write_cover_cache(self, url: str, data: bytes,
+                          mime: str = "") -> Path | None:
+        """Persist a remote cover image to the cache."""
+        return self._media_cache.write_cover(url, data, mime)
+
+    def cache_stats(self) -> dict[str, Any]:
+        """Diagnostics for the settings/about page."""
+        return self._media_cache.stats()
 
     def set_crossfade_duration(self, seconds: float) -> None:
         """Set the crossfade duration in seconds (0 = disabled)."""

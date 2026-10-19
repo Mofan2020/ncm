@@ -63,6 +63,23 @@ def _reason_code(value: Any) -> str:
     return text.split(":")[-1] or "no_url"
 
 
+_KNOWN_COVER_EXTS = ("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic")
+
+
+def _ext_from_cover_url(url: str) -> str:
+    """Guess the file suffix for a NetEase cover URL.
+
+    The NetEase CDN answers with the requested size parameter (``?param=300y300``)
+    and rarely includes a real suffix.  We pick the safest default (``jpg``)
+    when nothing is recognised.
+    """
+    text = str(url or "").lower()
+    for ext in _KNOWN_COVER_EXTS:
+        if f".{ext}" in text:
+            return "jpg" if ext == "jpeg" else ext
+    return "jpg"
+
+
 class GuiBridge:
     """Bridge between the Python backend and the HTML frontend."""
 
@@ -791,6 +808,32 @@ class GuiBridge:
             "success": False,
             "error_key": "error.reason." + _reason_code(errors[-1] if errors else "no_url"),
             "message": ", ".join(dict.fromkeys(errors)),
+        }
+
+    def resolve_cover_url(self, track: dict[str, Any]) -> dict[str, Any]:
+        """Return a loopback URL for the track's cover, cached on disk.
+
+        The webview can not talk to the NetEase CDN directly without tripping
+        CORS / ``Referer`` rules, and even when it could every album scroll
+        would mean another CDN round-trip.  Going through this endpoint
+        proxies the cover once and writes the bytes to the persistent cache.
+        """
+        track = track or {}
+        raw_url = str(track.get("cover_url") or "").strip()
+        if not raw_url:
+            return {"success": False, "error_key": "player.cover_missing"}
+        ext = _ext_from_cover_url(raw_url)
+        return {
+            "success": True,
+            "url": self.media.url_for_remote_cover(raw_url, ext),
+            "remote_url": raw_url,
+            "ext": ext,
+        }
+
+    def cache_stats(self) -> dict[str, Any]:
+        return {
+            "success": True,
+            **self.media.cache_stats(),
         }
 
     # -- play counts, favourites ----------------------------------------------

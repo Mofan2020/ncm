@@ -120,7 +120,7 @@ _JS_GLOBALS = {
     "null", "this", "globalThis", "Intl", "Audio", "Event", "FileReader",
     "MediaMetadata", "localStorage", "navigator", "prompt", "sessionStorage",
     "performance", "location", "history", "screen", "crypto", "indexedDB",
-    "l", "panel",
+    "l", "panel", "ResizeObserver",
 }
 
 #: Reserved words: they are not variables, so they never need a declaration.

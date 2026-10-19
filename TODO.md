@@ -267,3 +267,26 @@
 - ✅ self-test OK
 - ✅ node -c JS 语法 OK
 - ⏳ 手机端实测由星空喵在 Android Chrome / iOS Safari WebView 完成
+## 播放页 Bug 修复 + 媒体缓存 (2026-10-19)
+
+### 修复
+- [x] 首次进入播放页自动刷新当前 source 的数据 (`showView('player')` 无条件调 `selectSource`)
+- [x] 退出歌单不再残留曲目 (`backToPlaylists` 清空 `#track-list` + `player.visible`)
+- [x] 虚拟列表 container 高度 0 时改用 rAF 重试 + ResizeObserver 自适应
+
+### 媒体缓存
+- [x] 新增 `src/core/cache.py` `MediaCache`(audio 2 GB + cover 256 MB 字节预算 LRU)
+- [x] MediaServer `_online` 命中磁盘走本地 `Range` 流;`_proxy` 仅「非 Range + 200」写磁盘
+- [x] MediaServer `_cover(url)` 路由:磁盘封膜,缓存命中直返 bytes
+- [x] 浏览器封面全部走 `resolve_cover_url` 代理 (专辑/歌手/我的歌单/收藏/搜索结果/锁屏 artwork)
+
+### 测试
+- [x] `tests/test_cache.py`(14 个测试:质量隔离、并发写入、LRU、singleton、path traversal 等)
+- [x] `tests/conftest.py` 增 reset MediaCache 单例
+- [x] `tests/test_frontend_assets.py` `_JS_GLOBALS` 加 `ResizeObserver`
+
+### 验证
+- ✅ 341 tests passed, 6 skipped(327 + 14)
+- ✅ ruff check . All checks passed
+- ✅ node -c app.js 无错误
+- ⏳ 实际手测由星空喵完成

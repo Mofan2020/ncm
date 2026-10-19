@@ -362,3 +362,37 @@ pytest -q                                      # 全部单测（不联网）
 node scripts/check-player-js.mjs               # 随机播放的统计校验
 python3 main.py --self-test                    # 打包前的资源/依赖自检
 ```
+
+---
+
+## 4. 播放页 Bug 修复 + 媒体缓存（2026-10-19）
+
+### 改了什么
+
+| 模块 | 改动 |
+|---|---|
+| `src/gui/assets/app.js` | `showView('player')` 改为无条件 `selectSource(player.sourceTab)`;`backToPlaylists` 清空 `#track-list` 与 `player.visible`;`mountVirtualTrackList` 在 `clientHeight<=0` 时 rAF 重试,并加 ResizeObserver;新增 `coverSrc`/`setCoverImg`/`collectArtworkUrls` 走封面缓存代理;album/artist 详情模板的封面 `<img>` 改为 `setCoverImg` |
+| `src/core/cache.py`（新） | `MediaCache` 单例,`cache/audio/<song_id>/<quality>.<ext>` + `cache/cover/<url_hash>.<ext>`;按字节预算 LRU 驱逐;线程安全;`.part` 原子重命名 |
+| `src/core/mediaserver.py` | `_online` 命中磁盘走本地 `_stream_file`;`_proxy` 仅在「非 Range + 200」时把字节 tee 到内存,响应结束后写磁盘;`_cover(url)` 路由:先查磁盘,未命中拉 CDN 写缓存再返回;`forget_online` 同时清磁盘 |
+| `src/gui/bridge.py` | `resolve_cover_url(track)` 与 `cache_stats()` |
+| `tests/test_cache.py`（新） | 14 个测试:基本存取、quality 隔离、LRU 驱逐、并发写入、path traversal sanitisation、singleton、etc. |
+| `tests/conftest.py` | `_reset_stores` 增 reset MediaCache 单例 |
+| `tests/test_frontend_assets.py` | `_JS_GLOBALS` 增 `ResizeObserver` |
+
+### 实测数据
+
+- `pytest tests/` → 341 passed, 6 skipped(327 之前 + 14 新增 cache 测试)
+- `ruff check .` → All checks passed
+- `node -c src/gui/assets/app.js` → 无错误
+
+### Bug 根因
+
+1. **首次进入播放页不刷新**:`showView('player')` 的旧条件 `!player.queue.length && !player.current` 在恢复 session 后会跳过 `selectSource`,所以 `#playlist-list` 永远是空的。`selectSource` 自身有幂等保护,无条件调一次最稳。
+2. **退出歌单后歌曲残留在「收藏」**:`#playlist-list` 和 `#track-list` 是同一个 `.list-area` 内的两个 flex 子元素,`backToPlaylists` 只重渲染前者、漏清后者,导致两者并列出现,看上去像「歌单歌曲出现在收藏里」。
+3. **13 首歌后剩余空白但占位**:virtual scroll 在 `container.clientHeight === 0`(容器未 layout)时只渲染 1 行 + 大量 placeholder;窗口/侧边栏变化后窗口大小不会重算。
+
+### 没做 / 留着的
+
+- 真实启动 app 看效果 — 按星空喵偏好,机器不实际跑界面测试,由他本人手测。
+- 缓存的回收上限目前是 audio 2 GB + cover 256 MB(写死在 `cache.py`),UI 还没暴露调整入口。
+- 锁屏/控制中心的 mediaSession artwork 同时给本地代理 URL 和原 URL 兜底;只在 `coverUrlCache` 命中代理时去掉原 URL。

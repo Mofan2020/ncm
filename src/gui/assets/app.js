@@ -81,6 +81,12 @@ const player = {
     karaoke: false,
     lyricOffset: 0,
     lyricsEditorOpen: false,
+    // Cover URL cache: remote cover URLs -> local media-server URLs.
+    // The map is filled lazily as rows render; values are plain strings,
+    // so it survives nothing across reloads (which is fine, the cache on
+    // disk is what we actually save).
+    coverUrlCache: new Map(),
+    coverUrlPending: new Set(),
 };
 
 const MODES = ['single', 'list', 'shuffle'];
@@ -887,7 +893,7 @@ function renderPlaylist(playlist) {
     const cover = document.getElementById('playlist-cover');
     cover.classList.toggle('is-empty', !playlist.cover_url);
     if (playlist.cover_url) {
-        cover.src = playlist.cover_url;
+        setCoverImg(cover, playlist.cover_url);
         cover.onerror = () => {
             cover.removeAttribute('src');
             cover.classList.add('is-empty');
@@ -1152,7 +1158,13 @@ function showView(name) {
         tab.classList.toggle('is-active', tab.dataset.view === name));
     document.querySelectorAll('.view').forEach((view) =>
         view.classList.toggle('is-active', view.id === 'view-' + name));
-    if (name === 'player' && !player.queue.length && !player.current) {
+    // Always refresh the current source when the player view becomes active.
+    // When the queue was non-empty (e.g. a restored session) we used to skip
+    // this reload, so #playlist-list / #track-list stayed at whatever stale
+    // content the previous render left behind and the user opened the player
+    // tab to a blank screen.  selectSource itself is idempotent so calling
+    // it again on the same source is safe.
+    if (name === 'player') {
         selectSource(player.sourceTab);
     }
 }
@@ -1403,7 +1415,7 @@ function renderNowPlayingMobile() {
     }
     if (titleBar) titleBar.textContent = track.name || '-';
 
-    const art = resolved.cover_url || track.cover_url || '';
+    const art = coverSrc({ cover_url: resolved.cover_url || track.cover_url || '' });
     // background-image: url(...) can't safely hold a JS template literal
     // with embedded regex + escaped quotes (the JS scanner in the frontend
     // test would mis-parse the regex body and treat the rest of the file
@@ -1562,7 +1574,7 @@ function renderPlaylists(playlists) {
         cover.alt = '';
         cover.loading = 'lazy';
         cover.decoding = 'async';
-        if (playlist.cover_url) cover.src = playlist.cover_url;
+        if (playlist.cover_url) setCoverImg(cover, playlist.cover_url);
         cover.onerror = () => cover.removeAttribute('src');
         const meta = document.createElement('div');
         meta.className = 'pl-meta';
@@ -1649,6 +1661,14 @@ async function openPlaylist(playlist) {
 function backToPlaylists() {
     player.playlistOpen = null;
     document.getElementById('btn-list-back').hidden = true;
+    // The tracks of the playlist we just left are still in player.visible
+    // and still drawn inside #track-list; without clearing here the song
+    // rows appear underneath the playlist list and look like leaked songs
+    // in the "My playlists" tab the moment the user returns.
+    const trackList = document.getElementById('track-list');
+    if (trackList) trackList.innerHTML = '';
+    player.visible = [];
+    player.visibleSource = null;
     renderPlaylists(player.playlists);
     setListTitle(t('player.source_playlists'));
 }
@@ -1808,7 +1828,7 @@ function renderLocalPlaylists(playlists) {
         row.dataset.playlistId = playlist.id;
         const cover = document.createElement('img');
         cover.alt = '';
-        if (playlist.cover_url) cover.src = playlist.cover_url;
+        if (playlist.cover_url) setCoverImg(cover, playlist.cover_url);
         cover.onerror = () => cover.removeAttribute('src');
         const meta = document.createElement('div');
         meta.className = 'pl-meta';
@@ -2700,8 +2720,9 @@ async function openAlbumDetail(album) {
     trackList.innerHTML = '';
     const albumInfo = document.createElement('div');
     albumInfo.className = 'album-detail-header';
+    const albumCoverUrl = result.album.cover_url || '';
     albumInfo.innerHTML = `
-        <img src="${result.album.cover_url || ''}" alt="" class="album-detail-cover" onerror="this.style.display='none'">
+        <img src="" alt="" class="album-detail-cover" data-cover-src="${albumCoverUrl}" onerror="this.style.display='none'">
         <div class="album-detail-meta">
             <h3>${result.album.name}</h3>
             <p>${t('player.artist')}: <a href="#" data-artist-id="${result.album.artist_id}">${result.album.artist}</a></p>
@@ -2729,7 +2750,10 @@ async function openAlbumDetail(album) {
         e.preventDefault();
         openArtistDetail({ id: result.album.artist_id, name: result.album.artist });
     });
-    
+    // Now that the markup is in the DOM we can run the proxy dance and
+    // -- once the loopback URL is in the cache -- the <img> lights up.
+    setCoverImg(albumInfo.querySelector('.album-detail-cover'), albumCoverUrl);
+
     playTracksInto(result.tracks, { kind: 'album', id: album.id, name: album.name });
 }
 
@@ -2750,8 +2774,9 @@ async function openArtistDetail(artist) {
     // Artist header
     const artistHeader = document.createElement('div');
     artistHeader.className = 'artist-detail-header';
+    const artistCoverUrl = result.artist.cover_url || '';
     artistHeader.innerHTML = `
-        <img src="${result.artist.cover_url || ''}" alt="" class="artist-detail-cover" onerror="this.style.display='none'">
+        <img src="" alt="" class="artist-detail-cover" data-cover-src="${artistCoverUrl}" onerror="this.style.display='none'">
         <div class="artist-detail-meta">
             <h3>${result.artist.name}</h3>
             <p class="muted">${result.artist.description || ''}</p>
@@ -2762,13 +2787,14 @@ async function openArtistDetail(artist) {
         </div>
     `;
     trackList.appendChild(artistHeader);
-    
+
     artistHeader.querySelector('[data-action="play-hot"]').addEventListener('click', () => {
         playTracksInto(result.hot_songs, { kind: 'artist', id: artist.id, name: artist.name });
     });
     artistHeader.querySelector('[data-action="view-albums"]').addEventListener('click', () => {
         showArtistAlbums(result.albums);
     });
+    setCoverImg(artistHeader.querySelector('.artist-detail-cover'), artistCoverUrl);
     
     // Hot songs
     if (result.hot_songs && result.hot_songs.length) {
@@ -2795,14 +2821,16 @@ function showArtistAlbums(albums) {
     albums.forEach((album) => {
         const row = document.createElement('div');
         row.className = 'album-row';
+        const rowCoverUrl = album.cover_url || '';
         row.innerHTML = `
-            <img src="${album.cover_url || ''}" alt="" class="album-row-cover" onerror="this.style.display='none'">
+            <img src="" alt="" class="album-row-cover" data-cover-src="${rowCoverUrl}" onerror="this.style.display='none'">
             <div class="album-row-meta">
                 <span class="album-row-name">${album.name}</span>
                 <span class="muted album-row-date">${album.publish_time ? new Date(album.publish_time).getFullYear() : ''}</span>
             </div>
         `;
         row.addEventListener('click', () => openAlbumDetail(album));
+        setCoverImg(row.querySelector('.album-row-cover'), rowCoverUrl);
         trackList.appendChild(row);
     });
 }
@@ -2861,6 +2889,102 @@ function initSearchSuggest() {
 function setListCount(count) {
     const el = document.getElementById('list-count');
     if (el) el.textContent = count ? String(count) : '';
+}
+
+/**
+ * Resolve a remote NetEase cover URL to a loopback ``/cover`` URL so the
+ * webview can load it without tripping CORS, and the bytes get persisted
+ * to the on-disk cache by the media server.  The result is memoised in
+ * ``player.coverUrlCache``; ``null`` is returned for inputs that have no
+ * cover at all so the caller can short-circuit and stop the spinner.
+ */
+function proxyCoverUrl(remote_url) {
+    const raw = String(remote_url || '').trim();
+    if (!raw) return '';
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw;
+    if (player.coverUrlCache.has(raw)) return player.coverUrlCache.get(raw) || '';
+    if (!state.api || typeof state.api.resolve_cover_url !== 'function') return raw;
+    if (player.coverUrlPending.has(raw)) return '';
+    player.coverUrlPending.add(raw);
+    state.api.resolve_cover_url({ cover_url: raw }).then((result) => {
+        player.coverUrlPending.delete(raw);
+        if (result && result.success && result.url) {
+            player.coverUrlCache.set(raw, result.url);
+        } else {
+            // ``null`` means "no cover" so we do not retry on every render.
+            player.coverUrlCache.set(raw, '');
+        }
+        // Re-render any visible rows that were waiting on this URL.  The
+        // lock-screen artwork is updated too so a track that was already
+        // playing picks up the loopback URL instead of the raw CDN one.
+        if (typeof renderTrackList === 'function') renderTrackList();
+        if (typeof renderNowPlaying === 'function') renderNowPlaying();
+        if (typeof updateMediaSessionMetadata === 'function'
+                && player.current
+                && String(player.current.cover_url || '') === raw) {
+            updateMediaSessionMetadata();
+        }
+    }).catch(() => {
+        player.coverUrlPending.delete(raw);
+        player.coverUrlCache.set(raw, '');
+    });
+    return '';
+}
+
+/**
+ * Convenience wrapper for ``<img>`` sources.  Returns a synchronous
+ * ``src`` value when the cover is already cached, otherwise an empty
+ * string so the browser shows nothing rather than a broken icon while the
+ * backend resolves the URL.
+ */
+function coverSrc(track) {
+    const raw = String(track && track.cover_url || '').trim();
+    if (!raw) return '';
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw;
+    return proxyCoverUrl(raw) || '';
+}
+
+/**
+ * Drop-in ``src`` setter for a cover ``<img>`` that proxies the request
+ * through the local media server.  When the backend has not answered yet we
+ * leave the ``src`` attribute empty (no broken icon), then refill it as
+ * soon as the proxy URL lands in the cache and ``renderTrackList`` fires
+ * again -- ``proxyCoverUrl`` triggers a re-render on success.
+ */
+function setCoverImg(img, raw_url) {
+    if (!img) return;
+    const proxied = coverSrc({ cover_url: raw_url });
+    if (proxied) {
+        img.src = proxied;
+        img.onerror = () => { img.removeAttribute('src'); };
+    } else {
+        img.removeAttribute('src');
+        img.onerror = () => { img.removeAttribute('src'); };
+    }
+}
+
+/**
+ * Pick the artwork URL(s) we hand to ``MediaMetadata``.  Order of preference:
+ *   1. The loopback ``/art`` URL when the resolved track is a local file
+ *      (the media server is the only way the webview can read it anyway).
+ *   2. The cached loopback ``/cover`` URL when one is in ``coverUrlCache``.
+ *   3. The raw ``track.cover_url`` so the first play after launch still
+ *      shows artwork -- the proxy will land in the cache for next time.
+ * Returns an array of plain strings so the caller can map directly into
+ * the MediaMetadata constructor.
+ */
+function collectArtworkUrls(track, resolved) {
+    const out = [];
+    if (resolved && resolved.cover_url) out.push(resolved.cover_url);
+    const remote = String((track && track.cover_url) || '').trim();
+    if (remote) {
+        if (player.coverUrlCache.has(remote)) {
+            const proxied = player.coverUrlCache.get(remote);
+            if (proxied && !out.includes(proxied)) out.push(proxied);
+        }
+        if (!out.includes(remote)) out.push(remote);
+    }
+    return out.filter(Boolean);
 }
 
 /**
@@ -2950,11 +3074,37 @@ function renderTrackList() {
  * position so the scroll bar's perceived size and ratio stay correct.
  * The pad is intentionally small (6 rows) so the row lookup is O(1) and
  * we still get most of the memory win.
+ *
+ * Two failure modes the old version had:
+ *   1. ``container.clientHeight`` was 0 on the very first call (the parent
+ *      column hadn't been laid out yet), which collapsed the visible window
+ *      to a single row and left the rest of the list as blank space until
+ *      the user scrolled.
+ *   2. The window never adapted when the column got taller/shorter after
+ *      the user resized the window or the sidebar collapsed.
+ * Both are fixed by measuring the height in a layout-stable callback and
+ * installing a ResizeObserver on the container.
  */
 function mountVirtualTrackList(container, tracks, playingKey) {
     const ROW_H = 50;        // matches `.track-row` (6px*2 padding + ~38px content)
     const PAD = 6;
     const total = tracks.length;
+
+    if (container.clientHeight <= 0) {
+        // Layout has not happened yet -- wait for one frame and retry.  We
+        // keep the existing ones in place so the user does not see a flash
+        // of empty content; if the observer below is already wired up it
+        // will pick up the size change by itself.
+        if (!container.dataset.virtualPending) {
+            container.dataset.virtualPending = '1';
+            requestAnimationFrame(() => {
+                container.dataset.virtualPending = '';
+                if (container.isConnected) renderTrackList();
+            });
+        }
+        return;
+    }
+
     let topIndex = Math.max(0, Math.floor(container.scrollTop / ROW_H) - PAD);
     let bottomIndex = Math.min(total, topIndex + 1 +
         Math.ceil(container.clientHeight / ROW_H) + PAD * 2);
@@ -2995,6 +3145,21 @@ function mountVirtualTrackList(container, tracks, playingKey) {
                 }
             });
         }, { passive: true });
+
+        // Adapt the virtualised window when the column gets taller or
+        // shorter (window resize, sidebar collapse, language switch, ...).
+        if (typeof ResizeObserver !== 'undefined') {
+            const observer = new ResizeObserver(() => {
+                if (container._virtualResizePending) return;
+                container._virtualResizePending = true;
+                requestAnimationFrame(() => {
+                    container._virtualResizePending = false;
+                    renderTrackList();
+                });
+            });
+            observer.observe(container);
+            container._virtualObserver = observer;
+        }
     }
 }
 
@@ -4542,8 +4707,13 @@ function updateMediaSessionMetadata() {
         title: track.name || 'Unknown',
         artist: track.artists || 'Unknown',
         album: track.album || 'Unknown',
-        artwork: (resolved.cover_url || track.cover_url || '').split(',').map(url => ({
-            src: url.trim(),
+        // The lock screen / control center must be given a synchronous URL,
+        // so prefer the loopback ``/art`` (local files) or the loopback
+        // ``/cover`` proxy already cached for this URL.  Falling back to the
+        // raw CDN URL keeps the artwork working on first play (when the
+        // proxy has not answered yet) -- the cache fills in next time.
+        artwork: collectArtworkUrls(track, resolved).map(url => ({
+            src: url,
             sizes: '512x512',
             type: 'image/png'
         })).filter(a => a.src)

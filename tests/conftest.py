@@ -62,6 +62,12 @@ def _reset_stores() -> None:
             pass
     mediaserver_module.MediaServer._instance = None
 
+    # Drop the persistent media cache too -- otherwise one test's cached
+    # bytes show up in the next test's fixtures.
+    from src.core import cache as cache_module
+
+    cache_module._instance = None
+
 
 @pytest.fixture()
 def isolated_home(tmp_path, monkeypatch):
