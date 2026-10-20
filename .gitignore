@@ -14,6 +14,8 @@ build/
 dist/
 *.manifest
 *.spec.bak
+# built by main.spec's Windows branch
+ncm-resources.zip
 
 # Release artefacts / local downloads
 release-artifacts/

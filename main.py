@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import get_settings  # noqa: E402
-from src.resources import resource_path  # noqa: E402
+from src.resources import ensure_resources, resource_path  # noqa: E402
 from src.version import APP_DISPLAY_NAME, __version__  # noqa: E402
 
 __all__ = ["main"]
@@ -105,11 +105,34 @@ def _self_test(report_path: str | None = None) -> int:
 def _run_self_test(report_path: str | None = None) -> int:
     checks: list[tuple[str, bool, str]] = []
 
+    # Exercise the Windows unpack path here too, so CI proves the archive is
+    # usable rather than merely present.  No-op everywhere else.
+    unpacked = ensure_resources()
+    checks.append(("resource unpack", True, str(unpacked) if unpacked
+                   else "not used on this build"))
+
     assets = resource_path("src", "gui", "assets")
+    index_path = assets / "index.html"
     missing = [name for name in ("index.html", "app.js", "style.css")
                if not (assets / name).exists()]
     checks.append(("ui assets", not missing, str(assets) if not missing
                    else f"missing: {', '.join(missing)}"))
+
+    # Existence is not loadability.  Assert the URL handed to the webview is a
+    # well-formed file URI whose query survives parsing -- the failure mode this
+    # guards is "the file is on disk but the browser cannot load its URL", which
+    # a file-existence check passes straight through.
+    try:
+        from urllib.parse import urlsplit
+
+        probe = urlsplit(f"{index_path.as_uri()}?theme=dark&mode=dark&lang=zh_cn")
+        url_ok = (probe.scheme == "file"
+                  and probe.path.replace("\\", "/").endswith("index.html")
+                  and probe.query == "theme=dark&mode=dark&lang=zh_cn")
+        url_detail = f"scheme={probe.scheme} query={probe.query or '-'}"
+    except Exception as exc:  # pragma: no cover - defensive
+        url_ok, url_detail = False, f"{type(exc).__name__}: {exc}"
+    checks.append(("ui url", url_ok, url_detail))
 
     from src.i18n import get_i18n
 
@@ -260,6 +283,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # Unpack the asset archive on Windows before anything resolves a resource
+    # path.  No-op on macOS and from source, so the macOS startup path is
+    # unchanged.
+    unpacked = ensure_resources()
+    if unpacked is not None:
+        log.info("resources: %s", unpacked)
 
     html_path = resource_path("src", "gui", "assets", "index.html")
     if not html_path.exists():

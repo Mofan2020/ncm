@@ -26,19 +26,64 @@ VERSION = _version_ns["__version__"]
 BUNDLE_ID = _version_ns["BUNDLE_ID"]
 COPYRIGHT = _version_ns["COPYRIGHT"]
 
+# The archive name must match src/resources.py, which unpacks it at startup.
+# Parse just the constant instead of exec'ing the module: resources.py imports
+# shutil, which touches _winapi on Windows and would make the spec depend on
+# platform-specific stdlib internals.
+import re as _re
+
+RESOURCES_ARCHIVE = _re.search(
+    r'^RESOURCES_ARCHIVE\s*=\s*"([^"]+)"',
+    (_SPEC_DIR / "src" / "resources.py").read_text(encoding="utf-8"),
+    _re.MULTILINE,
+).group(1)
+
 block_cipher = None
 
 # --------------------------------------------------------------- data files
+# Assets are listed as whole directories rather than file by file: listing each
+# file is a drift generator, and desktop-lyrics.html / .js were silently missing
+# from the bundle for exactly that reason.
 datas = [
-    ("src/gui/assets/index.html", "src/gui/assets"),
-    ("src/gui/assets/style.css", "src/gui/assets"),
-    ("src/gui/assets/app.js", "src/gui/assets"),
-    ("src/i18n/zh_cn.json", "src/i18n"),
-    ("src/i18n/en_us.json", "src/i18n"),
+    ("src/gui/assets", "src/gui/assets"),
+    ("src/i18n", "src/i18n"),
 ]
-for optional in ("LICENSE", "README.md"):
-    if (_SPEC_DIR / optional).exists():
-        datas.append((optional, "."))
+
+if sys.platform == "win32":
+    # Windows: pack the assets into one zip that is unpacked next to the .exe at
+    # startup (src/resources.ensure_resources).  WebView2 renders its "file may
+    # have been deleted or moved" page when the onefile temp directory is gone or
+    # quarantined by a security product, so the files must not be served from
+    # _MEIPASS there.  macOS is untouched: it keeps a normal onedir .app.
+    import shutil
+    import zipfile
+
+    _staging = _SPEC_DIR / "build" / "ncm-resources"
+    shutil.rmtree(_staging, ignore_errors=True)
+
+    def _pack(entry: str) -> None:
+        """Mirror ``entry`` into the staging dir, skipping build droppings."""
+        for _f in sorted((_SPEC_DIR / entry).rglob("*")):
+            if not _f.is_file() or "__pycache__" in _f.parts:
+                continue
+            _target = _staging / _f.relative_to(_SPEC_DIR)
+            _target.parent.mkdir(parents=True, exist_ok=True)
+            _target.write_bytes(_f.read_bytes())
+
+    for _entry in ("src/gui/assets", "src/i18n"):
+        _pack(_entry)
+
+    _archive = _SPEC_DIR / RESOURCES_ARCHIVE
+    with zipfile.ZipFile(_archive, "w", zipfile.ZIP_DEFLATED) as _zf:
+        for _f in sorted(_staging.rglob("*")):
+            if _f.is_file():
+                _zf.write(_f, _f.relative_to(_staging).as_posix())
+    datas = [(str(_archive), ".")]
+    shutil.rmtree(_staging, ignore_errors=True)
+else:
+    for optional in ("LICENSE", "README.md"):
+        if (_SPEC_DIR / optional).exists():
+            datas.append((optional, "."))
 
 # ------------------------------------------------------------ hidden imports
 hiddenimports = [

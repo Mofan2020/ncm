@@ -157,6 +157,30 @@ jobs:
           }
           Get-Content "dist/selftest-windows.txt"
 
+      - name: Verify the assets unpacked beside the .exe
+        shell: pwsh
+        run: |
+          # The whole point of the Windows layout: the UI must be served from
+          # _resources\ next to the .exe, NOT from the onefile temp dir
+          # (_MEIPASS), which WebView2 can lose track of -- that produced the
+          # "file may have been deleted or moved" page.  Assert the directory
+          # and its files really exist, so this regression can never go green.
+          $res = Join-Path $PWD "dist\_resources"
+          if (-not (Test-Path $res)) {
+            Write-Error "the Windows build did not unpack its resources to $res"
+            exit 1
+          }
+          foreach ($f in @("src\gui\assets\index.html", "src\gui\assets\app.js",
+                            "src\gui\assets\style.css", "src\gui\assets\desktop-lyrics.html",
+                            "src\i18n\zh_cn.json")) {
+            if (-not (Test-Path (Join-Path $res $f))) {
+              Write-Error "missing from the unpacked resources: $f"
+              exit 1
+            }
+          }
+          Write-Host "unpacked resources:"
+          Get-ChildItem -Recurse -File $res | Select-Object -First 12 FullName, Length
+
       - name: Package (zip)
         shell: pwsh
         run: |
