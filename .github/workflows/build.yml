@@ -181,6 +181,45 @@ jobs:
           Write-Host "unpacked resources:"
           Get-ChildItem -Recurse -File $res | Select-Object -First 12 FullName, Length
 
+      - name: Run the app from a non-ASCII path
+        shell: pwsh
+        run: |
+          # The bug this guards: WebView2 refuses a file:// url whose path is
+          # not pure ASCII, so a Chinese install directory rendered
+          # "file may have been deleted or moved".  The interface now loads over
+          # the loopback server, so prove the whole thing starts from such a
+          # directory.  Run from a copy so the extracted resources travel with it.
+          $cn = Join-Path $PWD "dist\下载测试"
+          New-Item -ItemType Directory -Force -Path $cn | Out-Null
+          Copy-Item "dist\NeteaseMusicDownloader.exe" $cn
+          if (Test-Path "dist\_resources") {
+            Copy-Item "dist\_resources" $cn -Recurse -Force
+          }
+          $exe = Join-Path $cn "NeteaseMusicDownloader.exe"
+          $proc = Start-Process -FilePath $exe -ArgumentList "--self-test" `
+            -WorkingDirectory $cn -PassThru
+          if (-not $proc.WaitForExit(180000)) {
+            $proc.Kill(); Write-Error "the self-test hung in a non-ASCII path"; exit 1
+          }
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "self-test failed in a non-ASCII path: $($proc.ExitCode)"
+            exit 1
+          }
+          # the diagnostics file must exist and name the http url
+          $log = Join-Path $cn "ncm-startup.log"
+          if (-not (Test-Path $log)) { Write-Error "no ncm-startup.log was written"; exit 1 }
+          $info = Get-Content $log -Raw | ConvertFrom-Json
+          Write-Host "ui_url: $($info.ui_url)"
+          if ($info.ui_url -notlike "http://127.0.0.1:*") {
+            Write-Error "the interface was not loaded over http: $($info.ui_url)"
+            exit 1
+          }
+          if ($info.ui_url -match "[^\x00-\x7F]") {
+            Write-Error "the url contains non-ASCII characters: $($info.ui_url)"
+            exit 1
+          }
+          Write-Host "OK: interface loads over http from a Chinese path"
+
       - name: Package (zip)
         shell: pwsh
         run: |

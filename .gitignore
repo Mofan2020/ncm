@@ -34,3 +34,6 @@ desktop.ini
 # Local logs
 *.log
 ncm-self-test.txt
+
+# startup diagnostics written by the app
+ncm-startup.log

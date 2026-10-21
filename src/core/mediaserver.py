@@ -127,6 +127,15 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if route == "health":
                 self._plain(b"ok", "text/plain; charset=utf-8", send_body)
+            elif route == "ui":
+                # The webview loads the interface from here instead of a
+                # file:// URL.  Windows refuses to open a file:// URL whose
+                # path is not pure ASCII (a Chinese install path renders
+                # WebView2's "file may have been deleted or moved" page), and
+                # going through the loopback server sidesteps that whole class
+                # of problem.  Only files inside the bundled asset directory
+                # are reachable.
+                self._ui(parts[3:], send_body)
             elif route == "online":
                 song_id = parts[3] if len(parts) > 3 else ""
                 self._online(song_id, query.get("q", ["standard"])[0], send_body)
@@ -241,6 +250,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     # ------------------------------------------------------------------ routes
+    def _ui(self, parts: list[str], send_body: bool) -> None:
+        """Serve one of the bundled interface files."""
+        path = self.media.resolve_ui_asset(parts)
+        if path is None:
+            self._error(404, "not found")
+            return
+        self._stream_file(path, _content_type_for(path), send_body)
+
     def _local(self, raw_path: str, send_body: bool) -> None:
         path = self.media.resolve_local(raw_path)
         if path is None:
@@ -425,6 +442,14 @@ def _content_type_for(path: Path) -> str:
     }
     if suffix in known:
         return known[suffix]
+    if suffix == ".js":
+        # Windows' mimetypes registry can map .js to something odd; the webview
+        # refuses to execute a script served with the wrong type.
+        return "text/javascript; charset=utf-8"
+    if suffix == ".css":
+        return "text/css; charset=utf-8"
+    if suffix in (".html", ".htm"):
+        return "text/html; charset=utf-8"
     guessed, _ = mimetypes.guess_type(str(path))
     return guessed or "application/octet-stream"
 
@@ -484,6 +509,7 @@ class MediaServer:
         self._thread: threading.Thread | None = None
         self.port = 0
         self._roots: list[Path] = []
+        self._ui_root: Path | None = None
         self._url_cache: dict[tuple[str, str], tuple[str, float]] = {}
         self._cache_lock = threading.Lock()
         self._covers = _CoverCache()
@@ -603,6 +629,53 @@ class MediaServer:
             if candidate == root or root in candidate.parents:
                 return candidate if candidate.is_file() else None
         return None
+
+    def set_ui_root(self, root: str | Path | None) -> None:
+        """Point the ``/ui`` route at the bundled interface directory."""
+        if root is None:
+            self._ui_root = None
+            return
+        try:
+            resolved = Path(root).expanduser().resolve()
+        except OSError:
+            self._ui_root = None
+            return
+        self._ui_root = resolved if resolved.is_dir() else None
+
+    @property
+    def ui_root(self) -> Path | None:
+        return self._ui_root
+
+    def ui_url(self, *parts: str, query: str = "") -> str:
+        """Absolute URL for a bundled interface file.
+
+        The paths are percent-encoded, so a non-ASCII install directory is
+        fine -- that is the whole reason the interface is served over HTTP.
+        """
+        suffix = "/".join(quote(part, safe="") for part in parts)
+        url = f"{self.base_url}/ui/{suffix}"
+        return f"{url}?{query}" if query else url
+
+    def resolve_ui_asset(self, parts: list[str]) -> Path | None:
+        """Resolve a ``/ui`` path inside the bundled interface directory.
+
+        Returns ``None`` for anything that escapes the root or is not a file.
+        """
+        if self._ui_root is None or not parts:
+            return None
+        # Reject traversal before touching the filesystem; the caller already
+        # percent-decoded each segment, so ".." arrives as a literal part.
+        if any(part in ("..", "") or part.startswith("/") for part in parts):
+            return None
+        candidate = self._ui_root.joinpath(*parts)
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            return None
+        root = self._ui_root
+        if resolved != root and root not in resolved.parents:
+            return None
+        return resolved if resolved.is_file() else None
 
     def cover_for(self, path: Path) -> tuple[bytes, str] | None:
         try:

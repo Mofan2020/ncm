@@ -1676,7 +1676,18 @@ class GuiBridge:
             opacity = ui.desktop_lyrics_opacity
             show_translation = ui.desktop_lyrics_show_translation
 
-            url = f"{html_path.as_uri()}?fontSize={font_size}&color={color}&opacity={opacity}&showTranslation={show_translation}"
+            query = (f"fontSize={font_size}&color={color}"
+                     f"&opacity={opacity}&showTranslation={show_translation}")
+
+            # Same reasoning as the main window: prefer the loopback server so a
+            # non-ASCII install path cannot break the file:// URL.
+            url = None
+            media = getattr(self, "media", None)
+            if media is not None and getattr(media, "running", False):
+                media.set_ui_root(html_path.parent)
+                url = media.ui_url("desktop-lyrics.html", query=query)
+            if url is None:
+                url = f"{html_path.as_uri()}?{query}"
 
             # Use a simpler window configuration for better compatibility
             self._desktop_lyrics_window = self._webview_module.create_window(

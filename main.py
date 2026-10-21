@@ -18,7 +18,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import get_settings  # noqa: E402
-from src.resources import ensure_resources, resource_path  # noqa: E402
+from src.resources import (  # noqa: E402
+    bundle_root,
+    ensure_resources,
+    is_frozen,
+    resource_path,
+)
 from src.version import APP_DISPLAY_NAME, __version__  # noqa: E402
 
 __all__ = ["main"]
@@ -188,17 +193,43 @@ def _run_self_test(report_path: str | None = None) -> int:
     server = MediaServer()
     base_url = ""
     healthy = False
+    ui_ok = False
+    ui_url = None
+    ui_detail = "not checked"
     try:
         import requests
 
         base_url = server.start()
         response = requests.get(server.url_for_health(), timeout=5)
         healthy = response.status_code == 200 and response.text.strip() == "ok"
+
+        # The webview loads the interface over this server, so prove the route
+        # really serves index.html -- not just that the file exists on disk.
+        server.set_ui_root(assets)
+        ui_url = server.ui_url("index.html", query="theme=dark&mode=dark&lang=zh_cn")
+        page = requests.get(ui_url, timeout=5)
+        ui_ok = (page.status_code == 200
+                 and "text/html" in page.headers.get("Content-Type", "")
+                 and len(page.content) > 10_000)
+        ui_detail = (f"{page.status_code} {page.headers.get('Content-Type', '-')} "
+                     f"{len(page.content)}B, ascii_url={ui_url.isascii()}")
+        if not ui_url.isascii():
+            ui_ok = False
+            ui_detail += " (url is not ASCII - webview may refuse it)"
     except Exception as exc:  # pragma: no cover - port/permission problems
         base_url = f"error: {type(exc).__name__}: {exc}"
     finally:
         server.stop()
     checks.append(("media server", healthy, base_url or "did not start"))
+    checks.append(("ui over http", ui_ok, ui_detail))
+
+    # Leave behind the same diagnostics file the real startup writes, so CI can
+    # assert on the URL that would actually be handed to the webview.
+    if ui_ok:
+        try:
+            _write_load_diagnostics(report_path, ui_url, index_path)
+        except Exception:  # pragma: no cover - diagnostics are best effort
+            pass
 
     try:
         import webview
@@ -261,6 +292,84 @@ def _emit_report(checks: list[tuple[str, bool, str]], report_path: str | None) -
             print(report, flush=True)
     except BaseException:
         pass
+
+
+def _write_load_diagnostics(report_path: str | None, ui_url: str | None,
+                            html_path: Path, error: str | None = None) -> None:
+    """Write what the webview was actually asked to load, plus the real error.
+
+    When the window shows an error page instead of the app, the only useful
+    information is the URL the webview ended up on and WebView2's own error
+    string.  Neither reaches a ``console=False`` build's stdout, so they are
+    written next to the executable where the user can open them.
+    """
+    import json
+    import platform
+    import traceback
+
+    exe_dir = Path(sys.executable).resolve().parent if is_frozen() else Path.cwd()
+    target = Path(report_path) if report_path else exe_dir / "ncm-startup.log"
+
+    info: dict[str, object] = {
+        "time": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        "version": __version__,
+        "python": platform.python_version(),
+        "platform": f"{platform.system()} {platform.release()} {platform.machine()}",
+        "frozen": is_frozen(),
+        "sys_executable": sys.executable,
+        "_MEIPASS": getattr(sys, "_MEIPASS", None),
+        "exe_dir": str(exe_dir),
+        "html_path": str(html_path),
+        "html_exists": html_path.is_file(),
+        "html_size": html_path.stat().st_size if html_path.is_file() else None,
+        "ui_url": ui_url,
+        "resource_root": str(bundle_root()),
+    }
+    assets = html_path.parent
+    if assets.is_dir():
+        info["assets"] = {p.name: p.stat().st_size
+                          for p in sorted(assets.iterdir()) if p.is_file()}
+    if error:
+        info["error"] = error
+        info["traceback"] = traceback.format_exc()
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(info, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+    except OSError:
+        pass
+
+    # If the webview did load, ask it what happened.  This must never raise:
+    # an unhandled exception in a windowed build pops a modal error dialog.
+    try:
+        window = _active_window()
+        if window is not None:
+            probe = (
+                "JSON.stringify({href: location.href, title: document.title,"
+                " body: (document.body ? document.body.innerText : '')"
+                ".slice(0, 400)})"
+            )
+            result = window.evaluate_js(probe)
+            if result:
+                try:
+                    info["page"] = json.loads(result)
+                except (TypeError, ValueError):
+                    info["page"] = str(result)
+            target.write_text(json.dumps(info, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+    except Exception:  # pragma: no cover - diagnostics must never break startup
+        pass
+
+
+def _active_window():
+    """The pywebview window, once one exists."""
+    try:
+        import webview
+
+        return webview.active_window()
+    except Exception:
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -329,8 +438,28 @@ def main(argv: list[str] | None = None) -> int:
     # The theme and language travel in the URL so the very first paint is
     # already correct (no white flash when the app opens in dark mode).
     theme_mode = normalize_theme(settings.ui.theme)
-    ui_url = f"{html_path.as_uri()}?theme={effective_theme(theme_mode)}" \
-             f"&mode={theme_mode}&lang={settings.ui.language}"
+    ui_query = (f"theme={effective_theme(theme_mode)}"
+                f"&mode={theme_mode}&lang={settings.ui.language}")
+
+    # Serve the interface over the loopback server rather than from a file://
+    # URL.  Windows cannot open a file:// URL whose path is not pure ASCII --
+    # with a Chinese install directory WebView2 renders its "file may have been
+    # deleted or moved" page instead of the app.  An http:// URL on 127.0.0.1
+    # sidesteps that entirely, and the server is already running for playback.
+    ui_url = None
+    if media.running:
+        media.set_ui_root(html_path.parent)
+        ui_url = media.ui_url("index.html", query=ui_query)
+        if ui_url:
+            log.info("loading the interface from %s", ui_url)
+    if ui_url is None:
+        # Fallback for the (unreachable in practice) case where the server
+        # could not bind: a file:// URL still works on an ASCII path.
+        ui_url = f"{html_path.as_uri()}?{ui_query}"
+        log.warning("falling back to a file:// url: %s", ui_url)
+
+    # Record what we are about to ask for, before anything can go wrong.
+    _write_load_diagnostics(args.report, ui_url, html_path)
 
     window = webview.create_window(
         title=APP_DISPLAY_NAME,
@@ -351,7 +480,17 @@ def main(argv: list[str] | None = None) -> int:
     def _sync_native_theme() -> None:
         apply_native_theme(window, settings.ui.theme)
 
+    def _record_loaded_page() -> None:
+        """Once loaded, capture what the webview actually shows.
+
+        If the window is an error page this is where its real text and URL land
+        in ncm-startup.log, which is the only way to tell an ERR_FILE_NOT_FOUND
+        apart from, say, a JS crash.
+        """
+        _write_load_diagnostics(args.report, ui_url, html_path)
+
     window.events.loaded += _sync_native_theme
+    window.events.loaded += _record_loaded_page
 
     def _remember_geometry() -> None:
         try:
@@ -379,6 +518,8 @@ def main(argv: list[str] | None = None) -> int:
         webview.start(debug=settings.debug)
     except Exception as exc:  # pragma: no cover - backend/runtime missing
         log.exception("pywebview failed to start")
+        _write_load_diagnostics(args.report, ui_url, html_path,
+                                error=f"{type(exc).__name__}: {exc}")
         print(
             f"error: could not open the application window: {exc}\n"
             "  Windows: install the Microsoft Edge WebView2 runtime "
