@@ -558,5 +558,26 @@
     "dismiss": "忽略",
     "checking": "正在检查更新…",
     "up_to_date": "已是最新版本 v{version}"
+  },
+  "account": {
+    "title": "我的账号",
+    "loading": "正在读取账号信息…",
+    "refresh": "刷新",
+    "close": "关闭",
+    "logout": "退出登录",
+    "user_id": "用户 ID",
+    "level": "等级",
+    "vip": "会员",
+    "vip_none": "无",
+    "signature": "个性签名",
+    "signature_empty": "还没有写签名",
+    "follows": "关注",
+    "fans": "粉丝",
+    "playlists": "歌单",
+    "listen_songs": "累计听歌",
+    "joined": "注册于",
+    "not_logged_in": "尚未登录",
+    "refresh_failed": "读取账号信息失败，请稍后再试",
+    "edit_unsupported": "网易云未开放第三方修改资料，昵称与签名需在官方客户端修改"
   }
 }

@@ -121,6 +121,9 @@ class LoginManager:
     #: of these two answer ``400 手机号或ursToken不能为空``.
     PHONE_EXIST_URL = f"{BASE_URL}/api/cellphone/existence/check"
     PHONE_REGISTER_URL = f"{BASE_URL}/api/w/register/cellphone"
+    #: Exists but needs a session: anonymously it answers ``code 301``
+    #: (not signed in) rather than ``404 接口未找到``.
+    PROFILE_UPDATE_PATH = "/api/user/profile/update"
     EAPI_PREFIX = "/eapi"
 
     USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -320,6 +323,67 @@ class LoginManager:
         call on every request.  Use :meth:`verify_login` to re-check online.
         """
         return self._user_info is not None
+
+    # --------------------------------------------------------------- profile
+    def get_profile(self) -> dict[str, Any]:
+        """The signed-in user's profile, as far as the server reports it.
+
+        Returns ``{}`` when nobody is signed in, so callers can render the same
+        shape either way instead of guarding on ``None``.
+        """
+        user = self._user_info
+        if user is None:
+            return {}
+        profile = dict(user.profile or {})
+        # ``account.userName`` is the privacy-masked form; the real name is in
+        # ``profile.nickname``.  Never fall back to the masked one for display.
+        profile.setdefault("userId", user.user_id)
+        profile.setdefault("nickname", user.nickname)
+        profile.setdefault("avatarUrl", user.avatar_url)
+        profile.setdefault("vipType", user.vip_type)
+        return profile
+
+    def refresh_profile(self) -> dict[str, Any]:
+        """Re-read the account from the server and return the fresh profile."""
+        ok, account, profile = self._fetch_account()
+        if not ok:
+            return self.get_profile()
+        self._set_user_from_account(account, profile)
+        return self.get_profile()
+
+    def update_nickname(self, nickname: str) -> dict[str, Any]:
+        """Change the account nickname.
+
+        The route is verified to *exist* anonymously (it answers ``301`` = not
+        signed in rather than ``404``).  The rename itself cannot be exercised
+        without a real session, so it is not claimed as machine-verified.
+        """
+        nickname = (nickname or "").strip()
+        if not nickname:
+            return {"success": False, "error_key": "account.nickname_empty",
+                    "message": "nickname_required"}
+        if len(nickname) > 20:
+            return {"success": False, "error_key": "account.nickname_too_long",
+                    "message": "nickname_too_long"}
+        if self._user_info is None:
+            return {"success": False, "error_key": "account.login_required",
+                    "message": "not_logged_in"}
+        if nickname == self._user_info.nickname:
+            return {"success": True, "nickname": nickname, "unchanged": True}
+
+        result = self._post_eapi(self.PROFILE_UPDATE_PATH, {"nickname": nickname})
+        if result is None:
+            return {"success": False, "error_key": "account.update_failed",
+                    "message": "network"}
+        code = result.get("code")
+        if code == 200:
+            self._user_info.nickname = nickname
+            return {"success": True, "nickname": nickname}
+        if code in (301, 401):
+            return {"success": False, "error_key": "account.login_required",
+                    "message": "not_logged_in"}
+        return {"success": False, "error_key": "account.update_failed",
+                "message": str(result.get("message") or result.get("msg") or code)}
 
     def get_session(self) -> requests.Session:
         return self._session

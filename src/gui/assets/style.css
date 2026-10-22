@@ -2105,3 +2105,53 @@ input[type="range"]::-webkit-slider-thumb {
     padding: 6px 10px;
     font-size: 12.5px;
 }
+
+/* --------------------------------------------------------- account panel */
+.account-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 16px;
+}
+.account-avatar {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--surface-3, var(--surface));
+    flex: none;
+}
+.account-ident { min-width: 0; }
+.account-name {
+    margin: 0 0 4px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+}
+.account-signature {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-3);
+    line-height: 1.5;
+    word-break: break-word;
+}
+.account-grid {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 7px 18px;
+    margin: 0;
+    padding-top: 14px;
+    border-top: 1px solid var(--divider);
+    font-size: 12.5px;
+}
+.account-grid dt { color: var(--text-3); }
+.account-grid dd { margin: 0; color: var(--text); word-break: break-all; }
+.account-note {
+    margin: 16px 0 0;
+    padding: 9px 11px;
+    border-radius: 8px;
+    background: var(--brand-soft, rgba(255, 255, 255, 0.05));
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--text-3);
+}

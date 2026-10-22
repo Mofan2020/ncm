@@ -558,5 +558,26 @@
     "dismiss": "Dismiss",
     "checking": "Checking for updates…",
     "up_to_date": "You are up to date (v{version})"
+  },
+  "account": {
+    "title": "My account",
+    "loading": "Loading your account…",
+    "refresh": "Refresh",
+    "close": "Close",
+    "logout": "Sign out",
+    "user_id": "User ID",
+    "level": "Level",
+    "vip": "Membership",
+    "vip_none": "None",
+    "signature": "Signature",
+    "signature_empty": "No signature yet",
+    "follows": "Following",
+    "fans": "Followers",
+    "playlists": "Playlists",
+    "listen_songs": "Songs played",
+    "joined": "Joined",
+    "not_logged_in": "Not signed in",
+    "refresh_failed": "Could not read your account, try again later",
+    "edit_unsupported": "NetEase does not expose profile editing to third-party clients; change your nickname in the official app"
   }
 }

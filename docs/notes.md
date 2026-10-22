@@ -567,3 +567,37 @@ http://127.0.0.1:49336/m/mx0-QDM0BOwzSd2qykYYww/ui/index.html?theme=dark&...
 - 免责声明在真实 Chromium 里跑过：6 段正文、标题、勾选框、按钮禁用态都正确，勾选后按钮解禁、点击后弹窗关闭
 - 未机器验证（按偏好交本人手测）：真机开桌面歌词的关闭路径、大歌单在真实 pywebview 里的滚动、注册的真实发码
 
+---
+
+## 7. 自动更新检测 + 账号面板（2026-10-22 续）
+
+### 自动更新
+
+`src/core/updates.py` 读 GitHub releases API，和 `__version__` 比数字版本（`3.2.10` > `3.2.9`，字符串比较会反过来）。只提示、不下载、不安装：命中新版本时右下角弹一张可关闭的卡片，点「查看」跳 release 页。启动后异步查一次，结果缓存 6 小时；**失败不缓存** —— 否则一次断网会让「没有更新」一直被记住。
+
+预发布版也算：本项目功能版常标 pre-release，跑在 pre-release 上的用户也应该收到提示。草稿（draft）跳过。
+
+### 账号面板
+
+点头像/昵称打开，展示服务端返回的真实资料：头像、昵称、签名、用户 ID、等级、会员、关注/粉丝、歌单数、累计听歌、注册时间。
+
+**昵称与签名无法在第三方客户端修改。** 实测结论：
+
+- `/api/user/profile/update` 这个路由**存在**（匿名访问返回 `301`，已登录返回 `250 用户资料初始化或修改失败`，都不是 `404 接口未找到`）。
+- 参数名和字段与开源参考实现（`user_update.js` 的 `nickname/gender/signature/province/city/birthday`）完全一致；我用**当前昵称原样回传**做过幂等测试（不发新值、不可能改动账号），各种组合都是 `code 250`：
+  - 只传 nickname → 250
+  - nickname + `csrf_token` → 250
+  - 全字段回传 → 先 `400 操作过于频繁`，等待重试后仍是 `250`
+  - 换 `os=android` / `os=ios` / `os=pc 3.0.0` 的 eapi header → 250 / 250 / 400
+- 所以面板做成**只读**，并在底部写明原因。放一个必然失败的输入框只会骗人。
+
+`update_nickname()` 仍然留在 `LoginManager` 里（含空值、超长、未登录、原值相同的本地拦截），将来路由放开可以直接接上，但 UI 不暴露。
+
+### 实测数据
+
+- `pytest` → 全部通过, 5 skipped（新增 `test_updates.py` 17 项、`test_account.py` 8 项、`test_desktop_lyrics.py` 7 项、`test_lyrics_pairing.py` 7 项）
+- `ruff check .` → All checks passed
+- 账号面板在真实 Chromium 里跑过：9 个字段、真实资料值、提示文案全部正确
+- 更新卡片在真实 Chromium 里跑过：标题、当前版本、按钮文案正确
+- 未机器验证：真机 pywebview 下的浮层关闭、真实大歌单滚动（交本人手测）；GitHub API 实时请求在本机被 hosts 加速器的自签证书挡住，逻辑用 `gh api` 拿到的真实 release 数据验证过
+

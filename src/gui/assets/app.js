@@ -373,6 +373,84 @@ function resolveConfirm(result) {
     }
 }
 
+/* ---------------------------------------------------------------- account */
+
+/**
+ * Show the signed-in account: who it is, and what the server reports.
+ *
+ * The panel is read-only.  NetEase's ``/api/user/profile/update`` route exists
+ * but answers ``code 250 "用户资料初始化或修改失败"`` for third-party clients,
+ * so offering an editable nickname here would be a button that always fails.
+ */
+async function openAccountPanel(refresh) {
+    if (!state.api || !state.api.get_user_profile) return;
+    const grid = document.getElementById('account-grid');
+    if (grid) grid.innerHTML = `<p class="empty">${t('account.loading')}</p>`;
+    openModal('account-modal');
+
+    let result;
+    try {
+        result = await state.api.get_user_profile(Boolean(refresh));
+    } catch (err) {
+        result = null;
+    }
+    if (!result || !result.success || !result.profile) {
+        if (grid) grid.innerHTML = `<p class="empty">${t('account.refresh_failed')}</p>`;
+        return;
+    }
+    renderAccountProfile(result.profile);
+}
+
+function renderAccountProfile(profile) {
+    const avatar = document.getElementById('account-avatar');
+    if (avatar) {
+        avatar.src = profile.avatarUrl || profile.avatarImgUrl || '';
+        avatar.hidden = !avatar.src;
+    }
+    const name = document.getElementById('account-name');
+    if (name) name.textContent = profile.nickname || t('account.not_logged_in');
+    const signature = document.getElementById('account-signature');
+    if (signature) {
+        signature.textContent = profile.signature || t('account.signature_empty');
+    }
+
+    const grid = document.getElementById('account-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    // ``province`` / ``city`` are GB/T 2260 numeric codes (``310000``), not
+    // names -- showing them raw is noise, and a partial code table would be
+    // worse than omitting the row.
+    const rows = [
+        ['account.user_id', profile.userId],
+        ['account.level', profile.level != null ? String(profile.level) : ''],
+        ['account.vip', profile.vipType > 0 ? `VIP ${profile.vipType}` : t('account.vip_none')],
+        ['account.follows', profile.followedUserCount],
+        ['account.fans', profile.followeds],
+        ['account.playlists', profile.playlistCount],
+        ['account.listen_songs', profile.listenSongs],
+        ['account.joined', formatAccountDate(profile.createTime)],
+    ];
+    rows.forEach(([key, value]) => {
+        if (value === undefined || value === null || value === '') return;
+        const term = document.createElement('dt');
+        term.textContent = t(key);
+        const detail = document.createElement('dd');
+        detail.textContent = String(value);
+        grid.appendChild(term);
+        grid.appendChild(detail);
+    });
+}
+
+/** ``createTime`` is epoch milliseconds. */
+function formatAccountDate(value) {
+    const number = Number(value);
+    if (!number) return '';
+    const date = new Date(number);
+    if (Number.isNaN(date.getTime())) return '';
+    const pad = (part) => String(part).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
 /* ----------------------------------------------------------- update check */
 
 /**
@@ -870,13 +948,7 @@ function updateLoginBadge(status) {
         badge.className = 'badge';
         badge.textContent = status.user.vip_type > 0 ? 'VIP' : '';
         if (badge.textContent) button.appendChild(badge);
-        button.onclick = async () => {
-            if (await confirmDialog('login.logout_confirm')) {
-                await state.api.logout();
-                player.playlists = [];
-                await refreshLoginStatus();
-            }
-        };
+        button.onclick = () => openAccountPanel(false);
         button.title = t('login.logged_in_as', { name: status.user.nickname || '' });
     } else {
         button.classList.add('btn-primary');
@@ -5398,6 +5470,20 @@ function bindStaticEvents() {
         updatePlayStatsText();
     });
     document.getElementById('btn-theme').addEventListener('click', cycleTheme);
+
+    // account panel
+    document.getElementById('btn-account-close')
+        .addEventListener('click', () => closeModal('account-modal'));
+    document.getElementById('btn-account-refresh')
+        .addEventListener('click', () => openAccountPanel(true));
+    document.getElementById('btn-account-logout')
+        .addEventListener('click', async () => {
+            if (!await confirmDialog('login.logout_confirm')) return;
+            await state.api.logout();
+            player.playlists = [];
+            closeModal('account-modal');
+            await refreshLoginStatus();
+        });
 
     // update notice
     document.getElementById('btn-update-dismiss')

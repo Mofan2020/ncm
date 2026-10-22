@@ -1090,6 +1090,36 @@
             type="button" data-i18n="update.open"></button>
 </aside>
 
+<!-- ============ account panel ============ -->
+<div class="modal" id="account-modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true"
+         aria-labelledby="account-title">
+        <header class="modal-head">
+            <h2 id="account-title" data-i18n="account.title"></h2>
+            <button class="btn btn-icon" id="btn-account-refresh" type="button"
+                    data-i18n-title="account.refresh" data-icon="refresh"></button>
+        </header>
+        <div class="modal-body">
+            <div class="account-head">
+                <img class="account-avatar" id="account-avatar" alt="" width="64" height="64">
+                <div class="account-ident">
+                    <p class="account-name" id="account-name"></p>
+                    <p class="account-signature" id="account-signature"></p>
+                </div>
+            </div>
+            <dl class="account-grid" id="account-grid"></dl>
+            <p class="account-note" data-i18n="account.edit_unsupported"></p>
+        </div>
+        <footer class="modal-foot">
+            <button id="btn-account-logout" class="btn btn-ghost" type="button"
+                    data-i18n="account.logout"></button>
+            <button id="btn-account-close" class="btn btn-primary" type="button"
+                    data-i18n="account.close"></button>
+        </footer>
+    </div>
+</div>
+
 <div class="toast-container" id="toast-container"></div>
 
 <script src="icons.js"></script>

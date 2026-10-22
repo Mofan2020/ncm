@@ -1802,6 +1802,26 @@ class GuiBridge:
             return {"success": True, "open": False}
         return {"success": True, "open": True}
 
+    # -------------------------------------------------------------- account
+    def get_user_profile(self, refresh: bool = False) -> dict[str, Any]:
+        """The signed-in user's profile for the account panel.
+
+        ``refresh=True`` re-reads it from the server (the nickname, avatar and
+        counts change over time); the default returns the cached copy so the
+        panel opens instantly.
+        """
+        manager = self.login_manager
+        if not manager.is_logged_in:
+            return {"success": False, "logged_in": False,
+                    "error_key": "account.login_required"}
+        try:
+            profile = manager.refresh_profile() if refresh else manager.get_profile()
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.info("profile read failed: %s", exc)
+            return {"success": False, "logged_in": True,
+                    "error_key": "account.refresh_failed"}
+        return {"success": True, "logged_in": True, "profile": profile}
+
     # ------------------------------------------------------------ auto update
     def check_for_update(self, force: bool = False) -> dict[str, Any]:
         """Ask GitHub whether a newer release exists.
