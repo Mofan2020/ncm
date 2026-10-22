@@ -31,6 +31,7 @@ const state = {
     completed: 0,
     total: 0,
     phoneTimer: null,
+    registerTimer: null,
     confirmResolve: null,
 };
 
@@ -90,7 +91,7 @@ const player = {
 };
 
 const MODES = ['single', 'list', 'shuffle'];
-const MODE_ICONS = { single: '🔂', list: '🔁', shuffle: '🔀' };
+const MODE_ICONS = { single: 'repeat-one', list: 'repeat', shuffle: 'shuffle' };
 /** Circular accent ring colours sampled from the wallpaper (see sampleAccent). */
 let accentCanvas = null;
 
@@ -100,6 +101,7 @@ document.addEventListener('DOMContentLoaded', boot);
 
 async function boot() {
     bindStaticEvents();
+    renderStaticIcons();
     state.api = await waitForApi();
 
     if (!state.api) {
@@ -109,6 +111,8 @@ async function boot() {
 
     try {
         await loadTranslations();
+        // The disclaimer comes first: it is the first thing a new user sees.
+        await showDisclaimerIfNeeded();
         state.appInfo = await state.api.get_app_info();
         await loadSettings();
         const loginStatus = await state.api.get_login_status();
@@ -222,6 +226,19 @@ function applyTranslations() {
     safeRender('updateModeButton', updateModeButton);
     safeRender('renderNowPlaying', renderNowPlaying);
     safeRender('renderSourceHeader', renderSourceHeader);
+}
+
+/**
+ * Draw the icons declared in the markup (``<button data-icon="play">``).
+ *
+ * The markup carries the icon *name* instead of a glyph, so the icon set
+ * lives in one place (icons.js) and the buttons stay free of emoji.
+ */
+function renderStaticIcons(root) {
+    const scope = root || document;
+    scope.querySelectorAll('[data-icon]').forEach((el) => {
+        setIcon(el, el.dataset.icon);
+    });
 }
 
 /** Run a renderer and report a failure instead of propagating it. */
@@ -354,6 +371,74 @@ function resolveConfirm(result) {
     }
 }
 
+/* ------------------------------------------------------------- disclaimer */
+
+/** Close the app -- used by the disclaimer's "quit" button. */
+function quitApp() {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.quit_app) {
+        window.pywebview.api.quit_app().catch(() => { /* ignore */ });
+        return;
+    }
+    window.close();
+}
+
+
+/**
+ * Show the first-start disclaimer, if it has not been accepted yet.
+ *
+ * The dialog has no close button and no backdrop dismiss: the user has to
+ * tick the box and press "Agree", or quit the app.
+ */
+async function showDisclaimerIfNeeded() {
+    if (!state.api || !state.api.get_disclaimer_status) return;
+    let status;
+    try {
+        status = await state.api.get_disclaimer_status();
+    } catch (err) {
+        return;
+    }
+    if (!status || !status.required) return;
+
+    const body = document.getElementById('disclaimer-body');
+    if (body) {
+        // The translations are flat: the paragraph list arrives as
+        // `disclaimer.body.1`, `disclaimer.body.2`, ... (see
+        // src/i18n/__init__.py::flatten_translations).
+        const paragraphs = Object.keys(state.translations)
+            .filter((key) => key.startsWith('disclaimer.body.'))
+            .sort((a, b) => Number(a.split('.').pop()) - Number(b.split('.').pop()))
+            .map((key) => state.translations[key]);
+        body.innerHTML = '';
+        paragraphs.forEach((line) => {
+            const paragraph = document.createElement('p');
+            paragraph.textContent = line;
+            body.appendChild(paragraph);
+        });
+    }
+    const agree = document.getElementById('disclaimer-agree');
+    const accept = document.getElementById('btn-disclaimer-accept');
+    if (agree) agree.checked = false;
+    if (accept) accept.disabled = true;
+    openModal('disclaimer-modal');
+}
+
+function setDisclaimerAgree(checked) {
+    const accept = document.getElementById('btn-disclaimer-accept');
+    if (accept) accept.disabled = !checked;
+}
+
+async function acceptDisclaimer() {
+    const agree = document.getElementById('disclaimer-agree');
+    if (!agree || !agree.checked) {
+        showToast('warning', t('disclaimer.must_agree'));
+        return;
+    }
+    if (state.api && state.api.accept_disclaimer) {
+        await state.api.accept_disclaimer().catch(() => { /* ignore */ });
+    }
+    closeModal('disclaimer-modal');
+}
+
 /* ---------------------------------------------------------------- settings */
 
 async function loadSettings() {
@@ -457,7 +542,7 @@ function renderFolderList() {
         const remove = document.createElement('button');
         remove.className = 'btn btn-sm btn-ghost';
         remove.type = 'button';
-        remove.textContent = '✕';
+        setIcon(remove, 'close');
         remove.title = t('common.remove');
         remove.addEventListener('click', () => removeLocalFolder(directory));
         row.append(label, remove);
@@ -476,7 +561,7 @@ function setChecked(id, value) {
 }
 
 const THEME_MODES = ['light', 'dark', 'system'];
-const THEME_ICONS = { light: '☀', dark: '☾', system: '◐' };
+const THEME_ICONS = { light: 'sun', dark: 'moon', system: 'monitor' };
 
 /**
  * Apply a theme mode to the page, the header toggle and (when persisting) the
@@ -499,7 +584,7 @@ function setTheme(theme, persist) {
 function updateThemeButton() {
     const button = document.getElementById('btn-theme');
     if (!button) return;
-    button.textContent = THEME_ICONS[state.themeMode] || THEME_ICONS.system;
+    setIcon(button, THEME_ICONS[state.themeMode] || THEME_ICONS.system);
     const label = `${t('settings.theme')}: ${t('settings.theme_' + state.themeMode)}`;
     button.title = label;
     button.setAttribute('aria-label', label);
@@ -766,6 +851,9 @@ function switchLoginTab(tab) {
     document.querySelectorAll('#login-modal .tab-panel').forEach((el) =>
         el.classList.toggle('is-active', el.dataset.panel === tab));
     if (tab === 'qrcode') state.api.login_qrcode();
+    // Leaving the register tab invalidates the existence check: the number
+    // may have been typed for another account in the meantime.
+    if (tab !== 'register') resetRegisterState();
 }
 
 async function refreshQrcode() {
@@ -829,6 +917,148 @@ async function doPhoneLogin() {
     if (!result.success) {
         showToast('error', result.message ? `${t('login.login_failed')}: ${result.message}` : t('login.login_failed'));
     }
+}
+
+/* ------------------------------------------------------------- register */
+
+const registerState = {
+    /** The number the existence check was run for ('' = not checked yet). */
+    checkedPhone: '',
+    /** True when that number has no account and may be registered. */
+    canRegister: false,
+    /** The number a verification code was requested for. */
+    codePhone: '',
+};
+
+function resetRegisterState() {
+    registerState.checkedPhone = '';
+    registerState.canRegister = false;
+    registerState.codePhone = '';
+    const status = document.getElementById('register-status');
+    if (status) status.textContent = '';
+}
+
+async function checkRegisterPhone() {
+    const phone = document.getElementById('register-phone-input').value.trim();
+    const status = document.getElementById('register-status');
+    if (!/^1\d{10}$/.test(phone)) {
+        showToast('warning', t('login.invalid_phone'));
+        return;
+    }
+    if (status) status.textContent = t('login.register_checking');
+    const result = await state.api.check_phone_registered(phone);
+    registerState.checkedPhone = phone;
+    registerState.canRegister = false;
+    if (!result || !result.known) {
+        if (status) status.textContent = t('login.register_check_failed');
+        return;
+    }
+    if (result.registered) {
+        if (status) status.textContent = t('login.register_already_registered');
+        showToast('warning', t('login.register_already_registered'));
+        return;
+    }
+    registerState.canRegister = true;
+    if (status) status.textContent = t('login.register_not_registered');
+}
+
+async function sendRegisterCode() {
+    const phone = document.getElementById('register-phone-input').value.trim();
+    if (!/^1\d{10}$/.test(phone)) {
+        showToast('warning', t('login.invalid_phone'));
+        return;
+    }
+    const button = document.getElementById('btn-register-send-code');
+    // Same rule as the login tab: every extra request extends NetEase's
+    // cooldown for the number.
+    if (button && button.disabled) return;
+    if (button) button.disabled = true;
+    const result = await state.api.send_phone_code(phone);
+    if (result.success) {
+        registerState.codePhone = phone;
+        showToast('success', t('login.code_sent'));
+        startRegisterCountdown();
+    } else if (result.throttled || result.error_key === 'login.code_too_frequent') {
+        showToast('error', t('login.code_too_frequent', { message: result.message || '' }), 9000);
+        startRegisterCountdown(180);
+    } else {
+        showToast('error', t('login.code_send_failed', { message: result.message || '' }));
+        startRegisterCountdown(60);
+    }
+}
+
+function startRegisterCountdown(seconds = 60) {
+    const button = document.getElementById('btn-register-send-code');
+    if (!button) return;
+    if (state.registerTimer) clearInterval(state.registerTimer);
+    button.disabled = true;
+    let remaining = seconds;
+    const tick = () => {
+        if (remaining <= 0) {
+            clearInterval(state.registerTimer);
+            state.registerTimer = null;
+            button.disabled = false;
+            button.textContent = t('login.send_code');
+            return;
+        }
+        button.textContent = t('login.code_countdown', { seconds: remaining });
+        remaining -= 1;
+    };
+    tick();
+    state.registerTimer = setInterval(tick, 1000);
+}
+
+async function doRegister() {
+    const phone = document.getElementById('register-phone-input').value.trim();
+    const code = document.getElementById('register-code-input').value.trim();
+    const password = document.getElementById('register-password-input').value;
+    const nickname = document.getElementById('register-nickname-input').value.trim();
+    const status = document.getElementById('register-status');
+
+    if (!/^1\d{10}$/.test(phone)) {
+        showToast('warning', t('login.invalid_phone'));
+        return;
+    }
+    if (!code) {
+        showToast('warning', t('login.enter_phone_and_code'));
+        return;
+    }
+    if (!password) {
+        showToast('warning', t('login.register_need_password'));
+        return;
+    }
+    if (password.length < 6) {
+        showToast('warning', t('login.register_password_too_short'));
+        return;
+    }
+    if (!nickname) {
+        showToast('warning', t('login.register_need_nickname'));
+        return;
+    }
+
+    // The number may have changed since the check: re-verify before sending.
+    if (registerState.checkedPhone !== phone || !registerState.canRegister) {
+        await checkRegisterPhone();
+        if (!registerState.canRegister) return;
+    }
+
+    const button = document.getElementById('btn-register-submit');
+    if (button) button.disabled = true;
+    const result = await state.api.register_phone(phone, code, password, nickname);
+    if (button) button.disabled = false;
+
+    if (result.success) {
+        showToast('success', t('login.register_success'));
+        resetRegisterState();
+        closeModal('login-modal');
+        await refreshLoginStatus();
+        if (player.sourceTab === 'playlists') loadPlaylists();
+        return;
+    }
+    const key = result.error_key || 'login.register_failed';
+    const message = result.message ? t('login.register_failed', { message: result.message }) : t(key);
+    showToast('error', message);
+    if (status && result.error_key) status.textContent = t(key);
 }
 
 async function doCookieLogin() {
@@ -1399,7 +1629,7 @@ function renderNowPlayingMobile() {
         coverEl.classList.add('is-empty');
         if (bgEl) bgEl.style.backgroundImage = '';
         if (favBtn) {
-            favBtn.textContent = '♡';
+            setIcon(favBtn, 'heart');
             favBtn.classList.remove('fav-on');
         }
         return;
@@ -1436,7 +1666,7 @@ function renderNowPlayingMobile() {
     if (favBtn) {
         const key = trackKeyOf(track);
         const favorite = player.favoriteKeys.has(key);
-        favBtn.textContent = favorite ? '♥' : '♡';
+        setIcon(favBtn, 'heart', { filled: favorite });
         favBtn.classList.toggle('fav-on', favorite);
         favBtn.classList.toggle('fav-off', !favorite);
     }
@@ -1449,11 +1679,11 @@ function updateMobileControlStates() {
     const playBtn = document.getElementById('npm-play');
     if (playBtn) {
         const playing = !audio.paused && !audio.ended;
-        playBtn.textContent = playing ? '❚❚' : '▶';
+        setIcon(playBtn, playing ? 'pause' : 'play');
     }
     const modeBtn = document.getElementById('npm-mode');
     if (modeBtn) {
-        modeBtn.textContent = MODE_ICONS[player.mode] || MODE_ICONS.list;
+        setIcon(modeBtn, MODE_ICONS[player.mode] || MODE_ICONS.list);
         modeBtn.title = t('player.mode_' + player.mode);
     }
     const current = document.getElementById('npm-current');
@@ -1495,7 +1725,7 @@ function initMobileLyricsRenderer() {
         const element = document.createElement('div');
         element.className = 'lyric-line';
         element.dataset.time = String(line.time);
-        element.textContent = line.text || '♪';
+        element.textContent = line.text || '';
         if (showTranslation && line.translation) {
             const t = document.createElement('span');
             t.className = 'lyric-translation';
@@ -1597,7 +1827,7 @@ function renderPlaylists(playlists) {
             const editBtn = document.createElement('button');
             editBtn.className = 'btn btn-icon btn-sm';
             editBtn.type = 'button';
-            editBtn.textContent = '✎';
+            setIcon(editBtn, 'edit');
             editBtn.title = t('player.playlist_edit');
             editBtn.addEventListener('click', (e) => { e.stopPropagation(); editPlaylist(playlist); });
             actions.appendChild(editBtn);
@@ -1606,7 +1836,7 @@ function renderPlaylists(playlists) {
             const subBtn = document.createElement('button');
             subBtn.className = 'btn btn-icon btn-sm';
             subBtn.type = 'button';
-            subBtn.textContent = playlist.subscribed ? '★' : '☆';
+            setIcon(subBtn, 'star', { filled: playlist.subscribed });
             subBtn.title = playlist.subscribed ? t('player.playlist_unsubscribe') : t('player.playlist_subscribe');
             subBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleSubscribePlaylist(playlist); });
             actions.appendChild(subBtn);
@@ -1615,7 +1845,7 @@ function renderPlaylists(playlists) {
             const delBtn = document.createElement('button');
             delBtn.className = 'btn btn-icon btn-sm';
             delBtn.type = 'button';
-            delBtn.textContent = '🗑';
+            setIcon(delBtn, 'trash');
             delBtn.title = t('player.playlist_delete');
             delBtn.addEventListener('click', (e) => { e.stopPropagation(); deletePlaylist(playlist); });
             actions.appendChild(delBtn);
@@ -1624,7 +1854,7 @@ function renderPlaylists(playlists) {
             const subBtn = document.createElement('button');
             subBtn.className = 'btn btn-icon btn-sm';
             subBtn.type = 'button';
-            subBtn.textContent = playlist.subscribed ? '★' : '☆';
+            setIcon(subBtn, 'star', { filled: playlist.subscribed });
             subBtn.title = playlist.subscribed ? t('player.playlist_unsubscribe') : t('player.playlist_subscribe');
             subBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleSubscribePlaylist(playlist); });
             actions.appendChild(subBtn);
@@ -1850,7 +2080,7 @@ function renderLocalPlaylists(playlists) {
         const editBtn = document.createElement('button');
         editBtn.className = 'btn btn-icon btn-sm';
         editBtn.type = 'button';
-        editBtn.textContent = '✎';
+        setIcon(editBtn, 'edit');
         editBtn.title = t('player.playlist_edit');
         editBtn.addEventListener('click', (e) => { e.stopPropagation(); editLocalPlaylist(playlist); });
         actions.appendChild(editBtn);
@@ -1859,7 +2089,7 @@ function renderLocalPlaylists(playlists) {
         const delBtn = document.createElement('button');
         delBtn.className = 'btn btn-icon btn-sm';
         delBtn.type = 'button';
-        delBtn.textContent = '🗑';
+        setIcon(delBtn, 'trash');
         delBtn.title = t('player.playlist_delete');
         delBtn.addEventListener('click', (e) => { e.stopPropagation(); deleteLocalPlaylist(playlist); });
         actions.appendChild(delBtn);
@@ -3090,7 +3320,16 @@ function mountVirtualTrackList(container, tracks, playingKey) {
     const PAD = 6;
     const total = tracks.length;
 
-    if (container.clientHeight <= 0) {
+    // The scrolling element owns the geometry.  `#track-list` is
+    // ``height: auto``; the element that actually scrolls -- and therefore
+    // owns ``scrollTop`` and ``clientHeight`` -- is its parent
+    // ``.list-area``.  Measuring the container gave a height of 0 and a
+    // scrollTop of 0, so every list of more than 200 tracks rendered as
+    // zero rows: exactly what a user sees when opening a big playlist
+    // from "我的歌单".
+    const scroller = container.closest('.list-area') || container;
+
+    if (scroller.clientHeight <= 0) {
         // Layout has not happened yet -- wait for one frame and retry.  We
         // keep the existing ones in place so the user does not see a flash
         // of empty content; if the observer below is already wired up it
@@ -3105,9 +3344,9 @@ function mountVirtualTrackList(container, tracks, playingKey) {
         return;
     }
 
-    let topIndex = Math.max(0, Math.floor(container.scrollTop / ROW_H) - PAD);
+    let topIndex = Math.max(0, Math.floor(scroller.scrollTop / ROW_H) - PAD);
     let bottomIndex = Math.min(total, topIndex + 1 +
-        Math.ceil(container.clientHeight / ROW_H) + PAD * 2);
+        Math.ceil(scroller.clientHeight / ROW_H) + PAD * 2);
 
     const totalHeight = total * ROW_H;
     const topPad = topIndex * ROW_H;
@@ -3134,13 +3373,13 @@ function mountVirtualTrackList(container, tracks, playingKey) {
     if (!container.dataset.virtualBound) {
         container.dataset.virtualBound = '1';
         let pending = false;
-        container.addEventListener('scroll', () => {
+        scroller.addEventListener('scroll', () => {
             if (pending) return;
             pending = true;
             requestAnimationFrame(() => {
                 pending = false;
                 // Re-render only if the window actually changed.
-                if (Math.floor(container.scrollTop / ROW_H) !== topIndex) {
+                if (Math.floor(scroller.scrollTop / ROW_H) !== topIndex) {
                     renderTrackList();
                 }
             });
@@ -3157,7 +3396,7 @@ function mountVirtualTrackList(container, tracks, playingKey) {
                     renderTrackList();
                 });
             });
-            observer.observe(container);
+            observer.observe(scroller);
             container._virtualObserver = observer;
         }
     }
@@ -3196,7 +3435,7 @@ function refreshTrackRow(key) {
     const favorite = player.favoriteKeys.has(key);
     const favButton = row.querySelector('[data-role="fav"]');
     if (favButton) {
-        favButton.textContent = favorite ? '♥' : '♡';
+        setIcon(favButton, 'heart', { filled: favorite });
         favButton.classList.toggle('fav-on', favorite);
         favButton.classList.toggle('fav-off', !favorite);
     }
@@ -3211,7 +3450,11 @@ function buildTrackRow(track, index, playingKey) {
 
     const idx = document.createElement('span');
     idx.className = 'idx';
-    idx.textContent = (key && key === playingKey) ? '♪' : String(index + 1);
+    // The playing row shows a note instead of its number.  The number is
+    // kept in a data attribute so it can be restored when playback moves on.
+    idx.dataset.number = String(index + 1);
+    if (key && key === playingKey) setIcon(idx, 'music');
+    else idx.textContent = idx.dataset.number;
 
     const main = document.createElement('div');
     main.className = 'track-main';
@@ -3253,7 +3496,7 @@ function buildTrackRow(track, index, playingKey) {
     fav.type = 'button';
     fav.dataset.role = 'fav';
     fav.className = 'btn btn-icon ' + (player.favoriteKeys.has(key) ? 'fav-on' : 'fav-off');
-    fav.textContent = player.favoriteKeys.has(key) ? '♥' : '♡';
+    setIcon(fav, 'heart', { filled: player.favoriteKeys.has(key) });
     fav.title = t('player.favorite');
     fav.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -3266,7 +3509,7 @@ function buildTrackRow(track, index, playingKey) {
         download.type = 'button';
         download.dataset.role = 'download';
         download.className = 'btn btn-icon';
-        download.textContent = '⤓';
+        setIcon(download, 'download');
         download.title = t('player.download');
         download.addEventListener('click', (event) => {
             event.stopPropagation();
@@ -3278,7 +3521,7 @@ function buildTrackRow(track, index, playingKey) {
         locate.type = 'button';
         locate.dataset.role = 'reveal';
         locate.className = 'btn btn-icon';
-        locate.textContent = '⌘';
+        setIcon(locate, 'reveal');
         locate.title = t('player.reveal');
         locate.addEventListener('click', (event) => {
             event.stopPropagation();
@@ -3449,7 +3692,7 @@ function cycleMode() {
 function updateModeButton() {
     const button = document.getElementById('pb-mode');
     if (!button) return;
-    button.textContent = MODE_ICONS[player.mode] || MODE_ICONS.list;
+    setIcon(button, MODE_ICONS[player.mode] || MODE_ICONS.list);
     const label = t('player.mode_' + player.mode);
     button.title = label;
     button.setAttribute('aria-label', label);
@@ -3492,7 +3735,7 @@ function syncVolumeSlider() {
     const slider = document.getElementById('pb-volume');
     if (slider && Number(slider.value) !== player.volume) slider.value = String(player.volume);
     const icon = document.getElementById('pb-mute');
-    if (icon) icon.textContent = (player.muted || player.volume === 0) ? '🔇' : '🔊';
+    if (icon) setIcon(icon, (player.muted || player.volume === 0) ? 'volume-muted' : 'volume');
 }
 
 function toggleMute() {
@@ -3573,6 +3816,7 @@ async function loadLyrics(track, save) {
         if (saveButton) saveButton.hidden = true;
         renderLyricSource();
         renderMobileLyrics();
+        pushLyricsToDesktop(true);
         return;
     }
     player.lyrics = result.lines || [];
@@ -3580,6 +3824,10 @@ async function loadLyrics(track, save) {
     player.lyricSource = result.source || 'none';
     renderLyricLines();
     renderLyricSource();
+    // The desktop overlay is a separate window; it only learns about the
+    // lyrics when we push them.  Opening the overlay before a track was
+    // playing used to leave it empty for the rest of the session.
+    pushLyricsToDesktop(true);
     const saveButton = document.getElementById('btn-save-lyrics');
     if (saveButton) {
         // Offer to keep a lyric that had to be looked up online.
@@ -3607,7 +3855,7 @@ function renderLyricLines() {
             const originalLine = document.createElement('div');
             originalLine.className = 'lyric-line lyric-original';
             originalLine.dataset.time = String(line.time);
-            originalLine.textContent = line.text || '♪';
+            originalLine.textContent = line.text || '';
             wrapper.appendChild(originalLine);
             
             if (line.translation) {
@@ -3629,7 +3877,7 @@ function renderLyricLines() {
             const element = document.createElement('div');
             element.className = 'lyric-line';
             element.dataset.time = String(line.time);
-            element.textContent = line.text || '♪';
+            element.textContent = line.text || '';
             if (showTranslation && line.translation) {
                 const translation = document.createElement('span');
                 translation.className = 'lyric-translation';
@@ -3655,7 +3903,7 @@ function renderKaraokeLines(fragment) {
         const element = document.createElement('div');
         element.className = 'lyric-line lyric-karaoke';
         element.dataset.time = String(line.time);
-        element.textContent = line.text || '♪';
+        element.textContent = line.text || '';
         if (showTranslation && line.translation) {
             const translation = document.createElement('span');
             translation.className = 'lyric-translation';
@@ -3781,7 +4029,7 @@ function buildLyricsEditorTimeline() {
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'btn btn-icon btn-sm';
         deleteBtn.type = 'button';
-        deleteBtn.textContent = '🗑';
+        setIcon(deleteBtn, 'trash');
         deleteBtn.title = '删除';
         deleteBtn.addEventListener('click', () => {
             player.lyrics.splice(index, 1);
@@ -3867,20 +4115,32 @@ function updateLyricHighlight() {
     if (found === player.lyricIndex) return;
     const box = document.getElementById('lyrics-scroll');
     if (!box) return;
-    const previous = box.querySelector('.lyric-line.is-active');
+    // Dual-line mode puts two .lyric-line nodes (original + translation) into
+    // every row, so the flat node list is longer than player.lyrics and the
+    // index no longer points at the right row.  Highlight the row wrapper
+    // there and the plain line everywhere else.
+    const previous = box.querySelector('.lyric-line.is-active, .lyric-line-wrapper.is-active');
     if (previous) previous.classList.remove('is-active');
-    const lines = box.querySelectorAll('.lyric-line');
-    const line = lines[found];
     player.lyricIndex = found;
-    if (!line) return;
-    line.classList.add('is-active');
+    let target = null;
+    if (player.dualLine) {
+        const wrappers = box.querySelectorAll('.lyric-line-wrapper');
+        target = wrappers[found];
+    } else {
+        const lines = box.querySelectorAll('.lyric-line');
+        target = lines[found];
+    }
+    if (!target) return;
+    target.classList.add('is-active');
     if (player.autoScroll) {
-        const top = line.offsetTop - box.clientHeight / 2 + line.clientHeight / 2;
+        const top = target.offsetTop - box.clientHeight / 2 + target.clientHeight / 2;
         box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     }
     // Mobile mirror: the full-screen now-playing view has its own lyrics
     // container; share the same found index.
     updateMobileLyricHighlight();
+    // Keep the desktop overlay on the same line as the main panel.
+    pushLyricsToDesktop();
 }
 
 /* ------------------------------------------------------------- now playing */
@@ -3948,12 +4208,12 @@ function updateFavoriteButton() {
     if (!button) return;
     const track = player.current;
     if (!track) {
-        button.textContent = '♡';
+        setIcon(button, 'heart');
         button.classList.remove('fav-on');
         return;
     }
     const favorite = player.favoriteKeys.has(trackKeyOf(track));
-    button.textContent = favorite ? '♥' : '♡';
+    setIcon(button, 'heart', { filled: favorite });
     button.classList.toggle('fav-on', favorite);
     button.classList.toggle('fav-off', !favorite);
 }
@@ -3967,7 +4227,7 @@ function highlightPlayingRow() {
         if (idx) {
             if (isPlaying) {
                 if (!idx.dataset.number) idx.dataset.number = idx.textContent;
-                idx.textContent = '♪';
+                setIcon(idx, 'music');
             } else if (idx.dataset.number) {
                 idx.textContent = idx.dataset.number;
             }
@@ -3979,7 +4239,7 @@ function updatePlayButton() {
     const button = document.getElementById('pb-play');
     if (!button) return;
     const playing = !audio.paused && !audio.ended;
-    button.textContent = playing ? '❚❚' : '▶';
+    setIcon(button, playing ? 'pause' : 'play');
     const label = playing ? t('player.pause') : t('player.play');
     button.title = label;
     button.setAttribute('aria-label', label);
@@ -4212,7 +4472,9 @@ function renderQueueDrawer() {
 
         const idx = document.createElement('span');
         idx.className = 'idx';
-        idx.textContent = index === player.index ? '♪' : String(index + 1);
+        idx.dataset.number = String(index + 1);
+        if (index === player.index) setIcon(idx, 'music');
+        else idx.textContent = idx.dataset.number;
 
         const main = document.createElement('div');
         main.className = 'queue-item-main';
@@ -4230,7 +4492,7 @@ function renderQueueDrawer() {
         const playBtn = document.createElement('button');
         playBtn.className = 'btn btn-icon';
         playBtn.type = 'button';
-        playBtn.textContent = '▶';
+        setIcon(playBtn, 'play');
         playBtn.title = t('player.play');
         playBtn.addEventListener('click', (e) => { e.stopPropagation(); playAt(index, { autoplay: true }); });
         actions.appendChild(playBtn);
@@ -4238,7 +4500,7 @@ function renderQueueDrawer() {
         const moveTopBtn = document.createElement('button');
         moveTopBtn.className = 'btn btn-icon';
         moveTopBtn.type = 'button';
-        moveTopBtn.textContent = '⬆';
+        setIcon(moveTopBtn, 'arrow-up');
         moveTopBtn.title = t('player.queue_move_top');
         moveTopBtn.addEventListener('click', (e) => { e.stopPropagation(); moveQueueItem(index, 0); });
         actions.appendChild(moveTopBtn);
@@ -4246,7 +4508,7 @@ function renderQueueDrawer() {
         const moveBottomBtn = document.createElement('button');
         moveBottomBtn.className = 'btn btn-icon';
         moveBottomBtn.type = 'button';
-        moveBottomBtn.textContent = '⬇';
+        setIcon(moveBottomBtn, 'arrow-down');
         moveBottomBtn.title = t('player.queue_move_bottom');
         moveBottomBtn.addEventListener('click', (e) => { e.stopPropagation(); moveQueueItem(index, player.queue.length - 1); });
         actions.appendChild(moveBottomBtn);
@@ -4254,7 +4516,7 @@ function renderQueueDrawer() {
         const removeBtn = document.createElement('button');
         removeBtn.className = 'btn btn-icon';
         removeBtn.type = 'button';
-        removeBtn.textContent = '✕';
+        setIcon(removeBtn, 'close');
         removeBtn.title = t('player.queue_remove');
         removeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeFromQueue(index); });
         actions.appendChild(removeBtn);
@@ -4421,6 +4683,19 @@ async function saveQueueAsPlaylist() {
 /* ----------------------------------------------------------- Desktop Lyrics */
 
 function toggleDesktopLyrics() {
+    // In the packaged app the overlay window lives in the Python bridge, not
+    // in this window's JS context: `player.desktopLyricsWindow` is only set
+    // in the browser fallback.  Asking the bridge is the only way to know
+    // whether the overlay is open -- and the only way to close it.
+    if (state.api && state.api.desktop_lyrics_open) {
+        state.api.desktop_lyrics_open()
+            .then((status) => {
+                if (status && status.open) closeDesktopLyrics();
+                else openDesktopLyrics();
+            })
+            .catch(() => openDesktopLyrics());
+        return;
+    }
     if (player.desktopLyricsWindow && !player.desktopLyricsWindow.closed) {
         closeDesktopLyrics();
     } else {
@@ -4460,11 +4735,16 @@ function openDesktopLyrics() {
 
     // Push current lyrics if playing
     if (player.lyrics.length > 0) {
-        setTimeout(() => pushLyricsToDesktop(), 500);
+        setTimeout(() => pushLyricsToDesktop(true), 500);
     }
 }
 
 function closeDesktopLyrics() {
+    // Close the native window through the bridge; the browser fallback
+    // keeps its own handle.
+    if (state.api && state.api.close_desktop_lyrics) {
+        state.api.close_desktop_lyrics().catch(() => { /* ignore */ });
+    }
     if (player.desktopLyricsWindow && !player.desktopLyricsWindow.closed) {
         player.desktopLyricsWindow.close();
     }
@@ -4473,11 +4753,20 @@ function closeDesktopLyrics() {
 
 let pushLyricsToDesktopDebounce = 0;
 
-function pushLyricsToDesktop() {
+/**
+ * Push the lyrics and the active line to the desktop overlay.
+ *
+ * @param {boolean} [force] send the whole lyrics array even when the
+ *        debounce would swallow the call (a new set of lines, or a window
+ *        that was just opened).
+ */
+function pushLyricsToDesktop(force) {
     // Debounce to ~30fps.  Anything tighter than ~33 ms is invisible on the
-    // 60 Hz (or lower) refresh of the desktop window.
+    // 60 Hz (or lower) refresh of the desktop window.  A forced push skips
+    // the debounce: it carries a *new* set of lines, which the debounce
+    // would otherwise drop and leave the overlay showing the old song.
     const now = Date.now();
-    if (now - pushLyricsToDesktopDebounce < 33) {
+    if (!force && now - pushLyricsToDesktopDebounce < 33) {
         return;
     }
     pushLyricsToDesktopDebounce = now;
@@ -4954,7 +5243,7 @@ function onDesktopLyricsWindowReady() {
     // a new pywebview window.  Pushing once here seeds the desktop with the
     // current lyrics (if any); from then on `updateLyricHighlight` updates
     // keep it in sync via `pushLyricsToDesktop`.
-    pushLyricsToDesktop();
+    pushLyricsToDesktop(true);
 }
 
 function openDesktopLyricsFallback() {
@@ -5008,10 +5297,21 @@ function bindStaticEvents() {
     });
     document.getElementById('btn-theme').addEventListener('click', cycleTheme);
 
+    // disclaimer
+    document.getElementById('disclaimer-agree')
+        .addEventListener('change', (event) => setDisclaimerAgree(event.target.checked));
+    document.getElementById('btn-disclaimer-accept')
+        .addEventListener('click', acceptDisclaimer);
+    document.getElementById('btn-disclaimer-quit')
+        .addEventListener('click', quitApp);
+
     // login
     document.getElementById('btn-refresh-qrcode').addEventListener('click', refreshQrcode);
     document.getElementById('btn-send-code').addEventListener('click', sendPhoneCode);
     document.getElementById('btn-phone-login').addEventListener('click', doPhoneLogin);
+    document.getElementById('btn-register-check').addEventListener('click', checkRegisterPhone);
+    document.getElementById('btn-register-send-code').addEventListener('click', sendRegisterCode);
+    document.getElementById('btn-register-submit').addEventListener('click', doRegister);
     document.getElementById('btn-cookie-login').addEventListener('click', doCookieLogin);
 
     // settings

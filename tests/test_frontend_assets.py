@@ -17,6 +17,9 @@ I18N = Path(__file__).resolve().parent.parent / "src" / "i18n"
 BRIDGE = Path(__file__).resolve().parent.parent / "src" / "gui" / "bridge.py"
 JS = (ASSETS / "app.js").read_text(encoding="utf-8")
 HTML = (ASSETS / "index.html").read_text(encoding="utf-8")
+#: The icon helpers live in their own file (icons.js), which index.html loads
+#: before app.js.  The identifier check has to see both.
+ICONS_JS = (ASSETS / "icons.js").read_text(encoding="utf-8")
 
 
 def _flat_catalogue(name: str) -> dict[str, str]:
@@ -210,42 +213,45 @@ def _skip_regex(source: str, start: int) -> int:
     return start + 1  # not a literal after all: leave the slash as code
 
 
-def _js_code() -> str:
+def _js_code(source: str | None = None) -> str:
     """app.js reduced to code: comments, literals and props blanked out.
 
     A hand-rolled scanner rather than a pile of regexes -- an apostrophe in a
     comment, a ``//`` inside a string or a ``${}`` hole desynchronises any of
     them, and a wrong answer here is worse than no check at all.  Regex literals
     matter too: ``/^https?:\\/\\//`` would otherwise look like a comment.
+
+    Pass ``source`` to scan another file (icons.js).
     """
+    JS_source = JS if source is None else source
     out: list[str] = []
-    index, length = 0, len(JS)
+    index, length = 0, len(JS_source)
     previous = ""  # last significant character, to tell regex from division
     while index < length:
-        pair = JS[index:index + 2]
+        pair = JS_source[index:index + 2]
         if pair == "//":
-            newline = JS.find("\n", index)
+            newline = JS_source.find("\n", index)
             index = length if newline < 0 else newline
             continue
         if pair == "/*":
-            end = JS.find("*/", index + 2)
+            end = JS_source.find("*/", index + 2)
             index = length if end < 0 else end + 2
             out.append(" ")
             previous = " "
             continue
-        char = JS[index]
+        char = JS_source[index]
         if char == "`":
-            index = _skip_template(JS, index)
+            index = _skip_template(JS_source, index)
             out.append(" '' ")
             previous = "'"
             continue
         if char in "'\"":
-            index = _skip_quoted(JS, index)
+            index = _skip_quoted(JS_source, index)
             out.append(" '' ")
             previous = "'"
             continue
         if char == "/" and (previous in _JS_REGEX_PRECEDERS or previous == ""):
-            index = _skip_regex(JS, index)
+            index = _skip_regex(JS_source, index)
             out.append(" '' ")
             previous = " "
             continue
@@ -253,9 +259,9 @@ def _js_code() -> str:
             # A keyword counts as a whole word, so `return /re/` is seen correctly.
             if char.isalpha() or char in "_$":
                 end = index
-                while end < length and (JS[end].isalnum() or JS[end] in "_$"):
+                while end < length and (JS_source[end].isalnum() or JS_source[end] in "_$"):
                     end += 1
-                word = JS[index:end]
+                word = JS_source[index:end]
                 out.append(word)
                 previous = word if word not in _JS_KEYWORDS else " "
                 index = end
@@ -278,7 +284,10 @@ def test_every_identifier_the_script_uses_is_defined():
     syntax, so a function handed to `safeRender()` is covered too.
     """
     code = _js_code()
+    icons_code = _js_code(ICONS_JS)
     defined = set(re.findall(r"\b(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(", code))
+    defined |= set(re.findall(r"\b(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(", icons_code))
+    defined |= set(re.findall(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b", icons_code))
     defined |= set(re.findall(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b", code))
     # Parameter names are defined too: `function safeRender(name, fn)` is why
     # `fn()` resolves, and `(resolve) => {}` is why `resolve(...)` does.

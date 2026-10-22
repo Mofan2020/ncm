@@ -15,9 +15,21 @@ Flow notes (verified live on 2026-09-30 -- see ``docs/notes.md``):
   working channel for) and ``/api/sent/verificationcode`` no longer exists.
 * ``/api/login/status`` no longer exists either -- the current user is read from
   ``/api/w/nuser/account/get``.
+* Account registration (verified live on 2026-10-22): the SMS captcha endpoint
+  serves unregistered numbers too, so the flow has to branch on
+  ``/api/cellphone/existence/check`` first.  ``exist`` is ``1``/``2`` for a
+  registered number and ``-1`` for one without an account; the check is a
+  stable per-number lookup (verified twice per number across sessions).
+* ``/api/register/cellphone`` **also resets the password** of an existing
+  account, so it must never be called for a number that already has one --
+  the app refuses that case before sending anything.
+* The register endpoint wants the **MD5 of the password** (every reference
+  implementation does that) and answers ``code 503 验证码错误`` when the
+  captcha is wrong, ``code 408 操作过于频繁`` when it is rate limited.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -105,6 +117,11 @@ class LoginManager:
     PHONE_LOGIN_URL = f"{BASE_URL}/api/w/login/cellphone"
     LOGOUT_URL = f"{BASE_URL}/api/logout"
     ACCOUNT_URL = f"{BASE_URL}/api/w/nuser/account/get"
+    #: Signed routes (verified live 2026-10-22).  The plain ``/api/*`` variants
+    #: of these two answer ``400 手机号或ursToken不能为空``.
+    PHONE_EXIST_URL = f"{BASE_URL}/api/cellphone/existence/check"
+    PHONE_REGISTER_URL = f"{BASE_URL}/api/w/register/cellphone"
+    EAPI_PREFIX = "/eapi"
 
     USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15")
@@ -612,6 +629,140 @@ class LoginManager:
         message = data.get("message") or data.get("msg") or f"code {data.get('code')}"
         self._fail(message)
         return {"success": False, "message": message}
+
+    # ------------------------------------------------------ account register
+    def _post_eapi(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """POST a signed eapi request and return the decoded answer.
+
+        Returns ``None`` when the transport failed or the body was not JSON --
+        the caller turns that into a "try again" message rather than a wrong
+        yes/no answer.
+        """
+        # Imported here on purpose: ``src.core`` imports ``src.auth``, so a
+        # module-level import would create a cycle (see tests/test_imports.py).
+        from src.core.crypto import eapi_body
+
+        body = eapi_body(path, payload)
+        url = f"{self.BASE_URL}{self.EAPI_PREFIX}{path}"
+        try:
+            resp = self._session.post(url, data=body, timeout=(5, 15))
+        except Exception as exc:
+            self._debug_log(f"eapi {path}: request failed: {exc}")
+            return None
+        if resp.status_code != 200 or not (resp.text or "").strip():
+            self._debug_log(f"eapi {path}: HTTP {resp.status_code} empty response")
+            return None
+        try:
+            data = resp.json()
+        except ValueError:
+            self._debug_log(f"eapi {path}: non-JSON response")
+            return None
+        return data if isinstance(data, dict) else None
+
+    def check_phone_registered(self, phone: str, ctcode: str = "86") -> dict[str, Any]:
+        """Does this number already have a NetEase account?
+
+        Returns ``{'registered': bool, 'known': bool, 'message': str}``.
+
+        ``known`` is ``False`` when the check itself failed (network, or an
+        answer the server did not understand).  The UI must not treat an
+        unknown answer as "not registered" -- registering a number that has an
+        account would reset that account's password.
+        """
+        masked = self._mask_phone(phone)
+        data = self._post_eapi("/api/cellphone/existence/check", {
+            "cellphone": str(phone or ""),
+            "countrycode": str(ctcode or "86"),
+        })
+        if not data:
+            return {"registered": False, "known": False, "message": "check_failed"}
+
+        code = data.get("code")
+        exist = data.get("exist")
+        # ``exist`` is 1 (or 2) for a registered number and -1 for one without.
+        # Anything else means the shape changed -- report it as unknown.
+        if code != 200 or not isinstance(exist, int):
+            self._debug_log(f"existence {masked}: unexpected answer {data}")
+            return {"registered": False, "known": False, "message": "check_failed"}
+
+        registered = exist > 0
+        self._debug_log(f"existence {masked}: exist={exist} registered={registered}")
+        return {"registered": registered, "known": True, "message": ""}
+
+    def register_phone(self, phone: str, code: str, password: str,
+                       nickname: str, ctcode: str = "86") -> dict[str, Any]:
+        """Create an account for a phone number and sign in with it.
+
+        The number must not have an account yet: ``/api/register/cellphone``
+        doubles as "set a new password" and would otherwise take over somebody
+        else's account.  The check is therefore repeated here instead of
+        trusting the caller.
+        """
+        masked = self._mask_phone(phone)
+        if not (code or "").strip():
+            return {"success": False, "error_key": "login.enter_phone_and_code",
+                    "message": "captcha_required"}
+        if not (password or "").strip():
+            return {"success": False, "error_key": "login.register_need_password",
+                    "message": "password_required"}
+        if not (nickname or "").strip():
+            return {"success": False, "error_key": "login.register_need_nickname",
+                    "message": "nickname_required"}
+
+        state = self.check_phone_registered(phone, ctcode)
+        if not state["known"]:
+            return {"success": False, "error_key": "login.register_check_failed",
+                    "message": "check_failed"}
+        if state["registered"]:
+            return {"success": False, "error_key": "login.register_already_registered",
+                    "message": "already_registered"}
+
+        payload = {
+            "phone": str(phone or ""),
+            # The endpoint expects the MD5 of the password, not the password.
+            "password": hashlib.md5(str(password).encode("utf-8")).hexdigest(),
+            "nickname": str(nickname).strip(),
+            "captcha": str(code or "").strip(),
+            "countrycode": str(ctcode or "86"),
+            "force": "false",
+        }
+        data = self._post_eapi("/api/w/register/cellphone", payload)
+        if data is None:
+            return {"success": False, "error_key": "login.register_failed",
+                    "message": "request_failed"}
+
+        answer_code = data.get("code")
+        message = str(data.get("message") or data.get("msg") or "")
+        self._debug_log(f"register {masked}: code={answer_code} msg={message!r}")
+
+        if answer_code != 200:
+            # 503 is "验证码错误 / ursToken或验证码不存在" here -- a wrong
+            # captcha, not a throttle.  It has to be checked before the
+            # throttle branch, because 503 is in _THROTTLE_CODES.
+            if answer_code == 503:
+                return {"success": False, "error_key": "login.register_bad_captcha",
+                        "message": message or "验证码错误"}
+            throttled = (answer_code in _THROTTLE_CODES
+                         or any(word in message for word in _THROTTLE_WORDS))
+            if throttled:
+                return {"success": False, "error_key": "login.code_too_frequent",
+                        "message": message or f"code {answer_code}", "throttled": True}
+            return {"success": False, "error_key": "login.register_failed",
+                    "message": message or f"code {answer_code}"}
+
+        # The account exists now.  A successful register usually hands over a
+        # session cookie as well; if it does not, sign in with the same
+        # captcha so the app ends up with a usable session.
+        if not self.verify_login(force=True):
+            login = self.login_phone(phone, code, ctcode)
+            if not login.get("success"):
+                # The account was created but we could not sign in.  Say so
+                # instead of pretending the whole thing failed -- the user
+                # can retry the login with the QR code.
+                return {"success": False, "error_key": "login.register_login_failed",
+                        "message": login.get("message") or "login_failed",
+                        "registered": True}
+        return {"success": True, "message": "ok"}
 
     # --------------------------------------------------------- cookie import
     def login_cookie(self, cookie_str: str) -> dict[str, Any]:

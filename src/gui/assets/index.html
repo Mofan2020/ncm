@@ -49,12 +49,12 @@
 
         <div class="header-actions">
             <button id="btn-sidebar-toggle" class="btn btn-icon" type="button"
-                    data-i18n-title="player.collapse_sidebar" aria-label="sidebar">☰</button>
+                    data-i18n-title="player.collapse_sidebar" aria-label="sidebar" data-icon="menu"></button>
             <button id="btn-theme" class="btn btn-icon" type="button"
-                    data-i18n-title="settings.theme_toggle" aria-label="theme">◐</button>
+                    data-i18n-title="settings.theme_toggle" aria-label="theme" data-icon="monitor"></button>
             <button id="btn-login" class="btn btn-primary" type="button" data-i18n="login.title"></button>
             <button id="btn-settings" class="btn btn-icon" type="button"
-                    data-i18n-title="settings.title" aria-label="settings">⚙</button>
+                    data-i18n-title="settings.title" aria-label="settings" data-icon="settings"></button>
         </div>
     </header>
 
@@ -212,7 +212,7 @@
 
                     <div class="source-head">
                         <button id="btn-list-back" class="btn btn-icon" type="button" hidden
-                                data-i18n-title="player.back" aria-label="back">‹</button>
+                                data-i18n-title="player.back" aria-label="back" data-icon="back"></button>
                         <span id="list-title" class="list-title"></span>
                         <span id="list-count" class="muted"></span>
                         <div class="source-head-actions" id="playlist-head-actions" hidden>
@@ -282,9 +282,9 @@
                             <span id="lyrics-source" class="muted"></span>
                             <div class="lyrics-controls">
                                 <button id="btn-lyrics-dual" class="btn btn-sm" type="button"
-                                        data-i18n-title="lyrics.dual_line" aria-label="dual-line">⎯</button>
+                                        data-i18n-title="lyrics.dual_line" aria-label="dual-line" data-icon="align-left"></button>
                                 <button id="btn-lyrics-karaoke" class="btn btn-sm" type="button"
-                                        data-i18n-title="lyrics.karaoke" aria-label="karaoke">♪</button>
+                                        data-i18n-title="lyrics.karaoke" aria-label="karaoke" data-icon="music"></button>
                                 <button id="btn-save-lyrics" class="btn btn-sm" type="button" hidden
                                         data-i18n="lyrics.save"></button>
                                 <button id="btn-desktop-lyrics" class="btn btn-sm" type="button"
@@ -307,7 +307,7 @@
                     <div class="queue-drawer-actions">
                         <button id="btn-queue-save" class="btn btn-sm" type="button" data-i18n="player.queue_save_playlist"></button>
                         <button id="btn-queue-clear" class="btn btn-sm btn-ghost" type="button" data-i18n="player.queue_clear"></button>
-                        <button id="btn-queue-close" class="btn btn-icon" type="button" data-i18n-title="common.close" aria-label="close">✕</button>
+                        <button id="btn-queue-close" class="btn btn-icon" type="button" data-i18n-title="common.close" aria-label="close" data-icon="close"></button>
                     </div>
                 </div>
                 <div class="queue-drawer-body">
@@ -333,22 +333,22 @@
         <div class="pb-center">
             <div class="pb-buttons">
                 <button id="pb-queue" class="btn btn-icon" type="button"
-                        data-i18n-title="player.queue_title" aria-label="queue">☰</button>
+                        data-i18n-title="player.queue_title" aria-label="queue" data-icon="list"></button>
                 <button id="pb-mode" class="btn btn-icon" type="button" title=""></button>
                 <button id="pb-prev" class="btn btn-icon" type="button"
-                        data-i18n-title="player.prev" aria-label="previous">⏮</button>
+                        data-i18n-title="player.prev" aria-label="previous" data-icon="prev"></button>
                 <button id="pb-play" class="btn btn-icon btn-play" type="button"
-                        data-i18n-title="player.play" aria-label="play">▶</button>
+                        data-i18n-title="player.play" aria-label="play" data-icon="play"></button>
                 <button id="pb-next" class="btn btn-icon" type="button"
-                        data-i18n-title="player.next" aria-label="next">⏭</button>
+                        data-i18n-title="player.next" aria-label="next" data-icon="next"></button>
                 <button id="pb-fav" class="btn btn-icon" type="button"
-                        data-i18n-title="player.favorite" aria-label="favorite">♡</button>
+                        data-i18n-title="player.favorite" aria-label="favorite" data-icon="heart"></button>
                 <button id="pb-download" class="btn btn-icon" type="button"
-                        data-i18n-title="player.download" aria-label="download">⤓</button>
+                        data-i18n-title="player.download" aria-label="download" data-icon="download"></button>
                 <button id="pb-desktop-lyrics" class="btn btn-icon" type="button"
-                        data-i18n-title="player.desktop_lyrics_open" aria-label="desktop lyrics">📝</button>
+                        data-i18n-title="player.desktop_lyrics_open" aria-label="desktop lyrics" data-icon="file-text"></button>
                 <button id="pb-sleep-timer" class="btn btn-icon" type="button"
-                        data-i18n-title="player.sleep_timer" aria-label="sleep timer">🌙</button>
+                        data-i18n-title="player.sleep_timer" aria-label="sleep timer" data-icon="moon"></button>
             </div>
             <div class="pb-progress">
                 <span id="pb-current" class="time">0:00</span>
@@ -361,7 +361,7 @@
 
         <div class="pb-right">
             <button id="pb-mute" class="btn btn-icon" type="button"
-                    data-i18n-title="player.volume" aria-label="volume">🔊</button>
+                    data-i18n-title="player.volume" aria-label="volume" data-icon="volume"></button>
             <input type="range" id="pb-volume" min="0" max="1" step="0.01" value="0.8"
                    data-i18n-title="player.volume">
         </div>
@@ -392,7 +392,7 @@
             <span class="npm-title" id="npm-title" data-i18n="player.nothing_playing"></span>
         </div>
         <button id="btn-npm-more" class="btn btn-icon" type="button"
-                aria-label="more" hidden>⋯</button>
+                aria-label="more" hidden data-icon="more"></button>
     </header>
     <div class="npm-cover-wrap">
         <img id="npm-cover" class="npm-cover" src="" alt="">
@@ -419,23 +419,23 @@
         <div class="npm-buttons">
             <button id="npm-mode" class="btn btn-icon" type="button"></button>
             <button id="npm-prev" class="btn btn-icon" type="button"
-                    data-i18n-title="player.prev" aria-label="previous">⏮</button>
+                    data-i18n-title="player.prev" aria-label="previous" data-icon="prev"></button>
             <button id="npm-play" class="btn btn-icon btn-play" type="button"
-                    data-i18n-title="player.play" aria-label="play">▶</button>
+                    data-i18n-title="player.play" aria-label="play" data-icon="play"></button>
             <button id="npm-next" class="btn btn-icon" type="button"
-                    data-i18n-title="player.next" aria-label="next">⏭</button>
+                    data-i18n-title="player.next" aria-label="next" data-icon="next"></button>
             <button id="npm-fav" class="btn btn-icon" type="button"
-                    data-i18n-title="player.favorite" aria-label="favorite">♡</button>
+                    data-i18n-title="player.favorite" aria-label="favorite" data-icon="heart"></button>
         </div>
         <div class="npm-secondary">
             <button id="npm-desktop-lyrics" class="btn btn-icon" type="button"
-                    data-i18n-title="player.desktop_lyrics_open" aria-label="desktop lyrics">📝</button>
+                    data-i18n-title="player.desktop_lyrics_open" aria-label="desktop lyrics" data-icon="file-text"></button>
             <button id="npm-queue" class="btn btn-icon" type="button"
-                    data-i18n-title="player.queue_title" aria-label="queue">☰</button>
+                    data-i18n-title="player.queue_title" aria-label="queue" data-icon="list"></button>
             <button id="npm-download" class="btn btn-icon" type="button"
-                    data-i18n-title="player.download" aria-label="download">⤓</button>
+                    data-i18n-title="player.download" aria-label="download" data-icon="download"></button>
             <button id="npm-sleep-timer" class="btn btn-icon" type="button"
-                    data-i18n-title="player.sleep_timer" aria-label="sleep timer">🌙</button>
+                    data-i18n-title="player.sleep_timer" aria-label="sleep timer" data-icon="moon"></button>
         </div>
     </footer>
 </section>
@@ -446,7 +446,7 @@
     <div class="modal-box glass" role="dialog" aria-modal="true">
         <header class="modal-head">
             <h2 data-i18n="login.title"></h2>
-            <button class="btn btn-icon" type="button" data-close="login-modal">✕</button>
+            <button class="btn btn-icon" type="button" data-close="login-modal" data-icon="close"></button>
         </header>
         <div class="modal-body">
             <p class="muted" data-i18n="login.subtitle"></p>
@@ -454,6 +454,8 @@
                 <button class="tab is-active" type="button" data-tab="qrcode"
                         data-i18n="login.qrcode_tab"></button>
                 <button class="tab" type="button" data-tab="phone" data-i18n="login.phone_tab"></button>
+                <button class="tab" type="button" data-tab="register"
+                        data-i18n="login.register_tab"></button>
                 <button class="tab" type="button" data-tab="cookie" data-i18n="login.cookie_tab"></button>
             </div>
 
@@ -486,6 +488,43 @@
                         data-i18n="login.login_btn"></button>
             </div>
 
+            <div class="tab-panel" data-panel="register">
+                <p class="muted" data-i18n="login.register_hint"></p>
+                <label class="option">
+                    <span data-i18n="login.phone_label"></span>
+                    <div class="inline-form">
+                        <input type="tel" id="register-phone-input" data-i18n-placeholder="login.phone_placeholder"
+                               autocomplete="off">
+                        <button id="btn-register-check" class="btn btn-secondary" type="button"
+                                data-i18n="login.register_check"></button>
+                    </div>
+                </label>
+                <p id="register-status" class="muted"></p>
+                <label class="option">
+                    <span data-i18n="login.code_label"></span>
+                    <div class="inline-form">
+                        <input type="text" id="register-code-input" data-i18n-placeholder="login.code_placeholder"
+                               autocomplete="off">
+                        <button id="btn-register-send-code" class="btn btn-secondary" type="button"
+                                data-i18n="login.send_code"></button>
+                    </div>
+                </label>
+                <label class="option">
+                    <span data-i18n="login.register_password_label"></span>
+                    <input type="password" id="register-password-input"
+                           data-i18n-placeholder="login.register_password_placeholder"
+                           autocomplete="new-password">
+                </label>
+                <label class="option">
+                    <span data-i18n="login.register_nickname_label"></span>
+                    <input type="text" id="register-nickname-input"
+                           data-i18n-placeholder="login.register_nickname_placeholder"
+                           autocomplete="off">
+                </label>
+                <button id="btn-register-submit" class="btn btn-primary btn-block" type="button"
+                        data-i18n="login.register_btn"></button>
+            </div>
+
             <div class="tab-panel" data-panel="cookie">
                 <label class="option">
                     <span data-i18n="login.cookie_label"></span>
@@ -505,7 +544,7 @@
     <div class="modal-box glass" role="dialog" aria-modal="true">
         <header class="modal-head">
             <h2 data-i18n="settings.title"></h2>
-            <button class="btn btn-icon" type="button" data-close="settings-modal">✕</button>
+            <button class="btn btn-icon" type="button" data-close="settings-modal" data-icon="close"></button>
         </header>
         <div class="modal-body">
             <div class="tabs" id="settings-tabs">
@@ -777,7 +816,7 @@
     <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
         <header class="modal-head">
             <h2 data-i18n="player.playlist_manage"></h2>
-            <button class="btn btn-icon" type="button" data-close="playlist-detail-modal">✕</button>
+            <button class="btn btn-icon" type="button" data-close="playlist-detail-modal" data-icon="close"></button>
         </header>
         <div class="modal-body">
             <div class="playlist-detail-tabs">
@@ -856,7 +895,7 @@
     <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
         <header class="modal-head">
             <h2 data-i18n="player.playlist_add_tracks"></h2>
-            <button class="btn btn-icon" type="button" data-close="playlist-add-tracks-modal">✕</button>
+            <button class="btn btn-icon" type="button" data-close="playlist-add-tracks-modal" data-icon="close"></button>
         </header>
         <div class="modal-body">
             <div class="source-search inline-form">
@@ -883,7 +922,7 @@
     <div class="modal-box modal-box-sm glass" role="dialog" aria-modal="true">
         <header class="modal-head">
             <h2 data-i18n="player.smart_playlist_add_rule"></h2>
-            <button class="btn btn-icon" type="button" data-close="smart-rule-modal">✕</button>
+            <button class="btn btn-icon" type="button" data-close="smart-rule-modal" data-icon="close"></button>
         </header>
         <div class="modal-body">
             <label class="option">
@@ -934,7 +973,7 @@
     <div class="modal-box modal-box-sm glass" role="dialog" aria-modal="true">
         <header class="modal-head">
             <h2 id="playlist-ie-title"></h2>
-            <button class="btn btn-icon" type="button" data-close="playlist-ie-modal">✕</button>
+            <button class="btn btn-icon" type="button" data-close="playlist-ie-modal" data-icon="close"></button>
         </header>
         <div class="modal-body">
             <div class="playlist-ie-tabs">
@@ -995,12 +1034,12 @@
     <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
         <header class="modal-head">
             <h2 data-i18n="lyrics.editor_title"></h2>
-            <button class="btn btn-icon" type="button" data-close="lyrics-editor-modal">✕</button>
+            <button class="btn btn-icon" type="button" data-close="lyrics-editor-modal" data-icon="close"></button>
         </header>
         <div class="modal-body">
             <div class="lyrics-editor-toolbar">
-                <button id="btn-lyrics-editor-play" class="btn btn-sm" type="button" data-i18n-title="player.play" aria-label="play">▶</button>
-                <button id="btn-lyrics-editor-pause" class="btn btn-sm" type="button" hidden data-i18n-title="player.pause" aria-label="pause">❚❚</button>
+                <button id="btn-lyrics-editor-play" class="btn btn-sm" type="button" data-i18n-title="player.play" aria-label="play" data-icon="play"></button>
+                <button id="btn-lyrics-editor-pause" class="btn btn-sm" type="button" hidden data-i18n-title="player.pause" aria-label="pause" data-icon="pause"></button>
                 <input type="range" id="lyrics-editor-seek" min="0" max="100" step="1" value="0" style="flex: 1;">
                 <span id="lyrics-editor-time" class="muted">0:00 / 0:00</span>
             </div>
@@ -1015,8 +1054,33 @@
     </div>
 </div>
 
+<!-- ============ disclaimer (first start) ============ -->
+<div class="modal" id="disclaimer-modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true"
+         aria-labelledby="disclaimer-title">
+        <header class="modal-head">
+            <h2 id="disclaimer-title" data-i18n="disclaimer.title"></h2>
+        </header>
+        <div class="modal-body">
+            <div class="disclaimer-text" id="disclaimer-body"></div>
+            <label class="option checkbox disclaimer-accept">
+                <input type="checkbox" id="disclaimer-agree">
+                <span data-i18n="disclaimer.agree"></span>
+            </label>
+        </div>
+        <footer class="modal-foot">
+            <button id="btn-disclaimer-quit" class="btn btn-ghost" type="button"
+                    data-i18n="disclaimer.quit"></button>
+            <button id="btn-disclaimer-accept" class="btn btn-primary" type="button"
+                    disabled data-i18n="disclaimer.accept"></button>
+        </footer>
+    </div>
+</div>
+
 <div class="toast-container" id="toast-container"></div>
 
+<script src="icons.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

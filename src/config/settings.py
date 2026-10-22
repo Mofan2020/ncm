@@ -113,6 +113,10 @@ class UISettings:
     desktop_lyrics_color: str = "#ffffff"
     desktop_lyrics_opacity: float = 0.9
     desktop_lyrics_show_translation: bool = True
+    #: Set once the user has accepted the disclaimer.  It is stored with the
+    #: version that was shown, so a new disclaimer is shown again after an
+    #: update that changes the text.
+    disclaimer_accepted_version: str = ""
 
 
 @dataclass

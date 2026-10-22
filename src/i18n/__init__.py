@@ -41,12 +41,20 @@ def _translations_dir() -> Path:
 
 
 def flatten_translations(data: dict[str, Any], prefix: str = "") -> dict[str, str]:
-    """Flatten ``{"a": {"b": "c"}}`` into ``{"a.b": "c"}`` for the webview."""
+    """Flatten ``{"a": {"b": "c"}}`` into ``{"a.b": "c"}`` for the webview.
+
+    A list becomes numbered keys (``{"a": ["x", "y"]}`` -> ``{"a.1": "x",
+    "a.2": "y"}``) so every leaf stays a string: the webview only handles
+    strings, and a paragraph list has no other sensible shape there.
+    """
     flat: dict[str, str] = {}
     for key, value in (data or {}).items():
         full_key = f"{prefix}.{key}" if prefix else key
         if isinstance(value, dict):
             flat.update(flatten_translations(value, full_key))
+        elif isinstance(value, list):
+            for index, item in enumerate(value, 1):
+                flat.update(flatten_translations({str(index): item}, full_key))
         else:
             flat[full_key] = value
     return flat

@@ -338,6 +338,10 @@ input[type="range"]::-webkit-slider-thumb {
 .btn-ghost { background: transparent; color: var(--text-2); }
 .btn-link { background: none; border: none; color: var(--info); padding: 4px 0; text-decoration: underline; }
 .btn-icon { padding: 7px 9px; background: transparent; border-color: transparent; font-size: 15px; line-height: 1; }
+/* Icons draw with currentColor, so a button colours them like its text. */
+.btn-icon .icon { width: 16px; height: 16px; display: block; }
+.btn-icon.btn-play .icon { width: 18px; height: 18px; }
+.btn .icon { width: 15px; height: 15px; display: inline-block; vertical-align: -2px; }
 .btn-icon:hover:not(:disabled) { background: var(--hover); }
 .btn-sm { padding: 5px 11px; font-size: 12.5px; }
 .btn-lg { padding: 11px 24px; font-size: 14.5px; }
@@ -497,6 +501,7 @@ input[type="range"]::-webkit-slider-thumb {
 .track-row:hover { background: var(--hover); }
 .track-row.is-playing { background: var(--brand-soft); }
 .track-row .idx { font-size: 11.5px; color: var(--text-3); text-align: right; font-variant-numeric: tabular-nums; }
+.track-row .idx .icon { width: 13px; height: 13px; display: inline-block; vertical-align: -2px; }
 .track-row.is-playing .idx { color: var(--brand); }
 .track-main { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .track-name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -1069,6 +1074,7 @@ input[type="range"]::-webkit-slider-thumb {
 .queue-item-drawer.dragging { opacity: .5; cursor: grabbing; box-shadow: var(--shadow); }
 .queue-item-drawer.playing { background: var(--brand-soft); border-color: var(--brand); }
 .queue-item-drawer .idx { font-size: 11px; color: var(--text-3); text-align: right; width: 24px; }
+.queue-item-drawer .idx .icon { width: 12px; height: 12px; display: inline-block; vertical-align: -2px; }
 .queue-item-drawer.playing .idx { color: var(--brand); }
 .queue-item-main { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .queue-item-name { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2042,3 +2048,20 @@ input[type="range"]::-webkit-slider-thumb {
 /* When running inside pywebview's desktop window the sidebar is part
    of the regular layout; on mobile we toggle the drawer via the data
    attribute set in JS. */
+
+/* ----------------------------------------------------------- disclaimer */
+.disclaimer-text {
+    max-height: 46vh;
+    overflow-y: auto;
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--text-2);
+    padding-right: 4px;
+}
+.disclaimer-text p { margin: 0 0 10px; }
+.disclaimer-text p:last-child { margin-bottom: 0; }
+.disclaimer-accept {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--divider);
+}

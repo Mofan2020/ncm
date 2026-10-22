@@ -520,3 +520,50 @@ http://127.0.0.1:49336/m/mx0-QDM0BOwzSd2qykYYww/ui/index.html?theme=dark&...
 - **仍然没在真实 Windows 上跑过**。但这次的验证不再是「文件在不在」,而是「URL 是不是纯 ASCII」和「服务是否真的返回了界面」,这两点都已在 CI 上用中文目录实测。
 - 具体是 WebView2 哪一段拒绝非 ASCII `file://`,没有深挖到浏览器内部;机制层面的依据是「非 ASCII 路径 + 两台中文目录机器同样报错 + CI 纯 ASCII 路径正常」这三条观测。
 - 桌面歌词仍未在真实 Windows 上验证过能否弹出窗口。
+
+---
+
+## 6. 手机号注册 + 免责声明 + 三项旧 bug（2026-10-22）
+
+### 手机号注册
+
+网易云没有公开注册接口，普通 `/api/*` 路由一律返回 `400 手机号或ursToken不能为空`，必须走 **eapi 签名路由**：
+
+| 用途 | 路由 |
+|---|---|
+| 号码是否已注册 | `/eapi/cellphone/existence/check` |
+| 注册 | `/eapi/w/register/cellphone` |
+
+实测语义（脚本见会话记录，全程只用未注册号码与错误验证码）：
+
+- `exist` 返回 `1`（有密码）/ `2`（无密码或第三方登录）/ `-1`（未注册）。同一号码跨 session 两次查询结果一致，可以当本地判据用。
+- 注册响应：`200 注册成功`、`503 验证码错误`、`408` 频率限制。密码按 **MD5** 传。
+- ⚠️ **该接口对已注册号码等同「重置密码」**。所以 `register_phone()` 之前必须先 `check_phone_registered()`，已注册的直接在本地拒绝，绝不发请求。这条是整个功能里唯一有破坏性的地方，测试 `tests/test_register.py` 里专门锁死。
+- 短信验证码接口对未注册号码也可用，所以不能靠「发码失败」判断号码是否已注册，必须先查存在性再分流。
+- 注册成功后服务端不一定下发会话 cookie，`register_phone()` 会用同一验证码补一次 `verify_login(force=True)`；失败时提示改用验证码或扫码登录。
+
+前端：登录弹窗加了第 4 个 tab「注册账号」，流程是「查号码 → 发验证码 → 设密码 + 昵称 → 注册并登录」。`registerState.canRegister` 只有在 `registered === false && known === true` 时才为真，查询失败（`known === false`）不允许继续。
+
+### 免责声明
+
+首次启动弹一次，勾选后才能点「同意并继续」，否则只能退出。不响应遮罩点击、没有关闭按钮 —— 只能是同意或退出。
+
+- 文案在 `src/i18n/{zh_cn,en_us}.json` 的 `disclaimer` 段，正文是一个字符串数组。
+- 记录的是 `ui.disclaimer_accepted_version`，与 `src/version.py::DISCLAIMER_VERSION` 比较。**改了文案就把 `DISCLAIMER_VERSION` 加一**，老用户升级后会重新看到。
+- `flatten_translations()` 现在会把数组摊平成 `disclaimer.body.1`、`disclaimer.body.2`…；前端按数字序收集。之前它只认 dict，数组会被原样塞进 `flat`，`test_i18n.py` 的「值是字符串」断言会挂。
+
+### 三项旧 bug
+
+1. **大歌单打开后空白**（`mountVirtualTrackList`）：虚拟滚动量的是 `container.clientHeight` / `container.scrollTop`，但 `#track-list` 是 `height: auto`，真正滚动的是父级 `.list-area`。于是高度和 `scrollTop` 恒为 0，可视窗口塌成 0 行 —— 超过 200 首的歌单渲染出来就是一片空白。改成量 `container.closest('.list-area')`，滚动监听和 `ResizeObserver` 一并挂到它上面。
+2. **桌面歌词关不掉**：`toggleDesktopLyrics()` 判断的是 `player.desktopLyricsWindow`，但这个句柄只在浏览器兜底路径里赋值。打包后的窗口由 Python 持有，JS 永远看不到 → 每次点击都走「打开」分支，`open_desktop_lyrics()` 发现窗口已存在就只调 `restore()`，所以关不掉。新增 `desktop_lyrics_open()` 让前端问后端，`toggleDesktopLyrics` / `closeDesktopLyrics` 改走桥接。
+3. **桌面歌词始终为空**：`pushLyricsToDesktop()` 只在窗口打开 500 ms 后和 `onDesktopLyricsWindowReady` 里各推一次。如果打开时还没在放歌，那一次推的是空数组；之后歌词加载完了也没人再推 → 一直是空的。现在歌词加载/清空时 `pushLyricsToDesktop(true)` 强制全量推，`updateLyricHighlight()` 每换行推一次索引；`force` 参数用来绕过 33 ms 去抖（去抖本来会吞掉「换了首歌」这种关键推送）。
+4. **双行歌词高亮错位**：双行模式每行是两个 `.lyric-line`（原文 + 翻译），扁平节点数比 `player.lyrics` 多一倍，`lines[found]` 指错。现在按 `player.dualLine` 分别取 `.lyric-line-wrapper[found]` 或 `.lyric-line[found]`。
+
+### 实测数据
+
+- `pytest` → 405 passed, 5 skipped（含新增 `test_disclaimer.py` 5 项、`test_register.py` 18 项）
+- `ruff check .` → All checks passed
+- `node -c` → app.js / icons.js / desktop-lyrics.js 均无错误
+- 免责声明在真实 Chromium 里跑过：6 段正文、标题、勾选框、按钮禁用态都正确，勾选后按钮解禁、点击后弹窗关闭
+- 未机器验证（按偏好交本人手测）：真机开桌面歌词的关闭路径、大歌单在真实 pywebview 里的滚动、注册的真实发码
+

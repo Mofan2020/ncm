@@ -38,7 +38,15 @@ from src.core.lyrics import build_timed_lyrics
 from src.core.mediaserver import get_media_server
 from src.gui.theme import effective_theme, normalize_theme, system_theme
 from src.i18n import get_i18n, t
-from src.version import APP_DISPLAY_NAME, AUTHOR, BUNDLE_ID, HOMEPAGE, LICENSE, __version__
+from src.version import (
+    APP_DISPLAY_NAME,
+    AUTHOR,
+    BUNDLE_ID,
+    DISCLAIMER_VERSION,
+    HOMEPAGE,
+    LICENSE,
+    __version__,
+)
 
 __all__ = ["GuiBridge"]
 
@@ -388,6 +396,28 @@ class GuiBridge:
             "success": result["success"],
             "error_key": None if result["success"] else "login.login_failed",
             "message": result.get("message", ""),
+        }
+
+    def check_phone_registered(self, phone: str, ctcode: str = "86") -> dict[str, Any]:
+        """Whether the number already has a NetEase account."""
+        result = self.login_manager.check_phone_registered(phone, ctcode)
+        return {
+            "success": result["known"],
+            "registered": result["registered"],
+            "known": result["known"],
+            "error_key": None if result["known"] else "login.register_check_failed",
+            "message": result.get("message", ""),
+        }
+
+    def register_phone(self, phone: str, code: str, password: str,
+                       nickname: str, ctcode: str = "86") -> dict[str, Any]:
+        """Create an account for a phone number and sign in with it."""
+        result = self.login_manager.register_phone(phone, code, password, nickname, ctcode)
+        return {
+            "success": result["success"],
+            "error_key": result.get("error_key"),
+            "message": result.get("message", ""),
+            "registered": bool(result.get("registered")),
         }
 
     def login_cookie(self, cookie: str) -> dict[str, Any]:
@@ -1745,6 +1775,55 @@ class GuiBridge:
                 pass
             self._desktop_lyrics_window = None
         return {"success": True}
+
+    def desktop_lyrics_open(self) -> dict[str, Any]:
+        """Whether the desktop lyrics window is currently open.
+
+        The main window cannot see the native window (it lives in this
+        bridge), so the toolbar button asks here to decide between opening
+        and closing it.
+        """
+        window = self._desktop_lyrics_window
+        if window is None:
+            return {"success": True, "open": False}
+        try:
+            # A closed pywebview window raises on any attribute access.
+            alive = not bool(getattr(window, "closed", False))
+        except Exception:
+            alive = False
+        if not alive:
+            self._desktop_lyrics_window = None
+            return {"success": True, "open": False}
+        return {"success": True, "open": True}
+
+    # ------------------------------------------------------------- disclaimer
+    def quit_app(self) -> dict[str, Any]:
+        """Close the app (the disclaimer's "quit" button)."""
+        if self._window is not None:
+            try:
+                self._window.destroy()
+            except Exception as exc:  # pragma: no cover - platform specific
+                self.logger.info("could not close the window: %s", exc)
+        return {"success": True}
+
+    def get_disclaimer_status(self) -> dict[str, Any]:
+        """Whether the disclaimer still has to be shown.
+
+        The accepted version is remembered, so the dialog appears on the
+        first start and after an update that ships new disclaimer text.
+        """
+        accepted = self.settings.ui.disclaimer_accepted_version
+        return {
+            "success": True,
+            "required": accepted != DISCLAIMER_VERSION,
+            "version": DISCLAIMER_VERSION,
+            "accepted_version": accepted,
+        }
+
+    def accept_disclaimer(self) -> dict[str, Any]:
+        """Record that the user has read and accepted the disclaimer."""
+        self.settings.update_ui(disclaimer_accepted_version=DISCLAIMER_VERSION)
+        return {"success": True, "version": DISCLAIMER_VERSION}
 
     def update_desktop_lyrics(self, lines: list[dict[str, Any]], index: int) -> dict[str, Any]:
         """Push lyric update to the desktop lyrics window.

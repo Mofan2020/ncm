@@ -276,11 +276,11 @@
 
         const line = state.lines[state.currentIndex >= 0 ? state.currentIndex : 0];
         if (line) {
-            newCurrent.textContent = line.text || '♪';
+            newCurrent.textContent = line.text || '';
             newTranslation.hidden = !state.settings.showTranslation || !line.translation;
             newTranslation.textContent = line.translation || '';
         } else {
-            newCurrent.textContent = '♪';
+            newCurrent.textContent = '';
             newTranslation.hidden = true;
         }
 
@@ -303,7 +303,7 @@
         const translationEl = container.querySelector('.lyric-translation');
 
         if (currentEl) {
-            currentEl.textContent = (currentLine && currentLine.text) || '♪';
+            currentEl.textContent = (currentLine && currentLine.text) || '';
         }
         if (prevEl) {
             const prevLine = state.lines[index - 1];

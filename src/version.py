@@ -2,6 +2,10 @@
 
 __version__ = "3.2.2"
 
+#: Version of the disclaimer text shown on the first start.  Bump it when the
+#: text changes so the dialog is shown again after an update.
+DISCLAIMER_VERSION = "1"
+
 #: Product name used for the window title, artifact names and the config dir.
 APP_NAME = "NeteaseMusicDownloader"
 
