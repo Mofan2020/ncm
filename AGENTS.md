@@ -166,6 +166,16 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
 - i18n: no hardcoded user-facing text. Static markup uses `data-i18n*` attributes,
   Python uses `src.i18n.t()`, and `tests/test_i18n.py` enforces key parity, identical
   `{placeholder}` sets and the presence of every `download.status_*` / `error.reason.*` key.
+  A **list** of paragraphs is flattened to numbered keys (`disclaimer.body.1`, `.2`, …) --
+  the webview only carries strings, so `flatten_translations()` never emits a list.
+- Icons: no emoji in the UI. `src/gui/assets/icons.js` holds a generated subset of
+  Feather (MIT, see `FEATHER-LICENSE.txt`); markup uses `data-icon="name"` and the
+  frontend calls `setIcon()`.  Regenerate with the build script rather than hand-editing
+  the generated file.
+- The disclaimer shows on the first start and after any release that changes its text
+  (bump `DISCLAIMER_VERSION` in `src/version.py` when the wording changes).
+- The account panel is **read-only**.  `/api/user/profile/update` exists but answers
+  `code 250` for third-party clients, so there is deliberately no nickname editor.
 - Settings: unknown YAML keys are **ignored** (never crash on an older config file);
   `max_concurrent` is clamped to 1–3.
 - Version lives only in `src/version.py`; `main.spec` and the UI read it from there.
