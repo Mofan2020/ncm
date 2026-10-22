@@ -628,3 +628,31 @@ http://127.0.0.1:49336/m/mx0-QDM0BOwzSd2qykYYww/ui/index.html?theme=dark&...
 - `ruff check .` → All checks passed
 - `node scripts/check-player-js.mjs` → all player checks passed
 
+---
+
+## 9. v3.3.0 发布（2026-10-22）
+
+`v3.2.2` 已转正式版；本次发 `v3.3.0`，CI 通过，产物 6 个（Windows exe + zip、macOS arm64/x64 的 zip + dmg）。
+
+### 发布流程里踩到的两件事
+
+1. **CI 建的 release 是正式版，不是 prerelease。** `build.yml` 的 release job 里 `gh release create` 只带了 `--title` / `--generate-notes` / `--latest`，**没有 `--prerelease`**。结果 `gh release list` 显示 v3.3.0 的 `isPrerelease: false`，`/releases/latest` 会指向它 —— 和「先发 prerelease、等实测再转正式」的流程直接冲突。发完必须 `gh release edit v3.3.0 --prerelease` 改回来。
+   → 下次改 `build.yml`：建 release 时加 `--prerelease`，或者按 tag 决定。别依赖事后手改。
+2. **`--generate-notes` 生成的说明没法用。** 自动 notes 是 commit 列表，里面是「feat:」「fix:」这类开发信息，不该出现在公开产物里。改成自己写 notes 文件，用 `gh release edit --notes-file` 覆盖。
+
+### 发布前自检（这次实际跑过的）
+
+| 检查 | 结果 |
+|---|---|
+| `pytest` | 444 passed, 6 skipped |
+| `ruff check .` | All checks passed |
+| `node -c` × 3 | app.js / icons.js / desktop-lyrics.js 均无错误 |
+| `node scripts/check-player-js.mjs` | all player checks passed |
+| JS 调用的 86 个 bridge 方法 | 全部有实现（`MISSING: none`） |
+| HTML 里 25 个 `data-icon` | 全部在 icons.js 里（`MISSING: none`） |
+| 四个 UI 文件的 emoji | 0 |
+| 打包目录 | 只有 icons.js / FEATHER-LICENSE.txt 是新增，无测试残留 |
+| 浏览器实测 | 注册页 / 免责声明 / 账号面板 / 更新卡片 / 缓存占用 / 登录徽章 全部正常 |
+
+CI 那边还跑了一个额外的验证：`Smoke test the .exe` + `Run the app from a non-ASCII path` —— Windows 产物在非 ASCII 路径下真的能启动。
+

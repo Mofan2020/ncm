@@ -289,10 +289,19 @@ jobs:
             echo "release $tag exists - uploading the assets again"
             gh release upload "$tag" artifacts/*.exe artifacts/*.zip artifacts/*.dmg --clobber
           else
+            # --prerelease on purpose: a tagged build is a candidate, not a
+            # stable release.  It is promoted with
+            #   gh release edit <tag> --prerelease=false
+            # after the release has been tested.  Without the flag the release
+            # lands as stable and "/releases/latest" points at it.
+            #
+            # The notes are written by the maintainer, not generated from the
+            # commit log: `--generate-notes` fills the page with commit
+            # subjects, which are development notes, not user-facing copy.
             gh release create "$tag" \
               --title "NeteaseMusicDownloader $tag" \
-              --generate-notes \
-              --latest \
+              --prerelease \
+              --notes "See the project README for what changed." \
               artifacts/NeteaseMusicDownloader.exe \
               artifacts/NeteaseMusicDownloader-Windows-x64.zip \
               artifacts/NeteaseMusicDownloader-macOS-arm64.zip \
