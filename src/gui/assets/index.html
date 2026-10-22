@@ -1078,6 +1078,18 @@
     </div>
 </div>
 
+<!-- ============ update notice (bottom right, dismissible) ============ -->
+<aside class="update-notice" id="update-notice" hidden aria-live="polite">
+    <div class="update-notice-head">
+        <span class="update-notice-title" id="update-notice-title"></span>
+        <button class="update-notice-close" id="btn-update-dismiss" type="button"
+                data-icon="close" aria-label="Dismiss"></button>
+    </div>
+    <p class="update-notice-hint" id="update-notice-hint"></p>
+    <button class="btn btn-primary update-notice-open" id="btn-update-open"
+            type="button" data-i18n="update.open"></button>
+</aside>
+
 <div class="toast-container" id="toast-container"></div>
 
 <script src="icons.js"></script>

@@ -21,6 +21,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import webview
 
@@ -1706,8 +1707,16 @@ class GuiBridge:
             opacity = ui.desktop_lyrics_opacity
             show_translation = ui.desktop_lyrics_show_translation
 
-            query = (f"fontSize={font_size}&color={color}"
-                     f"&opacity={opacity}&showTranslation={show_translation}")
+            # urlencode, not f-string: the colour is "#ffffff", and a raw
+            # "#" starts the URL fragment -- the overlay then saw
+            # ``?fontSize=18&color=`` plus a hash of the remaining settings,
+            # silently losing the colour, the opacity and showTranslation.
+            query = urlencode({
+                "fontSize": font_size,
+                "color": color,
+                "opacity": opacity,
+                "showTranslation": show_translation,
+            })
 
             # Same reasoning as the main window: prefer the loopback server so a
             # non-ASCII install path cannot break the file:// URL.
@@ -1733,10 +1742,6 @@ class GuiBridge:
                 on_top=True,
                 # Remove transparent/background_color for better compatibility
             )
-
-            # Track a freshly opened window so the first lyrics push after
-            # this call carries the full lines array (see update_desktop_lyrics).
-            self._desktop_lyrics_payload_id = -1
 
             # Store reference to this bridge for the desktop lyrics window
             self._desktop_lyrics_window.events.closed += self._on_desktop_lyrics_closed
@@ -1786,15 +1791,30 @@ class GuiBridge:
         window = self._desktop_lyrics_window
         if window is None:
             return {"success": True, "open": False}
-        try:
-            # A closed pywebview window raises on any attribute access.
-            alive = not bool(getattr(window, "closed", False))
-        except Exception:
-            alive = False
+        # pywebview.Window has no `closed` attribute (only an `events.closed`
+        # hook), so ask the module for the live window list instead.
+        alive = True
+        windows = getattr(self._webview_module, "windows", None)
+        if isinstance(windows, list | tuple):
+            alive = any(open_window is window for open_window in windows)
         if not alive:
             self._desktop_lyrics_window = None
             return {"success": True, "open": False}
         return {"success": True, "open": True}
+
+    # ------------------------------------------------------------ auto update
+    def check_for_update(self, force: bool = False) -> dict[str, Any]:
+        """Ask GitHub whether a newer release exists.
+
+        Advisory only: the app never downloads or installs anything, so the
+        UI just shows a corner notice.  Every failure is swallowed -- being
+        offline must not produce an error the user did not ask for.
+        """
+        try:
+            return self._update_checker.check(force=force)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.info("update check failed: %s", exc)
+            return {"success": False, "available": False, "current": __version__}
 
     # ------------------------------------------------------------- disclaimer
     def quit_app(self) -> dict[str, Any]:
@@ -1839,27 +1859,28 @@ class GuiBridge:
         if target is None:
             return {"success": False, "reason": "desktop_lyrics_window_closed"}
         try:
-            # Track whether this window has ever received lyrics so we can
-            # resend the lines after the window is reopened without an
-            # intervening source switch (the previous code used a global
-            # counter that broke the moment the user closed & reopened
-            # the desktop lyrics window mid-track).
-            target_id = id(target)
-            if not hasattr(self, '_desktop_lyrics_payload_id'):
-                self._desktop_lyrics_payload_id = -1
-            if self._desktop_lyrics_payload_id != target_id:
-                self._desktop_lyrics_payload_id = target_id
-                payload = {
-                    "action": "update",
-                    "full": True,
-                    "lines": lines,
-                    "index": index,
-                }
-            else:
-                # Subsequent updates: only the active line index moves,
-                # which keeps the per-update payload tiny (a couple of
-                # ints instead of the whole lines array).
-                payload = {"action": "update", "index": index, "full": False}
+            # Always send the whole lines array.
+            #
+            # This used to send the lines only on the first push per window
+            # and then index-only updates, keyed on ``id(target)``.  That
+            # optimisation is what made the overlay permanently empty: the
+            # normal flow is "open the overlay, then press play", so the one
+            # and only "full" push carried ``lines == []`` (the lyrics arrive
+            # from the network later), and every push after it was an index
+            # into an array the overlay never received.  Switching tracks had
+            # the same effect -- the overlay froze on whatever song was
+            # playing when it was opened.
+            #
+            # The caller only pushes when the active line actually changes
+            # (``updateLyricHighlight`` early-returns otherwise), so the
+            # array is sent at most once per lyric line: cheap enough, and
+            # correct regardless of what the overlay has seen before.
+            payload = {
+                "action": "update",
+                "full": True,
+                "lines": lines,
+                "index": index,
+            }
             args = json.dumps(payload, ensure_ascii=False)
             target.evaluate_js(f"handleLyricsUpdate({args})")
             return {"success": True}

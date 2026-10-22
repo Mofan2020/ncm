@@ -114,6 +114,8 @@ async function boot() {
         // The disclaimer comes first: it is the first thing a new user sees.
         await showDisclaimerIfNeeded();
         state.appInfo = await state.api.get_app_info();
+        // Fire and forget: a slow or offline GitHub must not delay the boot.
+        checkForUpdates(false);
         await loadSettings();
         const loginStatus = await state.api.get_login_status();
         state.loggedIn = !!(loginStatus && loginStatus.is_logged_in);
@@ -369,6 +371,51 @@ function resolveConfirm(result) {
         state.confirmResolve(result);
         state.confirmResolve = null;
     }
+}
+
+/* ----------------------------------------------------------- update check */
+
+/**
+ * Look for a newer release and, if there is one, show a corner notice.
+ *
+ * Advisory only: no dialog, no download, no install.  The check is quiet on
+ * every failure (offline, rate limited, API changed) because the user did not
+ * ask for it.
+ */
+async function checkForUpdates(force) {
+    if (!state.api || !state.api.check_for_update) return;
+    let result;
+    try {
+        result = await state.api.check_for_update(Boolean(force));
+    } catch (err) {
+        return;
+    }
+    if (!result || !result.available) return;
+
+    const notice = document.getElementById('update-notice');
+    if (!notice) return;
+    const title = document.getElementById('update-notice-title');
+    const hint = document.getElementById('update-notice-hint');
+    const open = document.getElementById('btn-update-open');
+    if (title) {
+        title.textContent = t('update.available').replace('{version}', result.latest || '');
+    }
+    if (hint) {
+        hint.textContent = t('update.hint').replace('{current}', result.current || '');
+    }
+    if (open) {
+        open.onclick = () => {
+            if (result.url) window.open(result.url, '_blank');
+            dismissUpdateNotice();
+        };
+    }
+    notice.hidden = false;
+    state.updateInfo = result;
+}
+
+function dismissUpdateNotice() {
+    const notice = document.getElementById('update-notice');
+    if (notice) notice.hidden = true;
 }
 
 /* ------------------------------------------------------------- disclaimer */
@@ -3259,8 +3306,23 @@ function renderEmptyTracks(message) {
 function playTracksInto(tracks, source) {
     player.visible = tracks.slice();
     player.visibleSource = source;
+    // A new list starts at the top; only re-windowing the *same* list keeps
+    // the scroll position (see renderTrackList).
+    const list = document.getElementById('track-list');
+    const scroller = list && (list.closest('.list-area') || list);
+    if (scroller && !sameSource(scroller._virtualSource, source)) {
+        scroller.scrollTop = 0;
+    }
+    if (scroller) scroller._virtualSource = source;
     renderTrackList();
     setListCount(tracks.length);
+}
+
+/** Whether two source descriptors point at the same list. */
+function sameSource(a, b) {
+    if (!a || !b) return false;
+    return a.kind === b.kind && String(a.id || '') === String(b.id || '')
+        && String(a.name || '') === String(b.name || '');
 }
 
 function currentKey() {
@@ -3281,6 +3343,12 @@ function playCountOf(track) {
 function renderTrackList() {
     const list = document.getElementById('track-list');
     if (!list || !player.visible) return;
+    // Clearing the list collapses it, and a collapsed scroller clamps its
+    // scrollTop to 0 -- so reading the position after the clear would always
+    // report "we are at the top" and every re-window would jump the view back
+    // to row 1.  Restore it once the new rows are in.
+    const scroller = list.closest('.list-area') || list;
+    const savedScroll = scroller.scrollTop;
     list.innerHTML = '';
     const playing = currentKey();
     // For large lists, mount only a window of rows around the viewport so a
@@ -3290,6 +3358,10 @@ function renderTrackList() {
     const total = player.visible.length;
     if (total > 200) {
         mountVirtualTrackList(list, player.visible, playing);
+        // A fresh source starts at the top; a re-window keeps the position.
+        if (savedScroll > 0 && scroller.scrollTop < savedScroll) {
+            scroller.scrollTop = savedScroll;
+        }
         return;
     }
     const fragment = document.createDocumentFragment();
@@ -3297,6 +3369,9 @@ function renderTrackList() {
         fragment.appendChild(buildTrackRow(track, index, playing));
     });
     list.appendChild(fragment);
+    if (savedScroll > 0 && scroller.scrollTop < savedScroll) {
+        scroller.scrollTop = savedScroll;
+    }
 }
 
 /**
@@ -3344,9 +3419,16 @@ function mountVirtualTrackList(container, tracks, playingKey) {
         return;
     }
 
-    let topIndex = Math.max(0, Math.floor(scroller.scrollTop / ROW_H) - PAD);
+    // `.list-area` can hold siblings above the list (a header, the playlist
+    // grid), so the scroll offset has to be measured against the list's own
+    // position inside the scroller rather than against 0.
+    const listTop = Math.max(0, container.offsetTop - scroller.offsetTop);
+    const viewport = Math.max(ROW_H, scroller.clientHeight - listTop);
+    const offset = Math.max(0, scroller.scrollTop - listTop);
+
+    let topIndex = Math.max(0, Math.floor(offset / ROW_H) - PAD);
     let bottomIndex = Math.min(total, topIndex + 1 +
-        Math.ceil(scroller.clientHeight / ROW_H) + PAD * 2);
+        Math.ceil(viewport / ROW_H) + PAD * 2);
 
     const totalHeight = total * ROW_H;
     const topPad = topIndex * ROW_H;
@@ -3365,6 +3447,9 @@ function mountVirtualTrackList(container, tracks, playingKey) {
         fragment.appendChild(buildTrackRow(tracks[index], index, playingKey));
     }
     fragment.appendChild(placeholderBottom);
+    // Keep the rendered range reachable from the (single) scroll listener,
+    // which is installed once and lives across re-renders.
+    container._virtualRange = { top: topIndex, bottom: bottomIndex, listTop: listTop };
     container.appendChild(fragment);
 
     // Single passive scroll listener that re-renders the window.  Guarded
@@ -3378,8 +3463,18 @@ function mountVirtualTrackList(container, tracks, playingKey) {
             pending = true;
             requestAnimationFrame(() => {
                 pending = false;
-                // Re-render only if the window actually changed.
-                if (Math.floor(scroller.scrollTop / ROW_H) !== topIndex) {
+                // Re-render only if the window actually changed.  Compare
+                // against the range we rendered: `topIndex` is already
+                // padded, so comparing it with the raw row index would
+                // re-render on every single scroll event.
+                const range = container._virtualRange;
+                if (!range) {
+                    renderTrackList();
+                    return;
+                }
+                const row = Math.floor(
+                    Math.max(0, scroller.scrollTop - range.listTop) / ROW_H);
+                if (row < range.top || row >= range.bottom) {
                     renderTrackList();
                 }
             });
@@ -3842,6 +3937,12 @@ function renderLyricLines() {
     const box = document.getElementById('lyrics-scroll');
     if (!box) return;
     box.innerHTML = '';
+    // The DOM is about to be rebuilt, so the remembered index no longer
+    // describes anything.  Leaving it in place made `updateLyricHighlight`
+    // early-return (`found === player.lyricIndex`) and highlight *nothing*
+    // until the next lyric line advanced -- most visible when toggling
+    // dual-line mode mid-song.
+    player.lyricIndex = -1;
     const showTranslation = (state.settings && state.settings.playback.show_translation) !== false;
     const fragment = document.createDocumentFragment();
     
@@ -4119,17 +4220,18 @@ function updateLyricHighlight() {
     // every row, so the flat node list is longer than player.lyrics and the
     // index no longer points at the right row.  Highlight the row wrapper
     // there and the plain line everywhere else.
-    const previous = box.querySelector('.lyric-line.is-active, .lyric-line-wrapper.is-active');
+    // Dual mode must be detected exactly as `renderLyricLines` does it --
+    // gating on `player.dualLine` alone disagrees with the renderer whenever
+    // `show_translation` is off, and then the wrapper list does not exist.
+    const showTranslation = (state.settings && state.settings.playback.show_translation) !== false;
+    const dual = player.dualLine && showTranslation;
+    const previous = box.querySelector(dual
+        ? '.lyric-line-wrapper.is-active'
+        : '.lyric-line.is-active');
     if (previous) previous.classList.remove('is-active');
     player.lyricIndex = found;
-    let target = null;
-    if (player.dualLine) {
-        const wrappers = box.querySelectorAll('.lyric-line-wrapper');
-        target = wrappers[found];
-    } else {
-        const lines = box.querySelectorAll('.lyric-line');
-        target = lines[found];
-    }
+    const list = box.querySelectorAll(dual ? '.lyric-line-wrapper' : '.lyric-line');
+    const target = list[found];
     if (!target) return;
     target.classList.add('is-active');
     if (player.autoScroll) {
@@ -5296,6 +5398,10 @@ function bindStaticEvents() {
         updatePlayStatsText();
     });
     document.getElementById('btn-theme').addEventListener('click', cycleTheme);
+
+    // update notice
+    document.getElementById('btn-update-dismiss')
+        .addEventListener('click', dismissUpdateNotice);
 
     // disclaimer
     document.getElementById('disclaimer-agree')

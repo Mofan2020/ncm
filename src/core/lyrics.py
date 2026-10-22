@@ -228,8 +228,23 @@ def build_timed_lyrics(lyric: str, translation: str = "") -> list[dict[str, Any]
     for stamp, content in translations:
         index.setdefault(stamp, content)
 
-    result: list[dict[str, Any]] = []
+    # A saved ``.lrc`` from this app already has the translation inlined under
+    # the original's timestamp (see ``merge_translation``), so ``lines`` can
+    # hold *two* entries for one stamp.  Emitting both made the translation
+    # its own row with an empty ``translation`` -- a ghost line that the
+    # highlight then landed on, because the binary search picks the last row
+    # with ``time <= ms``.
+    grouped: dict[int, list[str]] = {}
+    order: list[int] = []
     for stamp, content in lines:
+        if stamp not in grouped:
+            grouped[stamp] = []
+            order.append(stamp)
+        grouped[stamp].append(content)
+
+    result: list[dict[str, Any]] = []
+    for stamp in order:
+        texts = grouped[stamp]
         # Translations sometimes land a few milliseconds off the original line;
         # accept the closest one within the tolerance so the pairing still works.
         match = index.get(stamp)
@@ -238,7 +253,10 @@ def build_timed_lyrics(lyric: str, translation: str = "") -> list[dict[str, Any]
                 if stamp + offset in index:
                     match = index[stamp + offset]
                     break
-        result.append({"time": stamp, "text": content, "translation": match or ""})
+        if match is None and len(texts) > 1:
+            # Inlined translation: the second line at this stamp.
+            match = texts[1]
+        result.append({"time": stamp, "text": texts[0], "translation": match or ""})
 
     # A translation without its own lyric line cannot be shown on its own, so it
     # is dropped rather than rendered as a line with no text.

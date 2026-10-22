@@ -36,6 +36,13 @@
             pointer-events: none;
         }
         .desktop-lyrics-window.draggable { pointer-events: auto; }
+        /* The overlay is click-through so it never blocks the desktop, but
+           the lyric content and the drag handle must stay interactive --
+           without this the right-click menu (hide / close) could never be
+           reached, because `pointer-events: none` also suppresses
+           `contextmenu` and `dblclick`. */
+        .desktop-lyrics-content,
+        .desktop-lyrics-drag-handle { pointer-events: auto; }
         
         .desktop-lyrics-content {
             background: rgba(0, 0, 0, 0.7);

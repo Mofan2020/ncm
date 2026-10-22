@@ -550,5 +550,13 @@
       "The project is provided \"as is\", with no express or implied warranty of availability, stability or data integrity. The developer may modify, suspend or discontinue it at any time without notice.",
       "To the maximum extent permitted by law, the developer is not liable for any direct, indirect, incidental or consequential damage arising from the use of, or inability to use, this project."
     ]
+  },
+  "update": {
+    "available": "New version v{version} available",
+    "hint": "You are on v{current}",
+    "open": "View",
+    "dismiss": "Dismiss",
+    "checking": "Checking for updates…",
+    "up_to_date": "You are up to date (v{version})"
   }
 }

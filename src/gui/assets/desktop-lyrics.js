@@ -213,10 +213,11 @@
     function handleMessage(payload) {
         switch (payload.action) {
             case 'update':
-                // Handle both full lyrics load and index updates.  The first
-                // call from the bridge carries `lines`; later calls only carry
-                // `index` (the desktop window already has the lyrics).
-                if (payload.full && payload.lines) {
+                // Every update from the bridge now carries the full lines
+                // array (see src/gui/bridge.py::update_desktop_lyrics), so a
+                // truthiness check on `payload.lines` is wrong: an empty
+                // array must clear the overlay, not be ignored.
+                if (payload.full) {
                     renderLyricLines(payload.lines || []);
                 }
                 if (typeof payload.index === 'number') {
@@ -335,6 +336,17 @@
     }
 
     function closeWindow() {
+        // This window is created by the Python bridge with `js_api` pointing
+        // at it, and `window.close()` is a no-op under pywebview (the window
+        // stayed alive and the bridge kept its reference).  Ask the backend
+        // to destroy it; the browser fallback keeps the old behaviour.
+        try {
+            if (window.pywebview && window.pywebview.api &&
+                window.pywebview.api.close_desktop_lyrics) {
+                window.pywebview.api.close_desktop_lyrics();
+                return;
+            }
+        } catch (e) { /* fall through */ }
         sendToMain({ type: 'closed' });
         window.close();
     }
