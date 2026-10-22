@@ -601,3 +601,30 @@ http://127.0.0.1:49336/m/mx0-QDM0BOwzSd2qykYYww/ui/index.html?theme=dark&...
 - 更新卡片在真实 Chromium 里跑过：标题、当前版本、按钮文案正确
 - 未机器验证：真机 pywebview 下的浮层关闭、真实大歌单滚动（交本人手测）；GitHub API 实时请求在本机被 hosts 加速器的自签证书挡住，逻辑用 `gh api` 拿到的真实 release 数据验证过
 
+---
+
+## 8. 性能与本地占用（2026-10-22 续）
+
+### 实测到的
+
+- 启动不是 import 瓶颈：`-X importtime` 显示 `import main` 共 64 ms，其中 `yaml` 11 ms、`logging` 17 ms。慢的是别的（首屏要等网盘接口），砍 import 收益极小，没动。
+- 本机缓存实测：音频 0 个，封面 22 个 / 10.4 MB。缓存上限写死 2 GB 音频 + 256 MB 封面（`src/core/cache.py`），UI 里没有调整入口。
+
+### 做了什么
+
+- **设置 → 高级 → 本地缓存**：显示音频 / 封面 / 合计占用，三个按钮分别清空。清空是安全的 —— 缓存里的东西全都能重新下。
+- 顺手修了一个真 bug：`MediaCache.forget_audio()` 开头 `if not self._available: return 0`。这个标志只有 `_ensure_root()` 建过目录才为 True，所以「磁盘上有缓存、但本次会话没写过」的情况下点「清空音频」**静默什么都不做**。改成「不可用且目录不存在才返回 0」。`tests/test_cache_panel.py` 锁死了这个行为。
+- 大歌单的虚拟滚动本来就是省内存的（200 首以上只渲染可视窗口的行），这轮又修了它的滚动位置丢失，滚动时的重建次数反而更少。
+
+### 没做 / 留着的
+
+- 没动缓存上限的默认值（2 GB / 256 MB）。要暴露成设置项就得存状态、还得让用户自己填数字，收益不大；清空按钮已经够用了。
+- 没做首屏预加载、没做图片懒加载之外的渲染优化 —— 那是另一个量级的改动，风险高于收益。
+- 打包体积没动：`main.spec` 把 `src/gui/assets` 整目录打进去，`icons.js` 增加了约 30 KB（37 个图标），换掉 emoji 之后总体是持平的。
+
+### 实测数据
+
+- `pytest` → 全部通过, 5 skipped（新增 `test_cache_panel.py` 5 项）
+- `ruff check .` → All checks passed
+- `node scripts/check-player-js.mjs` → all player checks passed
+

@@ -171,7 +171,11 @@ class MediaCache:
     def forget_audio(self, song_id: str | None = None) -> int:
         """Drop one song's audio or the whole audio cache.  Returns entries removed."""
         with self._lock:
-            if not self._available:
+            # Do NOT gate on ``self._available``: that flag is only set once
+            # ``_ensure_root`` has created the tree, so a cache that exists
+            # on disk but was never written to in this session was left
+            # untouched -- "clear the audio cache" silently did nothing.
+            if not self._available and not self.audio_dir.is_dir():
                 return 0
             if song_id is None:
                 count, _ = _scan(self.audio_dir)

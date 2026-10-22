@@ -772,6 +772,23 @@
                     <input type="checkbox" id="debug-check">
                     <span data-i18n="settings.debug_mode"></span>
                 </label>
+                <div class="group cache-group">
+                    <h3 class="group-title" data-i18n="cache.title"></h3>
+                    <p class="muted cache-desc" data-i18n="cache.desc"></p>
+                    <dl class="cache-stats" id="cache-stats">
+                        <dt data-i18n="cache.audio"></dt><dd id="cache-audio">--</dd>
+                        <dt data-i18n="cache.cover"></dt><dd id="cache-cover">--</dd>
+                        <dt data-i18n="cache.total"></dt><dd id="cache-total">--</dd>
+                    </dl>
+                    <div class="cache-actions">
+                        <button class="btn btn-ghost" type="button" id="btn-clear-audio"
+                                data-i18n="cache.clear_audio"></button>
+                        <button class="btn btn-ghost" type="button" id="btn-clear-cover"
+                                data-i18n="cache.clear_cover"></button>
+                        <button class="btn btn-ghost" type="button" id="btn-clear-all"
+                                data-i18n="cache.clear_all"></button>
+                    </div>
+                </div>
                 <div class="about">
                     <h3 data-i18n="about.title"></h3>
                     <p id="about-version" class="muted"></p>

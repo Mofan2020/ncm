@@ -373,6 +373,59 @@ function resolveConfirm(result) {
     }
 }
 
+/* ------------------------------------------------------------------ cache */
+
+/** Human-readable byte size: `1023 B`, `12.3 MB`, `1.20 GB`. */
+function formatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value < 1024) return `${value} B`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let size = value / 1024;
+    let unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+        size /= 1024;
+        unit += 1;
+    }
+    return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[unit]}`;
+}
+
+/** Read the media cache footprint into the settings panel. */
+async function refreshCacheStats() {
+    if (!state.api || !state.api.get_cache_stats) return;
+    let result;
+    try {
+        result = await state.api.get_cache_stats();
+    } catch (err) {
+        return;
+    }
+    if (!result || !result.success) return;
+    const audio = (result.audio && result.audio.bytes) || 0;
+    const cover = (result.cover && result.cover.bytes) || 0;
+    const set = (id, text) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    };
+    set('cache-audio', formatBytes(audio));
+    set('cache-cover', formatBytes(cover));
+    set('cache-total', formatBytes(audio + cover));
+}
+
+async function clearCache(what) {
+    if (!await confirmDialog('cache.confirm')) return;
+    let result;
+    try {
+        result = await state.api.clear_cache(what);
+    } catch (err) {
+        result = null;
+    }
+    if (!result || !result.success) {
+        showToast('error', t('cache.clear_failed'));
+        return;
+    }
+    showToast('success', t('cache.cleared', { count: result.removed || 0 }));
+    refreshCacheStats();
+}
+
 /* ---------------------------------------------------------------- account */
 
 /**
@@ -5468,8 +5521,17 @@ function bindStaticEvents() {
         openModal('settings-modal');
         updateLocalStatsText();
         updatePlayStatsText();
+        refreshCacheStats();
     });
     document.getElementById('btn-theme').addEventListener('click', cycleTheme);
+
+    // cache
+    document.getElementById('btn-clear-audio')
+        .addEventListener('click', () => clearCache('audio'));
+    document.getElementById('btn-clear-cover')
+        .addEventListener('click', () => clearCache('cover'));
+    document.getElementById('btn-clear-all')
+        .addEventListener('click', () => clearCache('all'));
 
     // account panel
     document.getElementById('btn-account-close')

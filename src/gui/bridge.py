@@ -89,6 +89,24 @@ def _ext_from_cover_url(url: str) -> str:
     return "jpg"
 
 
+def _purge_directory(directory: Any) -> int:
+    """Delete every regular file in ``directory``; return how many went."""
+    from pathlib import Path
+
+    root = Path(directory)
+    if not root.is_dir():
+        return 0
+    removed = 0
+    for entry in root.iterdir():
+        try:
+            if entry.is_file():
+                entry.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 class GuiBridge:
     """Bridge between the Python backend and the HTML frontend."""
 
@@ -1801,6 +1819,38 @@ class GuiBridge:
             self._desktop_lyrics_window = None
             return {"success": True, "open": False}
         return {"success": True, "open": True}
+
+    # ---------------------------------------------------------------- cache
+    def get_cache_stats(self) -> dict[str, Any]:
+        """How much disk the media cache is using (audio + cover art)."""
+        try:
+            from src.core.cache import get_media_cache
+
+            return {"success": True, **get_media_cache().stats()}
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.info("cache stats failed: %s", exc)
+            return {"success": False}
+
+    def clear_cache(self, what: str = "all") -> dict[str, Any]:
+        """Drop cached audio, cover art, or both.
+
+        Nothing here is user data: every file is re-downloadable, so clearing
+        is always safe.  It is the one lever a user has on the app's local
+        footprint, hence a button rather than a config file.
+        """
+        try:
+            from src.core.cache import get_media_cache
+
+            cache = get_media_cache()
+            removed = 0
+            if what in ("all", "audio"):
+                removed += cache.forget_audio()
+            if what in ("all", "cover"):
+                removed += _purge_directory(cache.cover_dir)
+            return {"success": True, "removed": removed, **cache.stats()}
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.info("cache clear failed: %s", exc)
+            return {"success": False, "removed": 0}
 
     # -------------------------------------------------------------- account
     def get_user_profile(self, refresh: bool = False) -> dict[str, Any]:

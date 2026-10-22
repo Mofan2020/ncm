@@ -579,5 +579,18 @@
     "not_logged_in": "Not signed in",
     "refresh_failed": "Could not read your account, try again later",
     "edit_unsupported": "NetEase does not expose profile editing to third-party clients; change your nickname in the official app"
+  },
+  "cache": {
+    "title": "Local cache",
+    "desc": "Safe to clear at any time; it only affects the next load",
+    "audio": "Audio cache",
+    "cover": "Cover cache",
+    "total": "Total",
+    "clear_audio": "Clear audio",
+    "clear_cover": "Clear covers",
+    "clear_all": "Clear all",
+    "cleared": "Cleared {count} files",
+    "clear_failed": "Could not clear the cache, try again later",
+    "confirm": "Clear the cache?"
   }
 }

@@ -579,5 +579,18 @@
     "not_logged_in": "尚未登录",
     "refresh_failed": "读取账号信息失败，请稍后再试",
     "edit_unsupported": "网易云未开放第三方修改资料，昵称与签名需在官方客户端修改"
+  },
+  "cache": {
+    "title": "本地缓存",
+    "desc": "缓存随时可以清空，只影响下次加载速度",
+    "audio": "音频缓存",
+    "cover": "封面缓存",
+    "total": "合计占用",
+    "clear_audio": "清空音频",
+    "clear_cover": "清空封面",
+    "clear_all": "清空全部",
+    "cleared": "已清空 {count} 个文件",
+    "clear_failed": "清空失败，请稍后再试",
+    "confirm": "确定要清空缓存吗？"
   }
 }
