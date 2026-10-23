@@ -689,7 +689,11 @@ Windows 上多次启动后，**播放页面**的排版突然异常。窗口是�
 
 ---
 
-## 11. 性能实测（2026-10-22）
+## 11. 性能实测（2026-10-22）—— **已作废，见第 12 节**
+
+> 这一节的数据是错的：只测了孤立的 Python 进程，漏掉了 WebView 的子进程。
+> 正确数据在第 12 节（跑真实编译产物 + 进程树 diff）。本节仅留作对照。
+
 
 不是估计，是在这台机器上跑出来的数。环境：macOS 27.2，M2 / 8GB，Python 3.14.7（项目自己的 `.venv`）。
 
@@ -754,4 +758,107 @@ WebView 是另一个进程（WKWebView / WebView2），不在这 52.5 MB 里。
 2. **Kotlin / Compose 原生重写**：Android 体验最好，但等于重写一遍，Python 的 eapi 签名、歌词解析、媒体缓存逻辑全要翻成 Kotlin。
 
 等星空喵定方向再动。
+
+---
+
+## 12. 性能实测（重做：跑真实编译产物，2026-10-23）
+
+第 11 节那版数据**是错的**，作废。那次测的是 `.venv` 里跑起来的孤立 Python 进程，
+只算了 `resource.getrusage(RUSAGE_SELF)`，既没走 PyInstaller 冻结后的代码路径，
+也没算 WebView 的子进程 —— 实际使用中占大头的恰恰是那些子进程。这次重做。
+
+### 怎么测的
+
+- 先 `pyinstaller --clean --noconfirm main.spec` 重新打包（`dist/NeteaseMusicDownloader.app`，38 MB），
+  `--self-test` 16 项全 PASS。
+- 启动的是**打包后的 `.app`**，不是源码。
+- **进程树怎么找**：macOS 会把 WebKit 的辅助进程 re-parent 给 launchd（ppid 变成 1），
+  所以 `pgrep -P` 走父子链只能看到 Python 那一个进程，什么都找不到。
+  正确做法是**启动前后做 `ps` 快照 diff** —— 新出现的 PID 就是这个 app 造成的
+  （Python 进程 + WebContent + GPU + Networking + 音频沙箱助手）。
+- **「起来了」的判据**是 app 自己的窗口出现（`CGWindowListCopyWindowInfo` 查
+  on-screen 窗口里 owner 是本 app 的），不是进程存在 —— 进程比窗口早得多。
+- 内存同时看 `ps` 的 RSS 和 `footprint -p <pid>` 的物理占用（RSS 会重复计共享页）。
+
+### 结果
+
+单个实例（`dist/NeteaseMusicDownloader.app`，本机 M2 / 8GB）：
+
+| 指标 | 实测 |
+|---|---|
+| 进程启动 → 窗口出现 | **565 ms**（另一次 13.7 s，是因为 Little Snitch 弹了授权框，见下） |
+| 启动过程内存峰值 | **288 MB**（整棵树） |
+| 稳态（跑 40 s） | **115 – 155 MB**，均值 151 MB，末值 117 MB |
+| 稳态时 Python 进程 | **19 – 50 MB**（启动后从 108 MB 回落到 19 MB，macOS 内存压力回收） |
+| `footprint` 物理占用（Python 进程） | **65 MB** |
+| 空闲 CPU | **0.0%**（30 s 采样全程 0） |
+| 打包后 app 体积 | **38 MB**（dmg 17–20 MB） |
+
+各进程拆解（稳态）：
+
+| 进程 | 内存 |
+|---|---|
+| NeteaseMusicDownloader（Python） | 19–50 MB |
+| com.apple.WebKit.WebContent | 40–49 MB |
+| com.apple.WebKit.GPU | 22–33 MB |
+| com.apple.WebKit.Networking | 6–12 MB |
+| com.apple.audio.SandboxHelper | 6 MB |
+| 合计 | 115–155 MB |
+
+**所以：整棵进程树约 150 MB，其中 Python 只占三分之一，两块是 WebView 的渲染进程。**
+我上一版报的「52.5 MB」只算到了 Python 那一块，实际是它的 3 倍。
+
+### 启动那 13.7 s 是什么
+
+Little Snitch 弹出了「Terminal via NeteaseMusicDownloader wants to connect to
+music.163.com」的授权框，等它超时了 5 s 才继续。**这是本机的网络拦截，不是应用慢。**
+正常的机器上窗口 565 ms 就出来了。
+
+顺带发现：日志里 `account query failed ... ConnectTimeoutError` 每隔十几秒一条，
+是 Little Snitch 挡的必然结果，不是应用的重试风暴 —— 观察 30 s 日志行数 **+0**，
+说明应用没有在反复打这个接口。
+
+### 打包体积
+
+38 MB 里最大的一块是 **PIL 11 MB** —— 它是 `qrcode[pil]` 的传递依赖，
+我们只用来做两件事：渲染登录二维码、把壁纸缩放成 JPEG。
+其余：Python.framework 5.2 MB + python3__dot__14 5.2 MB + libcrypto 4.6 MB。
+
+**没动它**：去掉 PIL 意味着二维码得自己画（要写 QR 编码器）或改成 SVG 交给前端渲染，
+壁纸缩放则要退回原样拷贝 —— 都是拿功能换体积。而且 PIL 只影响安装包大小，
+**不影响运行时的内存占用**（那 65 MB 里 PIL 只占 2 MB）。
+
+### 这一轮真正改掉的
+
+- **壁纸 22.7 MB 的 PNG → 3.09 MB 的 JPEG**，超 3840 px 的等比缩小。
+  迁移逻辑在真实安装上验证过：本机配置目录 **34 MB → 15 MB**，
+  `settings.yaml` 里的文件名跟着改成 `background.jpg`，旧 PNG 已删。
+- 顺手发现并修了一个 UI 侧的浪费：`MediaCache.forget_audio()` 用 `_available` 当闸，
+  而该标志只在本次会话建过目录时为 True —— 磁盘上有缓存时点「清空音频」静默无效。
+
+### 结论：性能不是当前的问题
+
+| 维度 | 状态 |
+|---|---|
+| 启动到能用 | 565 ms —— 够快 |
+| 空闲 CPU | 0% —— 不空转 |
+| 内存 | 150 MB，其中 100 MB 是 WebView 的 —— 正常范围 |
+| 磁盘 | 本地 15 MB（含 11 MB 缓存）—— 够小 |
+| 打包体积 | 38 MB —— 对 pywebview 应用正常 |
+
+**没有值得动的地方。** 真要省，唯一的空间在 PIL（11 MB 安装体积）和
+WebView 的 WebContent 进程（那不是我们能控制的）。
+
+### 教训（下次别再犯）
+
+1. **不要用 `resource.getrusage` 报内存。** 它只算当前进程，漏掉 WebView 的子进程，
+   数字会差 3 倍。要么用 `ps` 快照 diff + 进程树，要么用 `footprint`。
+2. **macOS 上不能靠父子链找 WebKit 辅助进程** —— 它们被 re-parent 给 launchd。
+   必须用启动前后的进程快照 diff。
+3. **「进程存在」不等于「应用可用」。** 窗口出现才是。
+4. **测编译后的产物，不测源码。** PyInstaller 的 import 行为和源码跑不一样
+   （第一版 PyInstaller 打包把 `requests` / `webview` / `yaml` 都收进去了，
+   运行时不付 import 的钱，付的是包体积）。
+5. **本机 Little Snitch 会挡出站请求**，会污染启动时间和网络相关的测量 ——
+   测启动前先看一眼有没有它的弹窗。
 
