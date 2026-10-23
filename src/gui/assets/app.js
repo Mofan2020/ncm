@@ -88,6 +88,9 @@ const player = {
     // disk is what we actually save).
     coverUrlCache: new Map(),
     coverUrlPending: new Set(),
+    // The media server's loopback base URL.  It lets the webview build the
+    // cover URLs on its own instead of asking the backend for each one.
+    mediaBaseUrl: '',
 };
 
 const MODES = ['single', 'list', 'shuffle'];
@@ -114,6 +117,9 @@ async function boot() {
         // The disclaimer comes first: it is the first thing a new user sees.
         await showDisclaimerIfNeeded();
         state.appInfo = await state.api.get_app_info();
+    if (state.appInfo && state.appInfo.media_base_url) {
+        state.mediaBaseUrl = state.appInfo.media_base_url;
+    }
         // Fire and forget: a slow or offline GitHub must not delay the boot.
         checkForUpdates(false);
         await loadSettings();
@@ -401,13 +407,42 @@ async function refreshCacheStats() {
     if (!result || !result.success) return;
     const audio = (result.audio && result.audio.bytes) || 0;
     const cover = (result.cover && result.cover.bytes) || 0;
+    const meta = result.meta_bytes || 0;
     const set = (id, text) => {
         const el = document.getElementById(id);
         if (el) el.textContent = text;
     };
     set('cache-audio', formatBytes(audio));
     set('cache-cover', formatBytes(cover));
-    set('cache-total', formatBytes(audio + cover));
+    set('cache-meta', formatBytes(meta));
+    set('cache-total', formatBytes(audio + cover + meta));
+}
+
+/**
+ * The escape hatch: wipe every cache and restart the app.
+ *
+ * Caches make the app fast, but a stale one can make it unusable (a song
+ * that no longer resolves, a playlist that will not open).  This clears
+ * the metadata cache, the audio and cover caches and the in-memory
+ * response caches, then relaunches.
+ */
+async function forceRefresh() {
+    if (!await confirmDialog('settings.cache_force_refresh_confirm')) return;
+    if (!state.api || !state.api.force_refresh) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    let result;
+    try {
+        result = await state.api.force_refresh();
+    } catch (err) {
+        result = null;
+    }
+    if (!result || !result.success) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    // The backend relaunches the app; this window goes away with it.
 }
 
 async function clearCache(what) {
@@ -663,6 +698,8 @@ function fillSettingsForm() {
     setValue('desktop-lyrics-opacity', s.ui.desktop_lyrics_opacity || 0.9);
     updateDesktopLyricsOpacityLabel();
     setChecked('desktop-lyrics-translation-check', s.ui.desktop_lyrics_show_translation !== false);
+    setValue('desktop-lyrics-background', s.ui.desktop_lyrics_background || 'dark');
+    setValue('desktop-lyrics-text-style', s.ui.desktop_lyrics_text_style || 'white');
 
     // appearance
     document.getElementById('background-input').value = s.ui.background_image || '';
@@ -879,6 +916,8 @@ async function saveSettings() {
             desktop_lyrics_color: document.getElementById('desktop-lyrics-color').value,
             desktop_lyrics_opacity: parseFloat(document.getElementById('desktop-lyrics-opacity').value),
             desktop_lyrics_show_translation: document.getElementById('desktop-lyrics-translation-check').checked,
+            desktop_lyrics_background: document.getElementById('desktop-lyrics-background').value,
+            desktop_lyrics_text_style: document.getElementById('desktop-lyrics-text-style').value,
         },
         auth: {
             remember_login: document.getElementById('remember-login-check').checked,
@@ -3304,7 +3343,23 @@ function proxyCoverUrl(remote_url) {
     const raw = String(remote_url || '').trim();
     if (!raw) return '';
     if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw;
+
+    // 1. The in-memory map (this session).
     if (player.coverUrlCache.has(raw)) return player.coverUrlCache.get(raw) || '';
+
+    // 2. The loopback URL is fully determined by the remote URL, so it can
+    //    be built here without asking the backend.  That removes one IPC
+    //    round-trip per cover image -- with a few hundred covers in a
+    //    playlist that was hundreds of round-trips on every launch, and
+    //    the artwork only appeared after the last one came back.
+    const built = buildCoverUrl(raw);
+    if (built) {
+        player.coverUrlCache.set(raw, built);
+        return built;
+    }
+
+    // 3. No base URL yet (the app info has not arrived): fall back to the
+    //    old asynchronous path so nothing is lost.
     if (!state.api || typeof state.api.resolve_cover_url !== 'function') return raw;
     if (player.coverUrlPending.has(raw)) return '';
     player.coverUrlPending.add(raw);
@@ -3331,6 +3386,30 @@ function proxyCoverUrl(remote_url) {
         player.coverUrlCache.set(raw, '');
     });
     return '';
+}
+
+/**
+ * Build the loopback cover URL from the media server's base URL.
+ *
+ * The server's route is ``/cover?u=<urlencoded remote>&ext=<ext>`` and it
+ * caches the bytes on disk, so the same URL always yields the same image.
+ * Returns '' when the base URL is not known yet.
+ */
+function buildCoverUrl(raw) {
+    const base = state.mediaBaseUrl;
+    if (!base) return '';
+    let ext = 'jpg';
+    try {
+        const path = String(raw).split('?')[0];
+        const match = path.match(/\.([A-Za-z0-9]{2,4})$/);
+        if (match) {
+            const candidate = match[1].toLowerCase();
+            if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(candidate)) {
+                ext = candidate === 'jpeg' ? 'jpg' : candidate;
+            }
+        }
+    } catch (e) { /* keep the default */ }
+    return base + '/cover?u=' + encodeURIComponent(raw) + '&ext=' + ext;
 }
 
 /**
@@ -4942,6 +5021,8 @@ function openDesktopLyrics() {
     url.searchParams.set('color', encodeURIComponent(state.settings?.ui?.desktop_lyrics_color || '#ffffff'));
     url.searchParams.set('opacity', state.settings?.ui?.desktop_lyrics_opacity || 0.9);
     url.searchParams.set('showTranslation', state.settings?.ui?.desktop_lyrics_show_translation !== false);
+    url.searchParams.set('background', state.settings?.ui?.desktop_lyrics_background || 'dark');
+    url.searchParams.set('textStyle', state.settings?.ui?.desktop_lyrics_text_style || 'white');
 
     // Open as a pywebview window (will be handled by main.py) or fallback to window.open
     if (window.pywebview && window.pywebview.api && window.pywebview.api.open_desktop_lyrics) {
@@ -5532,6 +5613,8 @@ function bindStaticEvents() {
         .addEventListener('click', () => clearCache('cover'));
     document.getElementById('btn-clear-all')
         .addEventListener('click', () => clearCache('all'));
+    document.getElementById('btn-force-refresh')
+        .addEventListener('click', () => forceRefresh());
 
     // account panel
     document.getElementById('btn-account-close')
@@ -5708,6 +5791,12 @@ function bindStaticEvents() {
     document.getElementById('desktop-lyrics-opacity').addEventListener('input', (event) => {
         updateDesktopLyricsOpacityLabel();
         pushDesktopSettings({ opacity: parseFloat(event.target.value) });
+    });
+    document.getElementById('desktop-lyrics-background').addEventListener('change', (event) => {
+        pushDesktopSettings({ background: event.target.value });
+    });
+    document.getElementById('desktop-lyrics-text-style').addEventListener('change', (event) => {
+        pushDesktopSettings({ textStyle: event.target.value });
     });
     document.getElementById('desktop-lyrics-translation-check').addEventListener('change', (event) => {
         pushDesktopSettings({ showTranslation: event.target.checked });

@@ -492,7 +492,18 @@
     "output_device": "输出设备",
     "output_device_hint": "选择音频输出设备（需浏览器支持）",
     "playback_speed": "播放速度",
-    "playback_speed_hint": "0.5x - 2.0x，适用于播客/有声书"
+    "playback_speed_hint": "0.5x - 2.0x，适用于播客/有声书",
+    "desktop_lyrics_background": "背景样式",
+    "desktop_lyrics_background_dark": "深色",
+    "desktop_lyrics_background_translucent": "半透明",
+    "desktop_lyrics_background_none": "纯文字",
+    "desktop_lyrics_text_style": "文字样式",
+    "desktop_lyrics_text_style_transparent": "透明",
+    "desktop_lyrics_text_style_translucent": "半透明",
+    "desktop_lyrics_text_style_white": "纯白",
+    "cache_force_refresh": "强制刷新",
+    "cache_force_refresh_hint": "清除全部缓存并重启应用",
+    "cache_force_refresh_confirm": "将清除全部缓存并重启应用，确定继续？"
   },
   "status": {
     "ready": "就绪",
@@ -591,6 +602,7 @@
     "clear_all": "清空全部",
     "cleared": "已清空 {count} 个文件",
     "clear_failed": "清空失败，请稍后再试",
-    "confirm": "确定要清空缓存吗？"
+    "confirm": "确定要清空缓存吗？",
+    "meta": "歌曲信息"
   }
 }

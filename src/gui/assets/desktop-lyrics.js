@@ -12,10 +12,21 @@
             fontSize: 18,
             color: '#ffffff',
             opacity: 0.9,
-            showTranslation: true
+            showTranslation: true,
+            // How the bubble behind the text is drawn:
+            //   'dark'   - the default dark pill
+            //   'translucent' - a see-through pill (desktop shows through)
+            //   'none'   - no bubble at all, just the text
+            background: 'dark',
+            // How the glyphs themselves are drawn:
+            //   'transparent' - see-through, outline only
+            //   'translucent' - semi-transparent
+            //   'white'       - pure white, fully opaque
+            textStyle: 'white'
         },
         drag: { active: false, startX: 0, startY: 0, windowX: 0, windowY: 0 },
-        hidden: false
+        hidden: false,
+        reportedHeight: 0
     };
 
     const elements = {
@@ -64,6 +75,7 @@
     function applyStyles() {
         const s = state.settings;
         const content = elements.content;
+        if (!content) return;
         content.style.fontSize = s.fontSize + 'px';
         content.style.color = s.color;
         content.style.opacity = s.opacity;
@@ -75,6 +87,116 @@
             ['prev', 'current', 'next', 'translation'].forEach((k) => {
                 if (r[k]) r[k].style.color = s.color;
             });
+        }
+        applyBackgroundMode(s.background);
+        applyTextStyle(s.textStyle);
+        reportContentHeight();
+    }
+
+    /**
+     * Draw the bubble behind the lyric text.
+     *
+     *  'dark'        - the default dark pill
+     *  'translucent' - a see-through pill; the desktop shows through
+     *  'none'        - no bubble, just the text
+     *
+     * The setting is a *mode*, not a colour, so the user picks a look rather
+     * than a hex value.  'translucent' keeps a hint of the pill so the text
+     * stays readable over a bright wallpaper; 'none' is the "pure text" mode.
+     */
+    /**
+     * Tell the backend how tall the window has to be for this content.
+     *
+     * The window is created at a fixed 120 px, but the content grows with
+     * the font size (112 px at 18 px, 159 px at 28 px).  A window that is
+     * too short clips the text -- and because the bubble was anchored at the
+     * bottom, the clipped part was the *top* line.
+     *
+     * The height is measured from the DOM and pushed to the backend, which
+     * resizes the native window.  Failure is ignored: the window still
+     * works, it is just a bit tight.
+     */
+    function reportContentHeight() {
+        const content = elements.content;
+        if (!content) return;
+        // Measure after the browser has laid the new text out: reading the
+        // box in the same tick as the DOM change gives the *old* height,
+        // which is how the window ended up a frame behind the lyrics.
+        requestAnimationFrame(() => {
+            const height = Math.ceil(content.getBoundingClientRect().height) + 12;
+            if (!height || height === state.reportedHeight) return;
+            state.reportedHeight = height;
+            try {
+                if (window.pywebview && window.pywebview.api &&
+                    window.pywebview.api.resize_desktop_lyrics) {
+                    window.pywebview.api.resize_desktop_lyrics(height);
+                }
+            } catch (e) { /* ignore */ }
+        });
+    }
+
+    /**
+     * Draw the lyric text itself.
+     *
+     *  'solid'       - fully opaque glyphs (the default)
+     *  'translucent' - semi-transparent: the bubble shows through the
+     *                  letters, which reads well over a busy wallpaper
+     *  'transparent' - the glyphs are see-through and only the outline
+     *                  and shadow remain, so the desktop is clearly visible
+     *
+     * The style is applied to the container; the rows inherit it.
+     */
+    function applyTextStyle(style) {
+        const content = elements.content;
+        if (!content) return;
+        const mode = style || 'white';
+        content.dataset.textStyle = mode;
+        const css = content.style;
+        let rowOpacity = 1;
+        if (mode === 'transparent') {
+            css.webkitTextStroke = '1px rgba(255, 255, 255, 0.9)';
+            css.textShadow = '0 1px 3px rgba(0, 0, 0, 0.9), 0 0 10px rgba(0, 0, 0, 0.7)';
+            rowOpacity = 0.3;
+        } else if (mode === 'translucent') {
+            css.webkitTextStroke = '';
+            css.textShadow = '0 1px 3px rgba(0, 0, 0, 0.85)';
+            rowOpacity = 0.55;
+        } else {
+            css.webkitTextStroke = '';
+            css.textShadow = '';
+            rowOpacity = 1;
+        }
+        // The container's own opacity is the *window* opacity; the text style
+        // is applied to the rows, so the two do not multiply into something
+        // unreadable.
+        const r = rows();
+        if (r) {
+            ['prev', 'current', 'next', 'translation'].forEach((k) => {
+                if (r[k]) r[k].style.opacity = rowOpacity;
+            });
+        }
+    }
+
+    function applyBackgroundMode(mode) {
+        const content = elements.content;
+        if (!content) return;
+        content.dataset.background = mode || 'dark';
+        const style = content.style;
+        if (mode === 'none') {
+            style.background = 'transparent';
+            style.boxShadow = 'none';
+            style.backdropFilter = 'none';
+            style.webkitBackdropFilter = 'none';
+        } else if (mode === 'translucent') {
+            style.background = 'rgba(0, 0, 0, 0.28)';
+            style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.25)';
+            style.backdropFilter = 'blur(3px)';
+            style.webkitBackdropFilter = 'blur(3px)';
+        } else {
+            style.background = '';
+            style.boxShadow = '';
+            style.backdropFilter = '';
+            style.webkitBackdropFilter = '';
         }
     }
 
@@ -286,6 +408,12 @@
         }
 
         updateLyricsIndex(state.currentIndex);
+
+        // The content just grew (or shrank): the native window has to
+        // follow.  Without this the overlay kept its initial height and
+        // the lyrics were cut off -- the window is 120 px, but the content
+        // is 112 px at 18 px and 196 px at 36 px.
+        reportContentHeight();
     }
 
     function updateLyricsIndex(index) {

@@ -125,6 +125,16 @@ class UISettings:
     desktop_lyrics_color: str = "#ffffff"
     desktop_lyrics_opacity: float = 0.9
     desktop_lyrics_show_translation: bool = True
+    #: How the bubble behind the desktop lyrics is drawn:
+    #:   'dark'        - a solid dark pill (the default)
+    #:   'translucent' - a see-through pill, the desktop shows through
+    #:   'none'        - no bubble at all, just the text
+    desktop_lyrics_background: str = "dark"
+    #: How the lyric text itself is drawn:
+    #:   'transparent' - see-through glyphs, only the outline/shadow shows
+    #:   'translucent' - semi-transparent, the bubble shows through the text
+    #:   'white'       - pure white, fully opaque
+    desktop_lyrics_text_style: str = "white"
     #: Set once the user has accepted the disclaimer.  It is stored with the
     #: version that was shown, so a new disclaimer is shown again after an
     #: update that changes the text.
@@ -251,6 +261,12 @@ class Settings:
     def _normalize(self) -> None:
         """Re-apply the ranges and shapes a hand-edited file may have broken."""
         ui = self._data.ui
+        # An unknown value must fall back to the default, not be stored
+        # verbatim: the overlay only knows three modes.
+        if ui.desktop_lyrics_background not in ("dark", "translucent", "none"):
+            ui.desktop_lyrics_background = "dark"
+        if ui.desktop_lyrics_text_style not in ("transparent", "translucent", "white"):
+            ui.desktop_lyrics_text_style = "white"
         ui.background_blur = self._clamp_range(ui.background_blur, 0, 40, 24)
         ui.background_dim = self._clamp_range(ui.background_dim, 0, 80, 30)
         for flag in ("remember_window_size", "glass", "accent_from_background"):
@@ -424,6 +440,11 @@ class Settings:
         except Exception as exc:
             self.logger.warning("cannot store the background image: %s", exc)
             return ""
+        # Build the display-sized copy now, while the user is looking at the
+        # settings dialog.  Doing it on the first request instead would put
+        # the decode-and-resize into the app's request path, and the startup
+        # request would pay for it.
+        self._write_display_background(target)
         self.update_ui(background_image=target.name)
         return target.name
 
@@ -454,6 +475,26 @@ class Settings:
             self.logger.info("cannot re-encode the background image: %s", exc)
             return False
 
+    def _write_display_background(self, source: Path) -> None:
+        """Build the display-sized copy of the wallpaper.
+
+        The browser decodes an image at its full pixel size no matter how
+        small the CSS box is, so a 3600x2400 wallpaper costs the WebView
+        ~34 MB of RGBA pixels -- plus the blurred copy the compositor keeps
+        for the glass panels.  A 1920 px copy removes most of that, and the
+        CSS blur hides the difference.
+
+        The scaling itself lives in :meth:`src.core.mediaserver.MediaServer.scaled_background`
+        -- this only asks for it eagerly, so the first request does not pay
+        for the decode.
+        """
+        try:
+            from src.core.mediaserver import get_media_server
+
+            get_media_server().scaled_background(source)
+        except Exception as exc:
+            self.logger.info("cannot write the display wallpaper: %s", exc)
+
     def migrate_background_image(self) -> bool:
         """Re-encode a stored wallpaper that is still a full-size PNG.
 
@@ -482,6 +523,7 @@ class Settings:
             current.unlink()
         except OSError:
             pass
+        self._write_display_background(current.with_suffix(".jpg"))
         self.update_ui(background_image="background.jpg")
         self.logger.info("re-encoded the stored wallpaper to JPEG")
         return True

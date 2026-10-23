@@ -12,13 +12,21 @@
             const color = decodeURIComponent(params.get('color') || '#ffffff');
             const opacity = parseFloat(params.get('opacity') || '0.9');
             const showTranslation = params.get('showTranslation') !== 'false';
+            // 'dark' | 'translucent' | 'none' -- the bubble behind the text.
+            const background = ['dark', 'translucent', 'none']
+                .includes(params.get('background')) ? params.get('background') : 'dark';
+            // 'transparent' | 'translucent' | 'white' -- how the glyphs are drawn.
+            const textStyle = ['transparent', 'translucent', 'white']
+                .includes(params.get('textStyle')) ? params.get('textStyle') : 'white';
             
             // Store in localStorage for desktop-lyrics.js to read
             localStorage.setItem('ncm:desktop-lyrics:settings', JSON.stringify({
                 fontSize: fontSize,
                 color: color,
                 opacity: opacity,
-                showTranslation: showTranslation
+                showTranslation: showTranslation,
+                background: background,
+                textStyle: textStyle
             }));
         })();
     </script>
@@ -27,11 +35,21 @@
         html, body { height: 100%; overflow: hidden; background: transparent; }
         body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; user-select: none; }
         
+        /* The overlay window is 120 px tall, but the content inside it grows
+           with the font size (112 px at 18 px, 159 px at 28 px).  Anchoring
+           the bubble with `bottom: 80px` meant 80 of the 120 px were empty
+           below it and anything taller than 40 px overflowed off the *top*,
+           where the window clips it -- the lyrics looked "too high" and the
+           top line was cut off.
+
+           Centering the bubble vertically instead makes the overflow
+           symmetric, and the JS grows the window to fit the content so
+           nothing is clipped at all. */
         .desktop-lyrics-window {
             position: fixed;
-            bottom: 80px;
+            top: 50%;
             left: 50%;
-            transform: translateX(-50%);
+            transform: translate(-50%, -50%);
             z-index: 2147483647;
             pointer-events: none;
         }
@@ -57,6 +75,15 @@
             backdrop-filter: blur(8px);
             -webkit-backdrop-filter: blur(8px);
             transition: background-color 0.3s, color 0.3s, opacity 0.3s;
+        }
+        /* Without a bubble the text has to carry its own readability, so it
+           gets a shadow instead.  The JS switches these via the
+           `data-background` attribute on the content element. */
+        .desktop-lyrics-content[data-background="none"] {
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 12px rgba(0, 0, 0, 0.6);
+        }
+        .desktop-lyrics-content[data-background="translucent"] {
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
         }
         
         .lyric-lines {

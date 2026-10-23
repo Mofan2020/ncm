@@ -95,6 +95,16 @@
     --glass-edge: rgba(255, 255, 255, 0.9);
     --glass-blur: 0px;
 }
+/* Turning the glass off has to remove the backdrop filter **entirely**.
+   `blur(0px) saturate(200%)` still makes the engine snapshot the backdrop
+   and run it through the filter pipeline, which is the expensive part --
+   so a "blur radius of zero" saved nothing.  `none` is what actually
+   skips the work. */
+[data-glass="off"] .glass,
+[data-glass="off"] .now-playing-mobile .npm-controls {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
 [data-theme="dark"][data-glass="off"] {
     --surface: rgba(24, 26, 33, 0.97);
     --surface-strong: #1b1e26;

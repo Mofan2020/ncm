@@ -685,6 +685,22 @@
                         <span data-i18n="settings.desktop_lyrics_opacity"> <span id="desktop-lyrics-opacity-value" class="muted"></span></span>
                         <input type="range" id="desktop-lyrics-opacity" min="0.1" max="1" step="0.05" value="0.9">
                     </label>
+                    <label class="option">
+                        <span data-i18n="settings.desktop_lyrics_background"></span>
+                        <select id="desktop-lyrics-background">
+                            <option value="dark" data-i18n="settings.desktop_lyrics_background_dark"></option>
+                            <option value="translucent" data-i18n="settings.desktop_lyrics_background_translucent"></option>
+                            <option value="none" data-i18n="settings.desktop_lyrics_background_none"></option>
+                        </select>
+                    </label>
+                    <label class="option">
+                        <span data-i18n="settings.desktop_lyrics_text_style"></span>
+                        <select id="desktop-lyrics-text-style">
+                            <option value="transparent" data-i18n="settings.desktop_lyrics_text_style_transparent"></option>
+                            <option value="translucent" data-i18n="settings.desktop_lyrics_text_style_translucent"></option>
+                            <option value="white" data-i18n="settings.desktop_lyrics_text_style_white"></option>
+                        </select>
+                    </label>
                     <label class="option checkbox">
                         <input type="checkbox" id="desktop-lyrics-translation-check" checked>
                         <span data-i18n="settings.desktop_lyrics_show_translation"></span>
@@ -778,6 +794,7 @@
                     <dl class="cache-stats" id="cache-stats">
                         <dt data-i18n="cache.audio"></dt><dd id="cache-audio">--</dd>
                         <dt data-i18n="cache.cover"></dt><dd id="cache-cover">--</dd>
+                        <dt data-i18n="cache.meta"></dt><dd id="cache-meta">--</dd>
                         <dt data-i18n="cache.total"></dt><dd id="cache-total">--</dd>
                     </dl>
                     <div class="cache-actions">
@@ -787,6 +804,11 @@
                                 data-i18n="cache.clear_cover"></button>
                         <button class="btn btn-ghost" type="button" id="btn-clear-all"
                                 data-i18n="cache.clear_all"></button>
+                    </div>
+                    <div class="cache-actions cache-force">
+                        <button class="btn btn-danger" type="button" id="btn-force-refresh"
+                                data-i18n="settings.cache_force_refresh"
+                                data-i18n-title="settings.cache_force_refresh_hint"></button>
                     </div>
                 </div>
                 <div class="about">

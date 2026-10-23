@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import platform
 import re
 import subprocess
@@ -161,7 +162,7 @@ class GuiBridge:
 
     # -------------------------------------------------------------------- about
     def get_app_info(self) -> dict[str, Any]:
-        return {
+        info = {
             "name": APP_DISPLAY_NAME,
             "version": __version__,
             "author": AUTHOR,
@@ -173,6 +174,15 @@ class GuiBridge:
             "download_dir": self._download_dir(),
             "max_concurrent": MAX_CONCURRENT,
         }
+        # The loopback base URL of the media server.  The webview needs it
+        # to build cover URLs on its own: asking the backend for every
+        # cover meant one IPC round-trip per image, so the album art
+        # flickered and every launch re-resolved the whole list.
+        media = getattr(self, "media", None)
+        base_url = getattr(media, "base_url", None) if media is not None else None
+        if base_url:
+            info["media_base_url"] = base_url
+        return info
 
     def open_external(self, url: str) -> bool:
         if not isinstance(url, str) or not url.startswith(("http://", "https://")):
@@ -238,6 +248,12 @@ class GuiBridge:
             },
             "ui": {
                 "language": self.settings.ui.language,
+                "desktop_lyrics_font_size": self.settings.ui.desktop_lyrics_font_size,
+                "desktop_lyrics_color": self.settings.ui.desktop_lyrics_color,
+                "desktop_lyrics_opacity": self.settings.ui.desktop_lyrics_opacity,
+                "desktop_lyrics_show_translation": self.settings.ui.desktop_lyrics_show_translation,
+                "desktop_lyrics_background": self.settings.ui.desktop_lyrics_background,
+                "desktop_lyrics_text_style": self.settings.ui.desktop_lyrics_text_style,
                 "theme": self.settings.ui.theme,
                 "remember_window_size": self.settings.ui.remember_window_size,
                 "background_image": self.settings.ui.background_image,
@@ -265,7 +281,13 @@ class GuiBridge:
                 self.settings.update_ui(**self._clean(data, {
                     "language", "theme", "remember_window_size", "background_image",
                     "background_blur", "background_dim", "glass",
-                    "accent_from_background"}))
+                    "accent_from_background",
+                    # The desktop-lyrics options are part of the UI settings
+                    # too; without them in the allowlist they were silently
+                    # dropped and never persisted.
+                    "desktop_lyrics_font_size", "desktop_lyrics_color",
+                    "desktop_lyrics_opacity", "desktop_lyrics_show_translation",
+                    "desktop_lyrics_background", "desktop_lyrics_text_style"}))
                 if "language" in data:
                     self.i18n.set_language(str(data["language"]))
                 if "theme" in data:
@@ -1734,6 +1756,8 @@ class GuiBridge:
                 "color": color,
                 "opacity": opacity,
                 "showTranslation": show_translation,
+                "background": ui.desktop_lyrics_background,
+                "textStyle": ui.desktop_lyrics_text_style,
             })
 
             # Same reasoning as the main window: prefer the loopback server so a
@@ -1821,18 +1845,99 @@ class GuiBridge:
         return {"success": True, "open": True}
 
     # ---------------------------------------------------------------- cache
+    def force_refresh(self) -> dict[str, Any]:
+        """Clear every cache and restart the app.
+
+        The escape hatch: if a cache ever holds something stale enough to
+        make the app unusable, this wipes it and starts over.  It clears the
+        metadata cache, the media cache (audio + covers), the in-memory
+        response caches and the resolved-URL cache, then relaunches.
+
+        The app is restarted rather than just cleared because some state
+        (the media server's port, the webview's loaded page) has already
+        been built from the cached data.
+        """
+        cleared = {"meta": 0, "media": 0}
+        try:
+            from src.core.metacache import get_meta_cache
+
+            cleared["meta"] = get_meta_cache().clear()
+        except Exception as exc:
+            self.logger.info("cannot clear the metadata cache: %s", exc)
+        try:
+            # forget_online drops the resolved-URL cache and every cached
+            # audio file in one go.
+            self.media.forget_online(None)
+            cleared["media"] = 1
+        except Exception as exc:
+            self.logger.info("cannot clear the media cache: %s", exc)
+        try:
+            self.api.clear_playlist_cache()
+            self.api.clear_response_cache()
+        except Exception as exc:
+            self.logger.info("cannot clear the response caches: %s", exc)
+        # Relaunch: the current process is about to be replaced.
+        self._relaunch()
+        return {"success": True, "cleared": cleared}
+
+    def _relaunch(self) -> None:
+        """Restart the app, replacing this process.
+
+        The new instance must not fight the old one for the media server's
+        port, so the old process only exits *after* the new one is up: the
+        media server binds a random free port (port 0), so the two never
+        collide.
+        """
+        import subprocess
+        import sys
+
+        try:
+            if getattr(sys, "frozen", False):
+                # A packaged build: the binary is the app.
+                args = [sys.executable]
+                cwd = Path(sys.executable).resolve().parent
+            else:
+                # A source checkout: run the same entry point main.py uses.
+                root = Path(__file__).resolve().parents[2]
+                args = [sys.executable, str(root / "main.py")]
+                cwd = root
+            subprocess.Popen(args, cwd=str(cwd), close_fds=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            self.logger.warning("cannot relaunch: %s", exc)
+            return
+        # Give the new process a moment, then get out of the way.
+        threading.Timer(2.0, self._quit).start()
+
+    def _quit(self) -> None:
+        try:
+            if self._window is not None:
+                self._window.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
     def get_cache_stats(self) -> dict[str, Any]:
-        """How much disk the media cache is using (audio + cover art)."""
+        """How much disk the caches are using (audio, cover art, metadata)."""
         try:
             from src.core.cache import get_media_cache
+            from src.core.metacache import get_meta_cache
 
-            return {"success": True, **get_media_cache().stats()}
+            media = get_media_cache().stats()
+            meta = get_meta_cache().stats()
+            meta_bytes = sum(meta.get(kind, {}).get("bytes", 0)
+                             for kind in ("meta", "lyric", "playlist"))
+            meta_count = sum(meta.get(kind, {}).get("count", 0)
+                             for kind in ("meta", "lyric", "playlist"))
+            return {"success": True, **media,
+                    "meta_bytes": meta_bytes, "meta_count": meta_count,
+                    "meta": meta}
         except Exception as exc:  # pragma: no cover - defensive
             self.logger.info("cache stats failed: %s", exc)
             return {"success": False}
 
     def clear_cache(self, what: str = "all") -> dict[str, Any]:
-        """Drop cached audio, cover art, or both.
+        """Drop cached audio, cover art, metadata, or all of them.
 
         Nothing here is user data: every file is re-downloadable, so clearing
         is always safe.  It is the one lever a user has on the app's local
@@ -1840,6 +1945,7 @@ class GuiBridge:
         """
         try:
             from src.core.cache import get_media_cache
+            from src.core.metacache import get_meta_cache
 
             cache = get_media_cache()
             removed = 0
@@ -1847,7 +1953,9 @@ class GuiBridge:
                 removed += cache.forget_audio()
             if what in ("all", "cover"):
                 removed += _purge_directory(cache.cover_dir)
-            return {"success": True, "removed": removed, **cache.stats()}
+            if what in ("all", "meta"):
+                removed += get_meta_cache().clear()
+            return {"success": True, "removed": removed, **self.get_cache_stats()}
         except Exception as exc:  # pragma: no cover - defensive
             self.logger.info("cache clear failed: %s", exc)
             return {"success": False, "removed": 0}
@@ -1956,6 +2064,30 @@ class GuiBridge:
             return {"success": True}
         except Exception as exc:
             self.logger.debug("desktop lyrics push failed: %s", exc)
+            return {"success": False, "reason": str(exc)}
+
+    def resize_desktop_lyrics(self, height: int) -> dict[str, Any]:
+        """Grow the overlay window so the lyric text is not clipped.
+
+        The window is created at a fixed height, but the content inside it
+        scales with the font size.  A window that is too short clips the
+        text, and because the bubble was anchored at the bottom the clipped
+        part was the top line -- the lyrics looked "too high" and cut off.
+        The overlay measures its own content and asks for the height it
+        needs.
+        """
+        target = self._desktop_lyrics_window
+        if target is None:
+            return {"success": False, "reason": "desktop_lyrics_window_closed"}
+        try:
+            wanted = max(80, min(400, int(height)))
+            current = getattr(target, "height", None)
+            if current is None or int(current) == wanted:
+                return {"success": True, "height": wanted}
+            target.height = wanted
+            return {"success": True, "height": wanted}
+        except Exception as exc:
+            self.logger.debug("desktop lyrics resize failed: %s", exc)
             return {"success": False, "reason": str(exc)}
 
     def update_desktop_lyrics_settings(self, settings: dict[str, Any]) -> dict[str, Any]:

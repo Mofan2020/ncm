@@ -68,6 +68,13 @@ def _reset_stores() -> None:
 
     cache_module._instance = None
 
+    # The metadata cache is a singleton too.  Without this a lyric fetched
+    # by one test was served from disk by the next one, which made the
+    # lyrics tests fail for reasons that had nothing to do with the code.
+    from src.core import metacache as metacache_module
+
+    metacache_module._instance = None
+
 
 @pytest.fixture()
 def isolated_home(tmp_path, monkeypatch):

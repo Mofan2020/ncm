@@ -62,12 +62,31 @@ def test_a_small_wallpaper_keeps_its_size(settings, tmp_path):
 
 
 def test_the_old_wallpaper_is_replaced_not_kept(settings, tmp_path):
+    """A second wallpaper replaces the first one -- only one is kept.
+
+    The display-sized copy (``background.display.jpg``) is a derived file,
+    not a wallpaper, so it is allowed to sit next to it.
+    """
     source = _write_png(tmp_path / "wallpaper.png")
     settings.set_background_image(source)
     name = settings.set_background_image(source)
     stored = settings.config_path.parent / name
-    leftovers = [p for p in stored.parent.glob("background.*") if p != stored]
+    leftovers = [
+        p for p in stored.parent.glob("background.*")
+        if p != stored and ".display." not in p.name
+    ]
     assert leftovers == [], leftovers
+
+
+def test_the_display_copy_is_built_next_to_the_wallpaper(settings, tmp_path):
+    """The display-sized copy is written when the wallpaper is set."""
+    source = _write_png(tmp_path / "wallpaper.png", (2400, 1600))
+    name = settings.set_background_image(source)
+    stored = settings.config_path.parent / name
+    display = stored.parent / "background.display.jpg"
+    assert display.is_file()
+    with Image.open(display) as image:
+        assert max(image.size) <= 1920
 
 
 def test_setting_a_background_records_its_name(settings, tmp_path):

@@ -51,6 +51,15 @@ MAX_COVER_ENTRY_BYTES = 4 * 1024 * 1024
 #: How many resolved CDN urls we remember (they expire after :data:`URL_TTL`).
 MAX_CACHED_URLS = 512
 
+#: The wallpaper is served scaled to this many pixels on the long edge.
+#: A 4K display is 3840; going bigger only costs memory.  The CSS applies
+#: its own blur on top, which hides the difference.
+BACKGROUND_DISPLAY_EDGE = 1920
+
+#: JPEG quality for the display-sized wallpaper.  It is blurred and dimmed
+#: on screen, so 80 is indistinguishable from 95 and a third of the bytes.
+BACKGROUND_DISPLAY_QUALITY = 80
+
 log = logging.getLogger("ncm.media")
 
 
@@ -315,10 +324,26 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_cover_bytes(data, mime, send_body)
 
     def _background(self, send_body: bool) -> None:
+        """Serve the wallpaper, downscaled to what the UI can actually show.
+
+        The stored wallpaper is up to 3840 px wide.  The window is at most
+        that many pixels across, but the browser **decodes the image at its
+        full size** before CSS scales it down: a 3600x2400 JPEG becomes
+        ~34 MB of RGBA pixels in the WebView's memory, on top of the blurred
+        copy the compositor has to keep.
+
+        So the server scales it once, on disk, next to the original, and
+        serves the smaller file.  The full-resolution original stays on disk
+        (it is the user's file) and the scaled copy is regenerated whenever
+        the original changes.
+        """
         path = self.media.background_path()
         if path is None or not path.is_file():
             self._error(404, "no background")
             return
+        scaled = self.media.scaled_background(path)
+        if scaled is not None:
+            path = scaled
         self._stream_file(path, _content_type_for(path), send_body)
 
     def _send_cover_bytes(self, data: bytes, mime: str, send_body: bool) -> None:
@@ -700,6 +725,50 @@ class MediaServer:
             return self._background_provider()
         except Exception as exc:  # pragma: no cover - provider is ours
             log.debug("background provider failed: %s", exc)
+            return None
+
+    def scaled_background(self, source: Path) -> Path | None:
+        """A display-sized copy of the wallpaper, or ``None`` to use the original.
+
+        The browser decodes an image at its full pixel size no matter how
+        small the CSS box is, so serving a 3600x2400 wallpaper costs the
+        WebView ~34 MB of RGBA pixels -- plus the blurred copy the compositor
+        keeps for the glass panels.  Scaling it down to the window size first
+        removes most of that.
+
+        The scaled copy is written next to the original as
+        ``<name>.display.jpg`` and reused until the original changes.  The
+        user's full-resolution file is never modified.
+        """
+        try:
+            stat = source.stat()
+        except OSError:
+            return None
+        try:
+            from PIL import Image
+        except ImportError:
+            return None
+
+        target = source.with_name(f"{source.stem}.display.jpg")
+        try:
+            # Reuse the scaled copy only while it matches the original.
+            if target.is_file() and target.stat().st_mtime >= stat.st_mtime:
+                return target
+            with Image.open(source) as image:
+                image = image.convert("RGB")
+                longest = max(image.size)
+                if longest > BACKGROUND_DISPLAY_EDGE:
+                    scale = BACKGROUND_DISPLAY_EDGE / longest
+                    image = image.resize(
+                        (max(1, round(image.width * scale)),
+                         max(1, round(image.height * scale))),
+                        Image.LANCZOS,
+                    )
+                image.save(target, "JPEG", quality=BACKGROUND_DISPLAY_QUALITY,
+                           optimize=True, progressive=True)
+            return target
+        except Exception as exc:
+            log.info("cannot scale the wallpaper: %s", exc)
             return None
 
     def resolve_online(self, song_id: str, quality: str, *, force: bool = False) -> str | None:

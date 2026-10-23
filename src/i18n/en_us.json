@@ -492,7 +492,18 @@
     "output_device": "Output device",
     "output_device_hint": "Select audio output device (browser support required)",
     "playback_speed": "Playback speed",
-    "playback_speed_hint": "0.5x - 2.0x, useful for podcasts/audiobooks"
+    "playback_speed_hint": "0.5x - 2.0x, useful for podcasts/audiobooks",
+    "desktop_lyrics_background": "Background",
+    "desktop_lyrics_background_dark": "Dark",
+    "desktop_lyrics_background_translucent": "Translucent",
+    "desktop_lyrics_background_none": "Text only",
+    "desktop_lyrics_text_style": "Text style",
+    "desktop_lyrics_text_style_transparent": "Transparent",
+    "desktop_lyrics_text_style_translucent": "Translucent",
+    "desktop_lyrics_text_style_white": "Pure white",
+    "cache_force_refresh": "Force refresh",
+    "cache_force_refresh_hint": "Clear every cache and restart the app",
+    "cache_force_refresh_confirm": "This clears every cache and restarts the app. Continue?"
   },
   "status": {
     "ready": "Ready",
@@ -591,6 +602,7 @@
     "clear_all": "Clear all",
     "cleared": "Cleared {count} files",
     "clear_failed": "Could not clear the cache, try again later",
-    "confirm": "Clear the cache?"
+    "confirm": "Clear the cache?",
+    "meta": "Song info"
   }
 }
