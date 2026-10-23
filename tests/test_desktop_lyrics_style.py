@@ -45,6 +45,27 @@ def test_the_resize_call_reaches_the_backend(overlay_js):
     assert "resize_desktop_lyrics" in overlay_js
 
 
+def test_the_window_leaves_room_for_the_drag_handle(overlay_js):
+    """The handle sits 10px above the bubble; the window must fit it.
+
+    The bubble is centred in the window, so the slack above it is
+    ``(height - content) / 2``.  The handle needs 10px of it, so the
+    window has to be at least 20px taller than the content.
+    """
+    body = overlay_js[overlay_js.index("function reportContentHeight"):
+                      overlay_js.index("function applyTextStyle")]
+    assert "+ 24" in body, (
+        "the reported height must leave room for the drag handle")
+
+
+def test_the_lyrics_fit_inside_the_reported_height(overlay_js):
+    """The content must not be taller than the window that was asked for."""
+    body = overlay_js[overlay_js.index("function reportContentHeight"):
+                      overlay_js.index("function applyTextStyle")]
+    assert "getBoundingClientRect().height" in body
+    assert "Math.ceil" in body
+
+
 # --------------------------------------------------------------- text styles
 def test_three_text_styles_are_supported(overlay_js):
     for mode in ("transparent", "translucent", "white"):

@@ -123,7 +123,11 @@
         // box in the same tick as the DOM change gives the *old* height,
         // which is how the window ended up a frame behind the lyrics.
         requestAnimationFrame(() => {
-            const height = Math.ceil(content.getBoundingClientRect().height) + 12;
+            // The wrapper is centred in the window, so the space above it
+            // is (height - content) / 2.  The drag handle reaches 10px
+            // above the wrapper, so the window needs 20px of slack or the
+            // handle gets clipped in half.
+            const height = Math.ceil(content.getBoundingClientRect().height) + 24;
             if (!height || height === state.reportedHeight) return;
             state.reportedHeight = height;
             try {
