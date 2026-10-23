@@ -864,7 +864,7 @@ WebView 的 WebContent 进程（那不是我们能控制的）。
 
 ---
 
-## 缓存、桌面歌词与性能（2026-10-23）
+## 13. 缓存、桌面歌词与性能（2026-10-23）
 
 ### 内存：实测结论是「没什么可省」
 
@@ -955,7 +955,7 @@ URL 缓存键 `(song_id, quality)`），所以**改音质天然切到另一份�
 
 ---
 
-## 歌词区域：居中、空状态、双行与逐字（2026-10-23）
+## 14. 歌词区域：居中、空状态、双行与逐字（2026-10-23）
 
 ### 歌词整体偏下的根因
 
@@ -1002,3 +1002,18 @@ URL 缓存键 `(song_id, quality)`），所以**改音质天然切到另一份�
 现在滚动由自己的定时器缓动（`smoothScrollTo`，16 ms 步进、easeOutCubic、
 新目标取消旧动画），桌面歌词的高度上报同时挂 rAF 和 setTimeout。
 这条对**所有**平台都更稳：reduced-motion、无头、掉帧都不会让歌词停在原地。
+
+---
+
+## 15. v3.4.0 发布（2026-10-23）
+
+版本 `3.3.0` → `3.4.0`（新增缓存面板、强制刷新、桌面歌词文字样式，属功能增量，
+按 minor 走）。tag `v3.4.0` 触发 CI，五个 job 全绿，产物 6 个，**按 prerelease 发布**，
+等实测确认后再 `gh release edit v3.4.0 --prerelease=false`。
+
+release notes 由手工撰写后 `--notes-file` 写入，不用 `--generate-notes`。
+
+**这一版踩到的一点：** `gh release view --json ...` 偶发返回 `release not found`，
+紧接着 `gh release list` 能正常列出同一个 tag，`gh run view` 中途也报过 HTTP 502 —— 都是
+GitHub API 的瞬时抖动，隔几秒重试即恢复。判断发布是否成功以 `gh release list` 为准，
+不要因为一次 `view` 失败就以为 release 没建出来。
