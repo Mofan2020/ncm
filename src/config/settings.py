@@ -39,6 +39,18 @@ BACKGROUND_IMAGE = "background"
 #: Extensions accepted for a background image, in preference order.
 BACKGROUND_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic")
 
+#: The wallpaper is shown blurred and dimmed behind a glass panel, so
+#: storing more pixels than this buys nothing.  3840 px covers a 4K
+#: display at native resolution.
+BACKGROUND_MAX_EDGE = 3840
+#: JPEG quality for the stored wallpaper.  88 is visually lossless for
+#: a blurred background and roughly a twentieth of the PNG size.
+BACKGROUND_JPEG_QUALITY = 88
+
+#: A stored PNG above this size is re-encoded at startup.  Below it the
+#: saving is not worth the risk of touching the user's file.
+BACKGROUND_REWRITE_THRESHOLD = 2 * 1024 * 1024
+
 
 def default_download_dir() -> Path:
     """Where downloads go unless the user picks something else."""
@@ -385,6 +397,12 @@ class Settings:
         Passing ``None`` (or an unreadable path) removes the wallpaper.  Copies
         instead of referencing, so the wallpaper survives the original being
         moved or deleted, and travels with a config backup.
+
+        The copy is **downscaled and re-encoded**.  A 3600x2400 RGBA PNG is
+        23 MB in the config directory, and the app only ever shows the image
+        blurred and dimmed behind a glass panel -- the extra pixels cost disk
+        and decoding time for nothing.  Stored as JPEG at the display size,
+        the same wallpaper is under 1 MB.
         """
         directory = self._config_path.parent
         if source is None:
@@ -394,22 +412,79 @@ class Settings:
             src = Path(source).expanduser()
             if not src.is_file():
                 raise FileNotFoundError(str(src))
-            extension = src.suffix.lower()
-            if extension not in BACKGROUND_EXTENSIONS:
-                extension = ".jpg"
-            target = directory / f"{BACKGROUND_IMAGE}{extension}"
+            target = directory / f"{BACKGROUND_IMAGE}.jpg"
             for old in directory.glob(f"{BACKGROUND_IMAGE}.*"):
                 if old != target:
                     try:
                         old.unlink()
                     except OSError:
                         pass
-            shutil.copyfile(src, target)
+            if not self._write_background(src, target):
+                shutil.copyfile(src, target)
         except Exception as exc:
             self.logger.warning("cannot store the background image: %s", exc)
             return ""
         self.update_ui(background_image=target.name)
         return target.name
+
+    def _write_background(self, src: Path, target: Path) -> bool:
+        """Downscale ``src`` into ``target`` as a JPEG.  False if PIL is absent.
+
+        PIL is not a direct dependency (it comes in with ``qrcode[pil]``), so
+        the caller falls back to a plain copy when it is not importable.
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            return False
+        try:
+            with Image.open(src) as image:
+                image = image.convert("RGB")
+                if max(image.size) > BACKGROUND_MAX_EDGE:
+                    scale = BACKGROUND_MAX_EDGE / max(image.size)
+                    image = image.resize(
+                        (max(1, round(image.width * scale)),
+                         max(1, round(image.height * scale))),
+                        Image.LANCZOS,
+                    )
+                image.save(target, "JPEG", quality=BACKGROUND_JPEG_QUALITY,
+                           optimize=True, progressive=True)
+            return True
+        except Exception as exc:
+            self.logger.info("cannot re-encode the background image: %s", exc)
+            return False
+
+    def migrate_background_image(self) -> bool:
+        """Re-encode a stored wallpaper that is still a full-size PNG.
+
+        Wallpapers saved before the downscale existed are still the original
+        files -- a 23 MB PNG for an image the app blurs anyway.  This runs
+        once at startup and rewrites them in place; it is a no-op for a
+        wallpaper that is already a JPEG or already small.
+
+        Returns True when something was rewritten.
+        """
+        current = self.background_path()
+        if current is None or current.suffix.lower() != ".png":
+            return False
+        try:
+            if current.stat().st_size <= BACKGROUND_REWRITE_THRESHOLD:
+                return False
+        except OSError:
+            return False
+        try:
+            if not self._write_background(current, current.with_suffix(".jpg")):
+                return False
+        except Exception as exc:
+            self.logger.info("cannot re-encode the stored wallpaper: %s", exc)
+            return False
+        try:
+            current.unlink()
+        except OSError:
+            pass
+        self.update_ui(background_image="background.jpg")
+        self.logger.info("re-encoded the stored wallpaper to JPEG")
+        return True
 
     def clear_background_image(self) -> None:
         directory = self._config_path.parent

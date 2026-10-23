@@ -656,3 +656,102 @@ http://127.0.0.1:49336/m/mx0-QDM0BOwzSd2qykYYww/ui/index.html?theme=dark&...
 
 CI 那边还跑了一个额外的验证：`Smoke test the .exe` + `Run the app from a non-ASCII path` —— Windows 产物在非 ASCII 路径下真的能启动。
 
+---
+
+## 10. 已知问题：Windows 端播放页偶现排版异常（2026-10-22）
+
+### 现象
+
+Windows 上多次启动后，**播放页面**的排版突然异常。窗口是最大化的。macOS 端暂未确认复现。
+
+### 现状
+
+**偶现，无法给出稳定的复现步骤。** 星空喵判断它对正常使用影响不强，决定先转正式版、后续再修。因此 v3.3.0 已按正式版发布（`gh release edit v3.3.0 --prerelease=false`），这个问题**没有**在 release notes 里写 —— 它是未验证、未定位的偶发问题，写进公开说明等于给用户一个没有答案的疑问。
+
+### 已知线索（还没验证）
+
+「多次启动后开始出现」这句话很关键，指向**跨次启动残留的状态**，而不是随机的布局抖动：
+
+- `settings.yaml` 里持久化的字段（窗口尺寸、主题、壁纸、玻璃效果、播放器状态）会跨启动保留。最大化窗口 + 某次保存的尺寸组合，可能在下次启动时和当前的 CSS 布局前提冲突。
+- 播放器状态走 `src/core/library.py` 的 session resume：退出时记住队列、当前曲目、进度。下次启动 `restoreSession()` 会把队列灌回来 —— 如果灌回来的行数和虚拟滚动的窗口计算不一致，排版就会错位。
+- 虚拟滚动（`mountVirtualTrackList`）依赖 `.list-area` 的 `clientHeight` / `offsetTop`。窗口最大化时它的值和未最大化时不同，缓存下来的某个尺寸一旦被复用，就会算出错误的窗口。
+- `ResizeObserver` 只在 `mountVirtualTrackList` 里挂了，且绑在 `scroller` 上。窗口尺寸变化会触发它，但如果此时 `renderTrackList()` 正在跑，就会重入。
+
+### 下一步怎么查
+
+需要一个能复现的抓手，否则改什么都是猜。三个方向，按性价比排：
+
+1. **先分辨是哪一类排版异常。** 文字重叠？行高塌陷？列宽错位？还是整个播放页布局散架？截图比描述有用得多 —— 让星空喵下次遇到时截一张。
+2. **跨启动状态的嫌疑最大** → 让用户试一次：删掉 config 目录（`~/Library/Application Support/NeteaseMusicDownloader` 或 Windows 上的对应路径）再启动。如果不再出现，就是持久化状态的问题，不是渲染的问题。这个测试成本最低、结论最硬。
+3. **如果和 session resume 有关** → 启动后立刻切换到别的 tab 再切回播放页。如果复现，就和 restoreSession 的时序有关（队列灌回来和虚拟列表 mount 的先后）。
+
+在拿到 (1) 或 (2) 之前不动代码 —— 这个项目刚发完正式版，没有复现路径的改动就是在猜。
+
+---
+
+## 11. 性能实测（2026-10-22）
+
+不是估计，是在这台机器上跑出来的数。环境：macOS 27.2，M2 / 8GB，Python 3.14.7（项目自己的 `.venv`）。
+
+### 启动
+
+| 阶段 | 耗时 |
+|---|---|
+| `import main`（全部 156 个模块） | **41 ms** |
+| 读 settings | 28 ms |
+| import `src.gui.bridge` | 79–214 ms（首次 214 ms，含 `requests` / `webview` / `yaml`） |
+| 媒体服务器起端口 | **2.9 ms** |
+| 首屏 UI 资源取回（5 个文件，387 KB） | **19.7 ms**（index.html 12.7 / app.js 2.3 / icons.js 1.4 / style.css 1.5） |
+
+**结论：启动不是 import 瓶颈。** 最大的单项是 `requests`（含 `urllib3` + `chardet` + `charset_normalizer`），但它本来就要用；`yaml` 7 ms。把这 41 ms 砍到 20 ms 对一个要联网、要起 WebView 的桌面应用没有意义。真正决定「打开多久能用」的是网络请求，不是 import。
+
+import 之后那 214 ms 里有一次明显的分叉：bridge 的 import 链把 `requests`、`webview`、`yaml` 全拉进来。第一版 PyInstaller 打包时它们就都在包里，所以**运行时不付这个钱** —— 付钱的是打包体积。
+
+### 内存
+
+- Python 进程常驻：**52.5 MB**（已拉起媒体服务器 + 缓存完一个 200 首的歌单）
+- 纯 import 完（还没建 bridge）：41.1 MB
+- 也就是说**整个后端的常驻内存不到 55 MB**。
+
+WebView 是另一个进程（WKWebView / WebView2），不在这 52.5 MB 里。
+
+### 磁盘
+
+| 位置 | 实测 | 说明 |
+|---|---|---|
+| `src/`（打包进 app 的全部代码 + UI） | **2.4 MB** | 其中 UI 资源 387 KB |
+| 打包产物 | macOS dmg 17–20 MB / Windows exe 19 MB | 含 Python 运行时 |
+| 本地配置目录 | 34 MB | **其中壁纸 23 MB** |
+| 本地缓存 | 11 MB | 22 张封面 10.4 MB |
+| 日志 | 1.5 MB 上限 | `RotatingFileHandler` 512 KB × 3 |
+
+### 这轮实际改掉的：壁纸
+
+**23 MB 的 PNG 存进了配置目录**，而这个图在应用里是要模糊 + 压暗 + 垫在毛玻璃后面的 —— 多出来的像素一点用都没有。3600×2400 的 RGBA PNG 就是这个体积。
+
+改成存 JPEG：同样 3600×2400，**22.7 MB → 3.09 MB**（JPEG q=88，progressive），编码耗时 352 ms（一次性，只在换壁纸时）。超过 3840 px 的会等比缩小。
+
+老用户怎么办？`Settings.migrate_background_image()` 在启动时跑一次：发现存的是超过 2 MB 的 PNG 就原地改写成 JPEG，删掉旧的，改 `settings.yaml` 里的文件名。已经是 JPEG 的、或体积不大的，不动。
+
+`tests/test_background_image.py` 10 项锁住这个行为。
+
+### 没动的（和理由）
+
+- **缓存上限**（2 GB 音频 / 256 MB 封面）：本机实测只用了 11 MB，没碰到上限。UI 里能一键清空了（上一轮做的），比让用户填数字实际。
+- **`app.js` 232 KB / 5983 行**：单文件 IIFE，没有组件拆分。这是**结构问题不是性能问题** —— 真要拆是重写，不是优化。而且它压缩后只有 ~60 KB，走本地 HTTP server，19.7 ms 取完全部 UI 资源。
+- **WebView 侧的 DOM 节点数**：200 首以上的歌单走虚拟滚动，只渲染可视窗口那十几行。已经在做了。
+- **import 优化**：41 ms，不值得。
+- **启动时预取歌单 / 图片懒加载**：会改变首屏行为（先看到空列表再看到内容），风险高于收益，没做。
+
+### Android 要接着做的话
+
+已有的基础：`style.css` 有一整套 `max-width: 720px` 的移动端样式 —— token 覆盖（更大的圆角、更软的玻璃）、header 收窄、侧栏变抽屉（带 `env(safe-area-inset-*)`）、全屏 now-playing 视图。`app.js` 里有 `initMobileLayout()` 和 `npm-*` 那套全屏播放控件。
+
+**但那套是「桌面窗口缩窄」的响应式，不是「手机应用」的原生体验。** 真要做 Android，还差：触摸手势（滑动切歌、长按菜单）、底部导航栏替代顶部 tab、安全区适配刘海屏、后台播放与通知栏控制、离线状态。**不能直接把 pywebview 打包成 APK** —— pywebview 只有桌面后端（WinForms / GTK / Cocoa / Qt），没有 Android 后端。
+
+两条路：
+1. **Capacitor / Tauri 壳 + 复用现有前端**：`src/gui/assets/` 的 HTML/CSS/JS 本身是响应式的，能复用大部分；Python 后端要么改成 HTTP API 让壳去调（但那会动到整个 bridge），要么用 WebView + 本地服务。改动集中，但要重新设计前后端边界。
+2. **Kotlin / Compose 原生重写**：Android 体验最好，但等于重写一遍，Python 的 eapi 签名、歌词解析、媒体缓存逻辑全要翻成 Kotlin。
+
+等星空喵定方向再动。
+

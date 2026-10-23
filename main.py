@@ -393,6 +393,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # Re-encode a wallpaper that was stored before the downscale existed.  It
+    # is a no-op for everyone else, and it runs before the media server starts
+    # so the first paint already serves the smaller file.
+    try:
+        settings.migrate_background_image()
+    except Exception as exc:  # pragma: no cover - defensive
+        log.info("wallpaper migration failed: %s", exc)
+
     # Unpack the asset archive on Windows before anything resolves a resource
     # path.  No-op on macOS and from source, so the macOS startup path is
     # unchanged.
