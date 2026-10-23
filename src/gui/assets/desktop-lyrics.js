@@ -122,7 +122,7 @@
         // Measure after the browser has laid the new text out: reading the
         // box in the same tick as the DOM change gives the *old* height,
         // which is how the window ended up a frame behind the lyrics.
-        requestAnimationFrame(() => {
+        const measure = () => {
             // The wrapper is centred in the window, so the space above it
             // is (height - content) / 2.  The drag handle reaches 10px
             // above the wrapper, so the window needs 20px of slack or the
@@ -136,17 +136,23 @@
                     window.pywebview.api.resize_desktop_lyrics(height);
                 }
             } catch (e) { /* ignore */ }
-        });
+        };
+        // Both, on purpose: the frame callback measures after layout (the
+        // accurate value), the timer covers the case where frames stop
+        // being delivered (an occluded window), where the overlay would
+        // otherwise keep its initial height and clip the lyrics.
+        requestAnimationFrame(measure);
+        setTimeout(measure, 0);
     }
 
     /**
      * Draw the lyric text itself.
      *
-     *  'solid'       - fully opaque glyphs (the default)
-     *  'translucent' - semi-transparent: the bubble shows through the
-     *                  letters, which reads well over a busy wallpaper
      *  'transparent' - the glyphs are see-through and only the outline
      *                  and shadow remain, so the desktop is clearly visible
+     *  'translucent' - semi-transparent: the bubble shows through the
+     *                  letters, which reads well over a busy wallpaper
+     *  'white'       - pure white, fully opaque (the default)
      *
      * The style is applied to the container; the rows inherit it.
      */

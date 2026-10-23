@@ -565,10 +565,40 @@ input[type="range"]::-webkit-slider-thumb {
 .lyrics {
     flex: 1; min-height: 0;
     overflow-y: auto; overscroll-behavior: contain;
-    padding: 40% 18px;
-    scroll-behavior: smooth;
+    /* The vertical padding is what lets the first and last line reach the
+       middle of the box.  It is written in px from the box's own height by
+       the script (`--lyrics-pad`).  A percentage cannot be used here: in
+       CSS a percentage padding resolves against the *width*, so the old
+       `padding: 40%` pushed the lyrics down by 40% of the window's width.
+       That happened to centre them on a 16:10 window and put them far too
+       low on a wide, short one. */
+    padding: var(--lyrics-pad, 8px) 18px;
+    /* The scroll box must be the offsetParent, otherwise a line's
+       `offsetTop` is measured from `.lyrics-panel` and the centring maths
+       is off by the header height. */
+    position: relative;
+    /* Deliberately *not* `smooth`: the script asks for a smooth scroll
+       itself and needs a plain assignment to work as an instant fallback.
+       With the CSS rule in place every assignment animates, so a failed
+       animation leaves the lyrics stuck. */
+    scroll-behavior: auto;
 }
-.lyrics .empty { text-align: center; color: var(--text-3); font-size: 13px; padding-top: 12px; }
+/* No lyrics: the message sits dead centre of the area instead of below it.
+   Without this the 40%-of-width padding pushed it out of the visible box
+   entirely on a short panel. */
+.lyrics.is-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 18px;
+}
+.lyrics .empty {
+    text-align: center;
+    color: var(--text-3);
+    font-size: 13px;
+    margin: 0;
+    padding: 0;
+}
 .lyric-line {
     padding: 7px 4px;
     font-size: clamp(14px, 1.1vw + 9px, 18px);
@@ -636,21 +666,23 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 /* Karaoke mode */
+/* Karaoke: every character (or Latin word) is its own span and lights up
+   as the line plays.  The old rule filled the whole line the instant it
+   became active -- a block highlight, not 逐字 -- and it was defined twice. */
 .lyric-line.lyric-karaoke {
     position: relative;
 }
-.lyric-line.lyric-karaoke::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; height: 100%;
-    background: linear-gradient(90deg, var(--brand), #ff7a59);
-    width: 0%;
-    opacity: 0.3;
-    transition: width 0.1s linear;
-    pointer-events: none;
+.lyric-line.lyric-karaoke .karaoke-char {
+    opacity: 0.4;
+    transition: opacity 0.16s linear, color 0.16s linear;
 }
-.lyric-line.lyric-karaoke.is-active::before {
-    width: 100%;
+.lyric-line.lyric-karaoke.is-active .karaoke-char {
+    opacity: 0.55;
+}
+.lyric-line.lyric-karaoke .karaoke-char.is-sung,
+.lyric-line.lyric-karaoke.is-active .karaoke-char.is-sung {
+    opacity: 1;
+    color: var(--brand);
 }
 
 /* Lyrics mode buttons */
@@ -820,21 +852,6 @@ input[type="range"]::-webkit-slider-thumb {
     color: var(--brand);
 }
 
-/* Karaoke progress */
-.lyric-line.lyric-karaoke::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; height: 100%;
-    background: linear-gradient(90deg, var(--brand), #ff7a59);
-    width: 0%;
-    opacity: 0.3;
-    transition: width 0.1s linear;
-    pointer-events: none;
-}
-.lyric-line.lyric-karaoke.is-active::before {
-    width: 100%;
-}
-
 /* Lyrics offset label */
 #lyrics-offset-value {
     font-variant-numeric: tabular-nums;
@@ -987,7 +1004,7 @@ input[type="range"]::-webkit-slider-thumb {
     .side-card .queue { max-height: 36vh; }
     .player-layout { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
     .player-side { max-height: 46vh; }
-    .lyrics { padding: 30% 14px; }
+    .lyrics { padding: var(--lyrics-pad, 8px) 14px; }
 }
 @media (max-width: 900px) {
     .brand .subtitle { display: none; }
@@ -1958,10 +1975,16 @@ input[type="range"]::-webkit-slider-thumb {
     flex: 1 1 auto;
     min-height: 60px;
     overflow-y: auto;
-    padding: 8px 22px 12px;
+    padding: var(--lyrics-pad, 8px) 22px;
     text-align: center;
     -webkit-overflow-scrolling: touch;
     mask-image: linear-gradient(to bottom, transparent 0, black 24px, black calc(100% - 32px), transparent 100%);
+}
+.now-playing-mobile .npm-lyrics.is-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 22px;
 }
 .now-playing-mobile .npm-lyrics .lyric-line {
     padding: 6px 0;

@@ -1922,12 +1922,12 @@ function initMobileLyricsRenderer() {
     // container.  updateLyricHighlight already does the binary search and
     // scroll math; this just renders.
     player.lyrics = player.lyrics || [];
+    clearLyricsMessage(box);
     box.innerHTML = '';
     if (!player.lyrics.length) {
-        const empty = document.createElement('p');
-        empty.className = 'empty';
-        empty.textContent = t('lyrics.none');
-        box.appendChild(empty);
+        // Same centred message as the desktop panel, so "暂无歌词" is in the
+        // middle of the area the user is looking at instead of the top.
+        setLyricsMessage(box, t('lyrics.none'));
         return;
     }
     const showTranslation = (state.settings && state.settings.playback.show_translation) !== false;
@@ -1971,9 +1971,11 @@ function updateMobileLyricHighlight() {
     const line = lines[found];
     if (!line) return;
     line.classList.add('is-active');
-    // Keep the active line centred, like Apple Music's now-playing.
-    const top = line.offsetTop - box.clientHeight / 2 + line.clientHeight / 2;
-    box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    // Keep the active line centred, like Apple Music's now-playing.  Same
+    // rect-based maths as the desktop panel: `offsetTop` is relative to
+    // whatever happens to be positioned, which is not always this box.
+    syncLyricsPadding(box);
+    centerLyricLine(box, line, true);
 }
 
 async function loadPlaylists() {
@@ -4077,7 +4079,7 @@ async function toggleFavorite(track) {
 function renderLyricsLoading() {
     const box = document.getElementById('lyrics-scroll');
     if (!box) return;
-    box.innerHTML = `<p class="empty">${t('lyrics.loading')}</p>`;
+    setLyricsMessage(box, t('lyrics.loading'));
     player.lyrics = [];
     player.lyricIndex = -1;
     const save = document.getElementById('btn-save-lyrics');
@@ -4099,7 +4101,7 @@ async function loadLyrics(track, save) {
     if (!track) return;
     const box = document.getElementById('lyrics-scroll');
     if (!box) return;
-    box.innerHTML = `<p class="empty">${t('lyrics.loading')}</p>`;
+    setLyricsMessage(box, t('lyrics.loading'));
     let result;
     try {
         result = await state.api.get_track_lyrics(track, !!save);
@@ -4107,7 +4109,7 @@ async function loadLyrics(track, save) {
         result = null;
     }
     if (!result || !result.has_lyrics) {
-        box.innerHTML = `<p class="empty">${t('lyrics.none')}</p>`;
+        setLyricsMessage(box, t('lyrics.none'));
         player.lyrics = [];
         player.lyricIndex = -1;
         player.lyricSource = 'none';
@@ -4137,9 +4139,133 @@ async function loadLyrics(track, save) {
     renderMobileLyrics();
 }
 
+/**
+ * The vertical padding that lets the first and last line reach the middle.
+ *
+ * The value is `clientHeight / 2` in px, written to `--lyrics-pad`.  It has
+ * to be px: a percentage padding resolves against the box's *width*, so the
+ * old `padding: 40%` pushed the lyrics down by 40% of the window's width --
+ * which only looks centred when the window happens to be about as wide as
+ * it is tall.  On a maximised wide window the lyrics sat far too low.
+ */
+function syncLyricsPadding(box) {
+    if (!box) return;
+    watchLyricsBox(box);
+    const pad = Math.max(0, Math.round((box.clientHeight || 0) / 2));
+    if (Number(box.dataset.lyricsPad) === pad) return;
+    box.dataset.lyricsPad = String(pad);
+    box.style.setProperty('--lyrics-pad', pad + 'px');
+}
+
+let lyricsResizeObserver = null;
+
+/** Recompute the padding whenever the lyrics area changes size. */
+function watchLyricsBox(box) {
+    if (!box || lyricsResizeObserver || typeof ResizeObserver === 'undefined') return;
+    lyricsResizeObserver = new ResizeObserver(() => {
+        syncLyricsPadding(box);
+    });
+    lyricsResizeObserver.observe(box);
+}
+
+/**
+ * Scroll `box` so that `line` sits in the middle of it.
+ *
+ * Measured with rectangles rather than `offsetTop`: the latter is relative
+ * to the nearest positioned ancestor, which used to be `.lyrics-panel`
+ * (the header sits inside it), so every scroll overshot by the header
+ * height and the active line landed above centre.
+ */
+function centerLyricLine(box, line, smooth) {
+    if (!box || !line) return;
+    const boxRect = box.getBoundingClientRect();
+    const lineRect = line.getBoundingClientRect();
+    const height = line.offsetHeight || lineRect.height;
+    const wanted = box.scrollTop + (lineRect.top - boxRect.top)
+                 - (box.clientHeight - height) / 2;
+    const limit = Math.max(0, box.scrollHeight - box.clientHeight);
+    const top = Math.max(0, Math.min(wanted, limit));
+    if (!smooth) {
+        box.scrollTo({ top, behavior: 'auto' });
+        return;
+    }
+    smoothScrollTo(box, top);
+}
+
+let lyricScrollTimer = null;
+
+/**
+ * Glide the lyrics list to `top` ourselves.
+ *
+ * The browser's own `behavior: 'smooth'` is not dependable: it is skipped
+ * under `prefers-reduced-motion`, it does nothing in a headless webview,
+ * and it silently gives up on some compositor hiccups -- in which case the
+ * active line stays wherever it was.  Driving the animation from a timer
+ * with `scrollTo({behavior: 'auto'})` lands on the exact target on every
+ * platform, and a new target cancels the previous glide.
+ */
+function smoothScrollTo(box, top) {
+    if (lyricScrollTimer) {
+        clearInterval(lyricScrollTimer);
+        lyricScrollTimer = null;
+    }
+    const from = box.scrollTop;
+    if (Math.abs(from - top) < 1) return;
+    const duration = 240;
+    const started = Date.now();
+    const step = () => {
+        const progress = Math.min(1, (Date.now() - started) / duration);
+        // easeOutCubic: quick start, gentle landing.
+        const eased = 1 - Math.pow(1 - progress, 3);
+        box.scrollTo({ top: from + (top - from) * eased, behavior: 'auto' });
+        if (progress >= 1) {
+            clearInterval(lyricScrollTimer);
+            lyricScrollTimer = null;
+        }
+    };
+    lyricScrollTimer = setInterval(step, 16);
+}
+
+/**
+ * Show a message (loading / no lyrics) centred in the lyrics area.
+ *
+ * The `is-empty` class swaps the scroll list for a centred flex box: with
+ * the old padding the message was positioned at 40% of the width, which on
+ * a short panel is below the visible area -- the usual "暂无歌词 is
+ * invisible" complaint.
+ */
+function setLyricsMessage(box, text) {
+    if (!box) return;
+    box.classList.add('is-empty');
+    box.innerHTML = '';
+    const message = document.createElement('p');
+    message.className = 'empty';
+    message.textContent = text;
+    box.appendChild(message);
+}
+
+/** Drop the centred-message state once real lyrics are rendered. */
+function clearLyricsMessage(box) {
+    if (box) box.classList.remove('is-empty');
+}
+
+/** The index of the line that is playing at `ms`. */
+function lyricIndexAt(ms) {
+    let low = 0;
+    let high = player.lyrics.length - 1;
+    let found = -1;
+    while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (player.lyrics[mid].time <= ms) { found = mid; low = mid + 1; }
+        else high = mid - 1;
+    }
+    return found;
+}
+
 function renderLyricLines() {
     const box = document.getElementById('lyrics-scroll');
     if (!box) return;
+    clearLyricsMessage(box);
     box.innerHTML = '';
     // The DOM is about to be rebuilt, so the remembered index no longer
     // describes anything.  Leaving it in place made `updateLyricHighlight`
@@ -4194,21 +4320,79 @@ function renderLyricLines() {
     }
     
     box.appendChild(fragment);
-    box.scrollTop = 0;
+    syncLyricsPadding(box);
     // Mobile mirror: the npm view renders the same lyrics in a separate
     // container; rebind whenever the desktop panel re-renders.
     renderMobileLyrics();
+    // Put the highlight back straight away.  Rebuilding the DOM left
+    // `lyricIndex` at -1 and the scroll at the top, and nothing restored
+    // them until the next `timeupdate` -- so switching to dual-line (or
+    // karaoke) while paused looked broken: no active line, list at the top.
+    player.lyricIndex = -1;
+    updateLyricHighlight(true);
 }
 
+/** A CJK / kana / hangul character: these get one span per character. */
+const KARAOKE_CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]/;
+
+/**
+ * Split a lyric line into the pieces karaoke lights up one at a time.
+ *
+ * Chinese and Japanese lyrics want one span per character; English lyrics
+ * want whole words (one span per letter would look like noise and would
+ * break wrapping).  Whitespace becomes its own token so the spacing
+ * survives, but it never counts as a sung step on its own.
+ */
+function karaokeTokens(text) {
+    const tokens = [];
+    let word = '';
+    for (const character of String(text || '')) {
+        if (KARAOKE_CJK.test(character)) {
+            if (word) { tokens.push(word); word = ''; }
+            tokens.push(character);
+        } else if (/\s/.test(character)) {
+            if (word) { tokens.push(word); word = ''; }
+            tokens.push(character);
+        } else {
+            word += character;
+        }
+    }
+    if (word) tokens.push(word);
+    return tokens;
+}
+
+/**
+ * Build the karaoke rows.
+ *
+ * The lyrics API only gives a start time per line, so each line is treated
+ * as running until the next one starts (4 s for the last) and the
+ * characters are revealed evenly across that span.  It is an
+ * approximation, but it is what makes 逐字 highlighting work at all --
+ * the previous implementation only added a class and let CSS fill the
+ * whole line, which is a block highlight, not a progress one.
+ */
 function renderKaraokeLines(fragment) {
-    // Karaoke mode requires word-level timing data
-    // For now, fall back to standard lines with karaoke class
     const showTranslation = (state.settings && state.settings.playback.show_translation) !== false;
-    player.lyrics.forEach((line) => {
+    player.lyrics.forEach((line, index) => {
         const element = document.createElement('div');
         element.className = 'lyric-line lyric-karaoke';
         element.dataset.time = String(line.time);
-        element.textContent = line.text || '';
+        const start = Number(line.time) || 0;
+        const next = player.lyrics[index + 1];
+        const end = next ? Number(next.time) || start : start + 4000;
+        element.dataset.start = String(start);
+        element.dataset.end = String(end);
+
+        const body = document.createElement('span');
+        body.className = 'karaoke-text';
+        karaokeTokens(line.text).forEach((token) => {
+            const span = document.createElement('span');
+            span.className = 'karaoke-char';
+            span.textContent = token;
+            body.appendChild(span);
+        });
+        element.appendChild(body);
+
         if (showTranslation && line.translation) {
             const translation = document.createElement('span');
             translation.className = 'lyric-translation';
@@ -4217,6 +4401,36 @@ function renderKaraokeLines(fragment) {
         }
         fragment.appendChild(element);
     });
+}
+
+/**
+ * Light up the characters of the active karaoke line up to `ms`.
+ *
+ * Called on every playback tick, not just when the line changes.
+ */
+function updateKaraokeProgress(box, index, ms) {
+    const lines = box.querySelectorAll('.lyric-line.lyric-karaoke');
+    const line = lines[index];
+    if (!line) return;
+    const chars = line.querySelectorAll('.karaoke-char');
+    if (!chars.length) return;
+    const start = Number(line.dataset.start) || 0;
+    const end = Number(line.dataset.end) || start;
+    const span = Math.max(1, end - start);
+    const progress = Math.max(0, Math.min(1, (ms - start) / span));
+    // Spaces are spans too, but lighting them up should not eat the line's
+    // time: count only the visible characters, then mark everything up to
+    // and including the last lit one (so the spaces in between follow).
+    const visible = [];
+    for (let i = 0; i < chars.length; i += 1) {
+        if (chars[i].textContent.trim()) visible.push(i);
+    }
+    if (!visible.length) return;
+    const lit = Math.round(progress * visible.length);
+    const cutoff = lit > 0 ? visible[Math.min(lit, visible.length) - 1] : -1;
+    for (let i = 0; i < chars.length; i += 1) {
+        chars[i].classList.toggle('is-sung', i <= cutoff);
+    }
 }
 
 function updateLyricsOffsetLabel() {
@@ -4404,22 +4618,18 @@ function applyLyricsEditorChanges() {
     closeLyricsEditor();
 }
 
-function updateLyricHighlight() {
+function updateLyricHighlight(force) {
     if (!player.lyrics.length) return;
     // Apply the per-track offset (-5000 .. +5000 ms) so the slider works in
     // real time instead of forcing a fresh network lookup on every nudge.
     const ms = audio.currentTime * 1000 - (player.lyricOffset || 0);
-    let low = 0;
-    let high = player.lyrics.length - 1;
-    let found = -1;
-    while (low <= high) {
-        const mid = (low + high) >> 1;
-        if (player.lyrics[mid].time <= ms) { found = mid; low = mid + 1; }
-        else high = mid - 1;
-    }
-    if (found === player.lyricIndex) return;
+    const found = lyricIndexAt(ms);
     const box = document.getElementById('lyrics-scroll');
     if (!box) return;
+    // Karaoke paints inside the active line, so it has to advance on every
+    // tick -- the index alone is not enough (it changes once per line).
+    if (player.karaoke) updateKaraokeProgress(box, found, ms);
+    if (!force && found === player.lyricIndex) return;
     // Dual-line mode puts two .lyric-line nodes (original + translation) into
     // every row, so the flat node list is longer than player.lyrics and the
     // index no longer points at the right row.  Highlight the row wrapper
@@ -4438,10 +4648,8 @@ function updateLyricHighlight() {
     const target = list[found];
     if (!target) return;
     target.classList.add('is-active');
-    if (player.autoScroll) {
-        const top = target.offsetTop - box.clientHeight / 2 + target.clientHeight / 2;
-        box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-    }
+    syncLyricsPadding(box);
+    if (player.autoScroll) centerLyricLine(box, target, true);
     // Mobile mirror: the full-screen now-playing view has its own lyrics
     // container; share the same found index.
     updateMobileLyricHighlight();

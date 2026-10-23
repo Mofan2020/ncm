@@ -952,3 +952,53 @@ URL 缓存键 `(song_id, quality)`），所以**改音质天然切到另一份�
 
 修法：`get_app_info` 增加 `media_base_url`，前端用 `buildCoverUrl()` 直接拼
 `/cover?u=...&ext=...`（URL 完全确定），不再往返、不再等最后一个响应才出图。
+
+---
+
+## 歌词区域：居中、空状态、双行与逐字（2026-10-23）
+
+### 歌词整体偏下的根因
+
+两条独立原因叠在一起：
+
+1. **`padding: 40% 18px`** —— CSS 的百分比 padding 是相对**宽度**解析的，
+   不是高度。面板宽 1128 px 时上下各 451 px，恰好等于面板高度的一半，
+   于是「看起来居中」。窗口一变成宽而矮（比如最大化播放页），40% 的宽度
+   就远大于高度的一半，歌词被推到底部甚至推到可视区外。
+2. **`offsetTop` 量错了参照物** —— `.lyrics` 没有 `position`，所以最近的
+   定位祖先是 `.lyrics-panel`，而它包含标题栏。`offsetTop` 于是多了标题栏
+   的高度，滚动目标每次都差 47 px，高亮行停在中心偏上。
+
+修法：竖向 padding 改为脚本按 `clientHeight / 2` 写进 `--lyrics-pad`；
+滚动一律用 `getBoundingClientRect()` 算（与 offsetParent 无关）；
+`.lyrics` 加 `position: relative` 让语义也对上。
+
+实测（多窗口尺寸）高亮行离中心偏移从 **-47 px** 变成 **0 ~ -0.5 px**。
+
+### 「暂无歌词」看不见
+
+同一个 `padding: 40%` 也作用在空状态上：提示语被顶到 464 px 处，面板一矮
+就整个落到可视区外。现在空状态切 `.lyrics.is-empty`（flex 居中、padding 归零），
+提示语恒在区域正中（实测偏移 0），手机端的全屏播放页同样处理。
+
+### 双行 / 逐字「用不了」
+
+- **双行**：切模式会重建 DOM，把 `scrollTop` 归零、`lyricIndex` 重置为 -1，
+  而重新高亮只发生在下一次 `timeupdate`。暂停时切换，列表跳回第一行、
+  一行都不高亮 —— 看起来就是功能坏了。现在 `renderLyricLines()` 结尾直接
+  按当前播放位置重新高亮并居中。
+- **逐字**：`renderKaraokeLines()` 原本只加了个 class，靠 CSS `::before`
+  在整行激活时把宽度拉满 —— 那是整行块高亮，不是逐字。而且那段 CSS 写了两遍。
+  现在按字符切 span（中文逐字、英文逐词），用「本行起始 → 下一行起始」的
+  时间区间线性推进，每个播放 tick 更新 `is-sung`。
+
+### 滚动动画不能只靠浏览器
+
+调试时发现 `behavior: 'smooth'` 在 headless WebView 里完全不生效，
+`scrollTop = x` 也无效，只有 `scrollTo({behavior:'auto'})` 可靠。
+更糟的是 `requestAnimationFrame` 在某些环境下根本不回调（遮罩/无头窗口），
+而原来「按内容高度调窗口」和「滚动到目标」都只挂在 rAF 上。
+
+现在滚动由自己的定时器缓动（`smoothScrollTo`，16 ms 步进、easeOutCubic、
+新目标取消旧动画），桌面歌词的高度上报同时挂 rAF 和 setTimeout。
+这条对**所有**平台都更稳：reduced-motion、无头、掉帧都不会让歌词停在原地。
