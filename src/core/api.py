@@ -62,7 +62,12 @@ __all__ = ["NeteaseAPI", "get_api", "QUALITY_ORDER", "quality_fallbacks",
 #: Search / account endpoints (all verified live on 2026-10-01).
 SEARCH_ENDPOINT = "/api/cloudsearch/pc"
 USER_PLAYLIST_ENDPOINT = "/api/user/playlist"
+#: Like / unlike.  The reference implementation uses ``/api/radio/like``;
+#: both routes answer identically (``/api/song/like`` answers 524 for a group
+#: of tracks, and so does ``/api/radio/like`` -- see
+#: :meth:`NeteaseAPI.set_song_like`), so we keep the one the project used.
 LIKE_ENDPOINT = "/api/song/like"
+LIKE_RADIO_ENDPOINT = "/api/radio/like"
 LIKE_LIST_ENDPOINT = "/api/song/like/get"
 WEBLOG_ENDPOINT = "/api/feedback/weblog"
 
@@ -77,13 +82,24 @@ TOP_LIST_ENDPOINT = "/api/v3/playlist/detail"  # with special IDs
 SEARCH_SUGGEST_ENDPOINT = "/api/search/suggest"
 SEARCH_MULTI_ENDPOINT = "/api/cloudsearch/pc"  # same as search but with type parameter
 
-#: Playlist management endpoints (verified live 2026-10-01 onwards)
+#: Playlist management endpoints.
+#:
+#: Re-verified live on 2026-10-23.  The endpoints this project used before
+#: are **dead**: ``/api/playlist/update``, ``/api/playlist/tracks/add`` and
+#: ``/api/playlist/tracks/del`` answer ``404 接口未找到！``, and
+#: ``/api/playlist/delete`` answers ``400 请求参数错误``.  The live routes are:
+#:
+#: * rename -> ``/api/playlist/update/name``  ``{"id": ..., "name": ...}``
+#: * delete -> ``/api/playlist/remove``        ``{"ids": "[id]"}``
+#: * tracks -> ``/api/playlist/manipulate/tracks``
+#:             ``{"op": "add"|"del", "pid": ..., "trackIds": "[id]",
+#:             "imme": "true"}``
 PLAYLIST_CREATE_ENDPOINT = "/api/playlist/create"
-PLAYLIST_UPDATE_ENDPOINT = "/api/playlist/update"
-PLAYLIST_DELETE_ENDPOINT = "/api/playlist/delete"
-PLAYLIST_TRACKS_ADD_ENDPOINT = "/api/playlist/tracks/add"
-PLAYLIST_TRACKS_DEL_ENDPOINT = "/api/playlist/tracks/del"
+PLAYLIST_UPDATE_ENDPOINT = "/api/playlist/update/name"
+PLAYLIST_DELETE_ENDPOINT = "/api/playlist/remove"
+PLAYLIST_TRACKS_ENDPOINT = "/api/playlist/manipulate/tracks"
 PLAYLIST_SUBSCRIBE_ENDPOINT = "/api/playlist/subscribe"
+PLAYLIST_UNSUBSCRIBE_ENDPOINT = "/api/playlist/unsubscribe"
 PLAYLIST_DETAIL_DYNAMIC_ENDPOINT = "/api/playlist/detail/dynamic"  # for track operations
 PLAYLIST_COVER_UPDATE_ENDPOINT = "/api/playlist/cover/update"
 
@@ -764,32 +780,75 @@ class NeteaseAPI:
             offset += len(batch)
         return collected
 
-    def get_liked_song_ids(self, uid: str) -> list[str]:
-        """Ids of the songs in the user's "liked" list (needs a login)."""
+    def get_liked_song_ids(self, uid: str, use_cache: bool = True) -> list[str]:
+        """Ids of the songs in the user's "liked" list (needs a login).
+
+        ``use_cache=False`` reads the list straight from the server.  The
+        response cache holds the answer for a minute, which is fine for a
+        read but wrong right after a like or an unlike: the UI would keep
+        showing the old hearts.
+        """
         uid = str(uid or "").strip()
         if not uid:
             return []
-        result = self._eapi(LIKE_LIST_ENDPOINT, {"uid": int(uid) if uid.isdigit() else uid})
+        result = self._eapi(LIKE_LIST_ENDPOINT,
+                            {"uid": int(uid) if uid.isdigit() else uid},
+                            use_cache=use_cache)
         ids = (result or {}).get("ids")
         if not isinstance(ids, list):
             return []
         return [str(item) for item in ids]
 
-    def set_song_like(self, song_id: str, like: bool = True) -> bool:
-        """Like / unlike one song.  Returns whether the call was accepted."""
+    def set_song_like(self, song_id: str, like: bool = True) -> str:
+        """Like / unlike one song.
+
+        Returns one of:
+
+        ``"ok"``
+            the server accepted the change
+        ``"unsupported"``
+            the track itself is refused (``code 524``) -- NetEase answers
+            ``当前环境异常，已取消喜欢`` for a group of tracks and no request
+            shape gets past it, so this is a server-side restriction on the
+            track rather than something the client can fix
+        ``"rate_limited"``
+            the request came too fast (``code 405``); it succeeds when retried
+            after a pause
+        ``"not_logged_in"``
+            the session is gone (``code 301``)
+        ``"failed"``
+            anything else (network error, an unexpected code)
+
+        The distinction matters: "unsupported" and "rate_limited" need
+        different messages, and both are *not* the user's fault.
+        """
         song_id = str(song_id or "").strip()
         if not song_id:
-            return False
+            return "failed"
         payload = {"trackId": int(song_id) if song_id.isdigit() else song_id,
                    "like": "true" if like else "false",
                    "alg": "itembased", "time": 3}
         result = self._eapi(LIKE_ENDPOINT, payload, use_cache=False)
         code = (result or {}).get("code")
         if code == 200:
-            return True
-        # `/api/radio/like` is the older route; it still answers on some networks.
-        legacy = self._eapi("/api/radio/like", payload, use_cache=False)
-        return (legacy or {}).get("code") == 200
+            return "ok"
+        if code in (524, 512):
+            # The reference implementation uses /api/radio/like; it answers
+            # the same way for the same tracks, but try it anyway -- a
+            # different route can carry a different risk-control decision.
+            legacy = self._eapi(LIKE_RADIO_ENDPOINT, payload, use_cache=False)
+            legacy_code = (legacy or {}).get("code")
+            if legacy_code == 200:
+                return "ok"
+            code = legacy_code if legacy_code is not None else code
+        if code == 405:
+            return "rate_limited"
+        if code in LOGIN_REQUIRED_CODES:
+            return "not_logged_in"
+        if code == 524:
+            return "unsupported"
+        self._log(f"like failed for {song_id}: code={code}", "warning")
+        return "failed"
 
     def report_play(self, song_id: str, seconds: float, source_id: int = 0,
                     played_at: float | None = None) -> bool:
@@ -882,18 +941,30 @@ class NeteaseAPI:
 
     def update_playlist(self, playlist_id: str, name: str | None = None,
                         description: str | None = None, privacy: int | None = None) -> dict[str, Any] | None:
-        """Update playlist metadata."""
+        """Update playlist metadata.
+
+        The rename lives on its own route (``/api/playlist/update/name``);
+        the description and the privacy flag have theirs.  ``/api/batch``
+        takes a mapping of route -> JSON body and runs them in one request,
+        which is what the reference implementation does -- and it keeps the
+        number of round trips down when several fields change at once.
+        """
         playlist_id = str(playlist_id or "").strip()
         if not playlist_id:
             return None
-        payload = {"id": playlist_id}
+        batch: dict[str, str] = {}
         if name is not None:
-            payload["name"] = name
+            batch["/api/playlist/update/name"] = json.dumps(
+                {"id": playlist_id, "name": name}, ensure_ascii=False)
         if description is not None:
-            payload["description"] = description
+            batch["/api/playlist/desc/update"] = json.dumps(
+                {"id": playlist_id, "desc": description}, ensure_ascii=False)
         if privacy is not None:
-            payload["privacy"] = privacy
-        result = self._eapi(PLAYLIST_UPDATE_ENDPOINT, payload, use_cache=False)
+            batch["/api/playlist/update/privacy"] = json.dumps(
+                {"id": playlist_id, "privacy": privacy}, ensure_ascii=False)
+        if not batch:
+            return None
+        result = self._eapi("/api/batch", batch, use_cache=False)
         return result
 
     def delete_playlist(self, playlist_ids: list[str]) -> dict[str, Any] | None:
@@ -905,8 +976,14 @@ class NeteaseAPI:
         result = self._eapi(PLAYLIST_DELETE_ENDPOINT, payload, use_cache=False)
         return result
 
-    def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]) -> dict[str, Any] | None:
-        """Add tracks to a playlist."""
+    def _manipulate_playlist_tracks(self, playlist_id: str, track_ids: list[str],
+                                    op: str) -> dict[str, Any] | None:
+        """Add or remove tracks in a playlist.
+
+        The live route is ``/api/playlist/manipulate/tracks`` and it wants
+        ``trackIds`` as a JSON string plus ``imme``; the older
+        ``/api/playlist/tracks/add`` answers ``404``.
+        """
         playlist_id = str(playlist_id or "").strip()
         if not playlist_id:
             return None
@@ -914,33 +991,21 @@ class NeteaseAPI:
         if not ids:
             return None
         payload = {
+            "op": op,
             "pid": playlist_id,
             "trackIds": json.dumps(ids),
-            "op": "add",
+            "imme": "true",
         }
-        result = self._eapi(PLAYLIST_TRACKS_ADD_ENDPOINT, payload, use_cache=False)
-        if not result:
-            # Try alternative endpoint
-            result = self._legacy("/playlist/tracks/add", payload)
+        result = self._eapi(PLAYLIST_TRACKS_ENDPOINT, payload, use_cache=False)
         return result
+
+    def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]) -> dict[str, Any] | None:
+        """Add tracks to a playlist."""
+        return self._manipulate_playlist_tracks(playlist_id, track_ids, "add")
 
     def remove_tracks_from_playlist(self, playlist_id: str, track_ids: list[str]) -> dict[str, Any] | None:
         """Remove tracks from a playlist."""
-        playlist_id = str(playlist_id or "").strip()
-        if not playlist_id:
-            return None
-        ids = [str(i) for i in track_ids if str(i).strip()]
-        if not ids:
-            return None
-        payload = {
-            "pid": playlist_id,
-            "trackIds": json.dumps(ids),
-            "op": "del",
-        }
-        result = self._eapi(PLAYLIST_TRACKS_DEL_ENDPOINT, payload, use_cache=False)
-        if not result:
-            result = self._legacy("/playlist/tracks/del", payload)
-        return result
+        return self._manipulate_playlist_tracks(playlist_id, track_ids, "del")
 
     def subscribe_playlist(self, playlist_id: str, subscribe: bool = True) -> dict[str, Any] | None:
         """Subscribe or unsubscribe from a playlist."""

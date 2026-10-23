@@ -927,12 +927,38 @@ class GuiBridge:
         return {"success": True, "key": key, "count": count, "reported": reported}
 
     def get_play_stats(self) -> dict[str, Any]:
+        """Play counters, and the favourites as the heart buttons must show them.
+
+        The heart is filled when the track is in the local favourites **or**
+        in the account's NetEase "liked music".  Those are two different
+        lists: the local one survives a session without a login, the cloud
+        one holds everything the account liked on any device.  The "liked
+        music" playlist is exactly the cloud list, so every song in it has
+        to show a filled heart.
+        """
+        keys = set(self.library.favorite_keys())
+        cloud = self._safe("cloud favourites", self._cloud_favorite_keys) or set()
+        keys |= cloud
         return {
             "success": True,
             "counts": self.library.play_counts(),
             "stats": self.library.stats(),
-            "favorites": self.library.favorite_keys(),
+            "favorites": sorted(keys),
+            "local_favorites": self.library.favorite_keys(),
         }
+
+    def _cloud_favorite_keys(self, fresh: bool = False) -> set[str]:
+        """The account's NetEase favourites, as ``online:<song id>`` keys.
+
+        ``fresh=True`` skips the response cache, which matters right after a
+        like or an unlike: the cached answer is a minute old and the hearts
+        would not follow the click.
+        """
+        user = self.login_manager.user_info
+        if not user or not user.user_id:
+            return set()
+        ids = self.api.get_liked_song_ids(user.user_id, use_cache=not fresh) or []
+        return {f"online:{song_id}" for song_id in ids}
 
     def reset_play_counts(self) -> dict[str, Any]:
         self.library.reset_play_counts()
@@ -948,7 +974,19 @@ class GuiBridge:
         return {"success": True, "tracks": tracks}
 
     def set_favorite(self, track: dict[str, Any], favorite: bool = True) -> dict[str, Any]:
-        """Toggle a favourite locally and mirror it to NetEase when possible."""
+        """Toggle a favourite locally and mirror it to NetEase when possible.
+
+        ``cloud`` says what happened on the server, and the values are not
+        interchangeable -- the UI needs to tell "this track is not accepted
+        by NetEase" apart from "you were too quick" apart from "your session
+        expired":
+
+        ``ok``            the change is on the server
+        ``login_required`` not signed in; the favourite is local only
+        ``unsupported``   NetEase refuses this particular track
+        ``rate_limited``  too many requests; retrying later works
+        ``failed``        anything else
+        """
         key = self._key_of(track)
         if not key:
             return {"success": False, "error_key": "error.unknown"}
@@ -958,11 +996,22 @@ class GuiBridge:
             if not self.login_manager.is_logged_in:
                 cloud = "login_required"
             else:
-                liked = self._safe("cloud favourite", self.api.set_song_like,
-                                   str(track["id"]), state)
-                cloud = "ok" if liked else "failed"
+                outcome = self._safe("cloud favourite", self.api.set_song_like,
+                                      str(track["id"]), state)
+                cloud = outcome if isinstance(outcome, str) and outcome else "failed"
+        # The merged list: the local favourites plus the ones NetEase knows.
+        # Returning only the local ones would make every cloud favourite
+        # lose its heart after a single click.
+        #
+        # The cloud is read fresh, because the response cache still holds
+        # the pre-click answer.  When the cloud refused the change the fresh
+        # read keeps the old state -- which is the honest one: the song is
+        # still in the account's liked list, and the toast says so.
+        keys = set(self.library.favorite_keys())
+        keys |= self._safe("cloud favourites", self._cloud_favorite_keys, True) or set()
         return {"success": True, "key": key, "favorite": state, "cloud": cloud,
-                "favorites": self.library.favorite_keys()}
+                "favorites": sorted(keys),
+                "local_favorites": self.library.favorite_keys()}
 
     def get_favorites(self) -> dict[str, Any]:
         return {"success": True, "tracks": self.library.favorites(),
@@ -1113,18 +1162,49 @@ class GuiBridge:
             "playlists": [self._playlist_payload(item) for item in playlists],
         }
 
-    @staticmethod
-    def _playlist_payload(playlist: dict[str, Any]) -> dict[str, Any]:
+    def _playlist_payload(self, playlist: dict[str, Any]) -> dict[str, Any]:
+        """One playlist, with what the user is allowed to do to it.
+
+        The permissions are decided **here**, on the server, from data the
+        account endpoint provides -- not in the frontend from a name or a
+        flag the UI happens to have.  The rules:
+
+        * a playlist somebody else created can only be un-subscribed; it
+          cannot be renamed, its tracks cannot be changed and it cannot be
+          deleted
+        * a playlist this account created can be renamed, edited and deleted,
+          but not un-subscribed -- un-subscribing your own playlist is not
+          what the star button means there
+        * the "liked music" playlist (``specialType 5``) is never editable
+          and never deletable: its contents are the account's favourites,
+          which are managed through the heart buttons
+        """
         creator = playlist.get("creator") or {}
+        creator_id = str(creator.get("userId") or "")
+        user = self.login_manager.user_info
+        user_id = str(user.user_id) if user and user.user_id else ""
+        special_type = int(playlist.get("specialType") or 0)
+        is_liked_music = special_type == 5
+        is_own = bool(user_id) and creator_id == user_id
+        subscribed = bool(playlist.get("subscribed"))
         return {
             "id": str(playlist.get("id", "")),
             "name": playlist.get("name") or "Unknown",
             "cover_url": playlist.get("coverImgUrl") or playlist.get("coverImgUrlStr") or "",
             "track_count": playlist.get("trackCount") or 0,
             "creator": creator.get("nickname") or "",
-            "special_type": playlist.get("specialType") or 0,
-            "subscribed": bool(playlist.get("subscribed")),
+            "creator_id": creator_id,
+            "special_type": special_type,
+            "subscribed": subscribed,
             "description": playlist.get("description") or "",
+            "is_own": is_own,
+            "is_liked_music": is_liked_music,
+            # What the UI may offer for this playlist.
+            "can_unsubscribe": subscribed and not is_own,
+            "can_subscribe": not subscribed and not is_own,
+            "can_rename": is_own and not is_liked_music,
+            "can_edit_tracks": is_own and not is_liked_music,
+            "can_delete": is_own and not is_liked_music,
         }
 
     def get_playlist_tracks(self, playlist_id: str) -> dict[str, Any]:
@@ -1368,11 +1448,54 @@ class GuiBridge:
             return {"success": False, "error_key": "player.create_failed", "message": result.get("msg") or ""}
         return {"success": True, "playlist_id": str(result.get("id") or result.get("playlistId") or "")}
 
+    def _playlist_permission(self, playlist_id: str) -> dict[str, Any] | None:
+        """What the account may do with ``playlist_id``.
+
+        The check is made against the account's own playlist list, so it
+        cannot be fooled by a stale or missing flag in the UI.  ``None``
+        means the playlist is not in the account's list at all.
+        """
+        user = self.login_manager.user_info
+        if not user or not user.user_id:
+            return None
+        playlists = self._safe("account playlists", self.api.get_user_playlists_all,
+                               user.user_id)
+        if not playlists:
+            return None
+        wanted = str(playlist_id)
+        for item in playlists:
+            if str(item.get("id")) == wanted:
+                return self._playlist_payload(item)
+        return None
+
+    def _forbidden(self, playlist_id: str, action: str = "edit") -> dict[str, Any] | None:
+        """Refuse the operation when the account may not perform it.
+
+        ``action`` is one of "edit" (rename / change the tracks) or "delete".
+        Returns the error payload, or ``None`` when the operation is allowed.
+        """
+        payload = self._playlist_permission(playlist_id)
+        if payload is None:
+            return {"success": False, "error_key": "playlist.invalid_input"}
+        if payload.get("is_liked_music"):
+            return {"success": False, "error_key": "player.playlist_liked_locked"}
+        if not payload.get("is_own"):
+            # Somebody else's playlist: it may be un-subscribed, but nothing
+            # else.  Editing it would fail on the server anyway ("无权限操作
+            # 歌单"), and saying so here keeps the UI and the API in step.
+            return {"success": False, "error_key": "player.playlist_not_owned"}
+        if action == "delete" and not payload.get("can_delete"):
+            return {"success": False, "error_key": "player.playlist_not_owned"}
+        return None
+
     def update_playlist(self, playlist_id: str, data: dict[str, Any]) -> dict[str, Any]:
         """Update playlist metadata."""
         playlist_id = str(playlist_id or "").strip()
         if not playlist_id:
             return {"success": False, "error_key": "playlist.invalid_input"}
+        denied = self._forbidden(playlist_id)
+        if denied:
+            return denied
         name = data.get("name")
         description = data.get("description")
         privacy = data.get("privacy")
@@ -1388,6 +1511,10 @@ class GuiBridge:
         ids = [str(i) for i in (playlist_ids or []) if str(i).strip()]
         if not ids:
             return {"success": False, "error_key": "playlist.invalid_input"}
+        for playlist_id in ids:
+            denied = self._forbidden(playlist_id, "delete")
+            if denied:
+                return denied
         result = self._safe("delete playlist", self.api.delete_playlist, ids)
         if not result:
             return {"success": False, "error_key": "error.network"}
@@ -1403,6 +1530,9 @@ class GuiBridge:
         ids = [str(i) for i in (track_ids or []) if str(i).strip()]
         if not ids:
             return {"success": False, "error_key": "player.no_tracks_to_add"}
+        denied = self._forbidden(playlist_id)
+        if denied:
+            return denied
         result = self._safe("add tracks to playlist", self.api.add_tracks_to_playlist, playlist_id, ids)
         if not result:
             return {"success": False, "error_key": "error.network"}
@@ -1418,6 +1548,9 @@ class GuiBridge:
         ids = [str(i) for i in (track_ids or []) if str(i).strip()]
         if not ids:
             return {"success": False, "error_key": "player.no_tracks_to_remove"}
+        denied = self._forbidden(playlist_id)
+        if denied:
+            return denied
         result = self._safe("remove tracks from playlist", self.api.remove_tracks_from_playlist, playlist_id, ids)
         if not result:
             return {"success": False, "error_key": "error.network"}

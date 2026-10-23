@@ -2012,7 +2012,21 @@ function renderPlaylists(playlists) {
         const row = document.createElement('div');
         row.className = 'playlist-row';
         row.dataset.playlistId = playlist.id;
-        const isOwn = playlist.creator_id === (player.currentUserId || '') || playlist.subscribed;
+        // The permissions come from the server, which knows who created the
+        // playlist.  Falling back to the old guess would put the rename and
+        // delete buttons on playlists the account does not own.
+        const canUnsubscribe = playlist.can_unsubscribe !== undefined
+            ? playlist.can_unsubscribe
+            : (playlist.subscribed && !playlist.is_own);
+        const canSubscribe = playlist.can_subscribe !== undefined
+            ? playlist.can_subscribe
+            : (!playlist.subscribed && !playlist.is_own);
+        const canRename = playlist.can_rename !== undefined
+            ? playlist.can_rename
+            : playlist.is_own;
+        const canDelete = playlist.can_delete !== undefined
+            ? playlist.can_delete
+            : playlist.is_own;
         const cover = document.createElement('img');
         cover.alt = '';
         cover.loading = 'lazy';
@@ -2035,8 +2049,9 @@ function renderPlaylists(playlists) {
         actions.className = 'playlist-actions';
         actions.style.display = 'none';
         
-        if (isOwn) {
-            // Edit button
+        // Someone else's playlist: the only thing to do with it is to
+        // un-subscribe.  No rename, no track edits, no delete.
+        if (canRename) {
             const editBtn = document.createElement('button');
             editBtn.className = 'btn btn-icon btn-sm';
             editBtn.type = 'button';
@@ -2044,17 +2059,21 @@ function renderPlaylists(playlists) {
             editBtn.title = t('player.playlist_edit');
             editBtn.addEventListener('click', (e) => { e.stopPropagation(); editPlaylist(playlist); });
             actions.appendChild(editBtn);
-            
-            // Subscribe/Unsubscribe
+        }
+
+        if (canSubscribe || canUnsubscribe) {
             const subBtn = document.createElement('button');
             subBtn.className = 'btn btn-icon btn-sm';
             subBtn.type = 'button';
             setIcon(subBtn, 'star', { filled: playlist.subscribed });
-            subBtn.title = playlist.subscribed ? t('player.playlist_unsubscribe') : t('player.playlist_subscribe');
+            subBtn.title = canUnsubscribe ? t('player.playlist_unsubscribe') : t('player.playlist_subscribe');
             subBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleSubscribePlaylist(playlist); });
             actions.appendChild(subBtn);
-            
-            // Delete button
+        }
+
+        // Your own playlist: rename, edit the tracks, delete.  Never
+        // un-subscribe -- the star on your own playlist means nothing.
+        if (canDelete) {
             const delBtn = document.createElement('button');
             delBtn.className = 'btn btn-icon btn-sm';
             delBtn.type = 'button';
@@ -2062,15 +2081,6 @@ function renderPlaylists(playlists) {
             delBtn.title = t('player.playlist_delete');
             delBtn.addEventListener('click', (e) => { e.stopPropagation(); deletePlaylist(playlist); });
             actions.appendChild(delBtn);
-        } else if (playlist.subscribed !== undefined) {
-            // Subscribe for non-owned
-            const subBtn = document.createElement('button');
-            subBtn.className = 'btn btn-icon btn-sm';
-            subBtn.type = 'button';
-            setIcon(subBtn, 'star', { filled: playlist.subscribed });
-            subBtn.title = playlist.subscribed ? t('player.playlist_unsubscribe') : t('player.playlist_subscribe');
-            subBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleSubscribePlaylist(playlist); });
-            actions.appendChild(subBtn);
         }
         
         row.append(cover, meta, actions);
@@ -4067,7 +4077,12 @@ async function toggleFavorite(track) {
         return;
     }
     player.favoriteKeys = new Set(result.favorites || []);
+    // The cloud outcome tells more than "it worked" or "it did not": a track
+    // NetEase refuses and a request that came too fast need different words,
+    // and neither of them is the user's mistake.
     if (result.cloud === 'login_required') showToast('info', t('player.favorite_local_only'), 3600);
+    else if (result.cloud === 'unsupported') showToast('warning', t('player.favorite_cloud_unsupported'), 4200);
+    else if (result.cloud === 'rate_limited') showToast('warning', t('player.favorite_cloud_busy'), 3600);
     else if (result.cloud === 'failed') showToast('warning', t('player.favorite_cloud_failed'), 3600);
     else if (wanted) showToast('success', t('player.favorite_added'), 1800);
     refreshTrackRow(key);
@@ -6266,6 +6281,9 @@ function onLoginSuccess() {
     showToast('success', t('login.login_success'));
     closeModal('login-modal');
     refreshLoginStatus();
+    // The heart state now includes the account's NetEase favourites, which
+    // only exist once somebody is signed in.
+    loadPlayerExtras();
     if (player.sourceTab === 'playlists') loadPlaylists();
 }
 

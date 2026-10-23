@@ -366,7 +366,11 @@
     "no_valid_tracks": "没有有效歌曲",
     "track_removed": "已移除歌曲",
     "tracks_added": "已添加 {count} 首歌曲",
-    "tracks_selected": "已选 {count} 首"
+    "tracks_selected": "已选 {count} 首",
+    "favorite_cloud_unsupported": "这首歌暂不支持云端收藏，已保存在本地",
+    "favorite_cloud_busy": "操作太频繁，稍后再试一次即可同步到云端",
+    "playlist_liked_locked": "「我喜欢的音乐」不能重命名或删除，收藏请点红心",
+    "playlist_not_owned": "只能取消收藏别人创建的歌单"
   },
   "lyrics": {
     "loading": "正在加载歌词...",

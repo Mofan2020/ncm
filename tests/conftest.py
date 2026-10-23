@@ -157,19 +157,33 @@ class FakePlaylistAPI:
         wanted = {str(i) for i in song_ids}
         return [dict(song) for song in self.SONGS if str(song["id"]) in wanted]
 
+    #: The account's playlists.  Tests overwrite this to describe a
+    #: particular ownership situation.
+    playlists = [{"id": 7, "name": "Fake list", "trackCount": 2,
+                  "specialType": 0, "subscribed": False,
+                  "creator": {"userId": "42", "nickname": "tester"}}]
+
     def get_user_playlists(self, uid, limit=100, offset=0):
-        return {"playlists": [{"id": 7, "name": "Fake list", "trackCount": 2,
-                               "creator": {"nickname": "tester"}}], "more": False}
+        return {"playlists": list(self.playlists), "more": False}
 
     def get_user_playlists_all(self, uid, max_pages=20):
-        return self.get_user_playlists(uid)["playlists"]
+        return list(self.playlists)
 
-    def get_liked_song_ids(self, uid):
+    def get_liked_song_ids(self, uid, use_cache=True):
         return ["1"]
 
     def set_song_like(self, song_id, like=True):
+        """Mirror the real contract: a status string, not a bool.
+
+        ``set_song_like`` returns one of "ok" / "unsupported" /
+        "rate_limited" / "not_logged_in" / "failed"; the old boolean form
+        silently turned every outcome into "failed".
+        """
         self.liked = (str(song_id), bool(like))
-        return True
+        return self.like_result
+
+    #: Overridden by the tests that need a different cloud outcome.
+    like_result = "ok"
 
     def report_play(self, song_id, seconds, source_id=0, played_at=None):
         self.reported = (str(song_id), float(seconds))
@@ -177,6 +191,27 @@ class FakePlaylistAPI:
 
     def get_lyrics(self, song_id):
         return {"lyric": "[00:01.00]hello\n[00:02.00]world", "translation": "", "code": 200}
+
+    # -- the write side (the bridge calls these) ---------------------------
+    def update_playlist(self, playlist_id, name=None, description=None, privacy=None):
+        self.written = ("update", str(playlist_id), name)
+        return {"code": 200}
+
+    def delete_playlist(self, playlist_ids):
+        self.written = ("delete", list(playlist_ids))
+        return {"code": 200}
+
+    def add_tracks_to_playlist(self, playlist_id, track_ids):
+        self.written = ("add", str(playlist_id), list(track_ids))
+        return {"code": 200}
+
+    def remove_tracks_from_playlist(self, playlist_id, track_ids):
+        self.written = ("del", str(playlist_id), list(track_ids))
+        return {"code": 200}
+
+    def subscribe_playlist(self, playlist_id, subscribe=True):
+        self.written = ("subscribe", str(playlist_id), bool(subscribe))
+        return {"code": 200}
 
 
 @pytest.fixture()
