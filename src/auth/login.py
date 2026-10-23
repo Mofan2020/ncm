@@ -396,10 +396,17 @@ class LoginManager:
         self._status_checked_at = 0.0
 
     def verify_login(self, force: bool = False) -> bool:
-        """Re-check the session online at most once per :attr:`STATUS_TTL`."""
-        if not force and self._user_info is not None:
-            if time.time() - self._status_checked_at < self.STATUS_TTL:
-                return True
+        """Re-check the session online at most once per :attr:`STATUS_TTL`.
+
+        The TTL applies whether or not the session is currently valid.
+        Without that, an offline machine asked the server for the account
+        on *every* call -- the log showed a timeout every thirteen seconds,
+        which is exactly the load the caches are meant to avoid.
+        """
+        if not force:
+            age = time.time() - self._status_checked_at
+            if age < self.STATUS_TTL:
+                return self._user_info is not None
 
         ok, account, profile = self._fetch_account()
         self._status_checked_at = time.time()
