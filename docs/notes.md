@@ -862,3 +862,93 @@ WebView 的 WebContent 进程（那不是我们能控制的）。
 5. **本机 Little Snitch 会挡出站请求**，会污染启动时间和网络相关的测量 ——
    测启动前先看一眼有没有它的弹窗。
 
+---
+
+## 缓存、桌面歌词与性能（2026-10-23）
+
+### 内存：实测结论是「没什么可省」
+
+用**编译版**（`dist/NeteaseMusicDownloader.app`）跑完整进程树，交错 A/B 三轮：
+
+| 变体 | 峰值中位数 | 稳定态中位数 |
+|---|---|---|
+| 带壁纸 | 251.1 MB | 146.8 MB |
+| 无壁纸 | 231.5 MB | 110.1 MB |
+
+Chromium 单实例对照（同一 profile、3 个进程，可比数字）：
+
+| 页面 | RSS 合计 |
+|---|---|
+| 空白页 | 245.9 MB |
+| 应用真实 index.html | 246.8 MB |
+
+**结论：页面内容几乎不占内存（+0.9 MB），`backdrop-filter` 约 +10 MB，
+其余全是 WebView 引擎基线。** 壁纸净占约 20 MB 峰值 / 37 MB 稳定态。
+
+已落地且保留：壁纸存 JPEG（22.7 MB PNG → 3.09 MB）、启动时迁移旧 PNG、
+预生成 1920 px 显示副本（浏览器按原图尺寸解码，3600×2400 会变成 ~34 MB
+RGBA 像素）。
+
+**教训（第一次测错了）**：壁纸 A/B 最初无效 —— 所谓「完整图」请求仍被应用
+按需缩放，测的不是全尺寸解码。改成绕过应用、直接加载两张文件对比才拿到真值。
+
+### 缓存（`src/core/metacache.py`）
+
+磁盘 JSON 缓存，三类 TTL：歌曲元数据 7 天 / 歌词 30 天 / 歌单列表 10 分钟。
+单条 4 MB 上限，每类 2000 条 LRU，临时文件 + `os.replace` 原子写入，
+损坏条目丢弃而不是抛错。
+
+接入点：`get_songs_detail`（按单曲粒度，只请求缺失的 id）、
+`get_lyrics`、`get_playlist_songs`、`get_playlist_info`（服务器不可达时
+用缓存兜底返回名称和封面）、`get_user_playlists`。
+
+**实测效果**（独立进程、共享配置目录，模拟真实重启）：
+
+```
+第 1 次启动: 2 次网络请求
+第 2 次启动: 0 次
+第 3 次启动: 0 次
+```
+
+歌曲文件缓存本来就按 `song_id/quality` 分键（`audio_path(song_id, quality, ext)`、
+URL 缓存键 `(song_id, quality)`），所以**改音质天然切到另一份文件**。
+
+**踩的坑**：元数据缓存是模块级单例，`tests/conftest.py` 的 `_reset_stores()`
+没重置它 —— 歌词测试因为「上一个测试的歌词从磁盘缓存里返回了」而全红，
+看起来像是代码坏了，其实是测试隔离漏了。另外 `MetaCache.root` 原来只在
+第一次访问时算一次，改成每次从当前 settings 解析，否则换配置目录的测试
+会写进旧位置。
+
+### 强制刷新
+
+设置里加「强制刷新」按钮：`bridge.force_refresh()` 清掉元数据缓存、媒体缓存
+（音频 + 封面）、内存里的歌单/响应缓存和已解析的 URL 缓存，然后重启应用。
+
+重启用 `subprocess.Popen` 起新进程、旧进程 2 秒后 `os._exit(0)` ——
+媒体服务器绑的是随机端口（port 0），新旧两个实例不会抢端口。
+
+### 桌面歌词
+
+**偏移的根因**：原生浮窗固定 `height=120`，而内容随字号增长
+（18 px → 112 px，24 px → 140 px，28 px → 159 px，36 px → 196 px）。
+`reportContentHeight()` 原来**只在 `applyStyles()` 里调用一次**（启动时、
+歌词到达之前），歌词渲染后再没人要求加高窗口，于是文字被裁掉。
+
+修法：`renderLyricLines()` 末尾重新上报高度，且测量包在 `requestAnimationFrame`
+里 —— 同一 tick 读到的是旧高度，窗口会慢一帧。
+
+浏览器实测（带 pywebview stub）：长歌词请求 125 px，短歌词 82 px，
+`resize_desktop_lyrics` 的调用值和实测高度一致。
+
+**顺带修掉一个真 bug**：桌面歌词的设置（字号/颜色/透明度/背景）**从来没有被保存过** ——
+`bridge.update_settings` 的 ui 白名单里没有这些字段，全被丢掉了。用户改了字号，
+界面变了，下次启动又回到默认。
+
+### 歌单预览图
+
+不是磁盘缓存的问题（`/cover` 已经发 `Cache-Control: public, max-age=604800`，
+字节也落盘）。真正的原因是**每张封面都要一次 Python IPC 往返**：
+`proxyCoverUrl` 只能问后端要 loopback URL，而 `base_url` 从未暴露给前端。
+
+修法：`get_app_info` 增加 `media_base_url`，前端用 `buildCoverUrl()` 直接拼
+`/cover?u=...&ext=...`（URL 完全确定），不再往返、不再等最后一个响应才出图。
