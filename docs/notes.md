@@ -1315,6 +1315,13 @@ CI 五个 job 全绿，产物 6 个，prerelease 发布。
   - 刷新按钮（我喜欢的音乐页）→ `get_liked_tracks(true)`
   - 刷新按钮（打开某个歌单）→ `get_playlist_tracks("42", true)`
 
+### 发布
+
+CI 五个 job 全绿（lint+tests / macOS arm64 / macOS x64 / Windows x64 /
+Publish release），产物 6 个，prerelease 发布。
+
+release notes 手工撰写（`--notes-file`），两块：修复 + 其它。
+
 ### 顺带清掉的一个坑
 
 调试时我往真实 `src/gui/assets/index.html` 注入过浏览器测试用的 stub，
