@@ -1011,7 +1011,10 @@ class GuiBridge:
         keys |= self._safe("cloud favourites", self._cloud_favorite_keys, True) or set()
         return {"success": True, "key": key, "favorite": state, "cloud": cloud,
                 "favorites": sorted(keys),
-                "local_favorites": self.library.favorite_keys()}
+                "local_favorites": self.library.favorite_keys(),
+                # The account's liked list changed, so the "liked music"
+                # playlist has to be re-read.  The frontend asks for it.
+                "liked_dirty": cloud == "ok"}
 
     def get_favorites(self) -> dict[str, Any]:
         return {"success": True, "tracks": self.library.favorites(),
@@ -1147,13 +1150,17 @@ class GuiBridge:
         return {"success": True}
 
     # -- online library --------------------------------------------------------
-    def get_playlists(self) -> dict[str, Any]:
-        """Every playlist of the signed-in account."""
+    def get_playlists(self, fresh: bool = False) -> dict[str, Any]:
+        """Every playlist of the signed-in account.
+
+        ``fresh=True`` re-reads the list from the server; without it the
+        cached list is used, which is what keeps the sidebar quick.
+        """
         user = self.login_manager.user_info
         if not user or not user.user_id:
             return {"success": False, "error_key": "player.login_required", "playlists": []}
         playlists = self._safe("account playlists", self.api.get_user_playlists_all,
-                               user.user_id)
+                               user.user_id, fresh=fresh)
         if playlists is None:
             return {"success": False, "error_key": "error.network", "playlists": []}
         return {
@@ -1207,13 +1214,19 @@ class GuiBridge:
             "can_delete": is_own and not is_liked_music,
         }
 
-    def get_playlist_tracks(self, playlist_id: str) -> dict[str, Any]:
-        """Tracks of one playlist, in playlist order (does not touch the download tab)."""
+    def get_playlist_tracks(self, playlist_id: str, fresh: bool = False) -> dict[str, Any]:
+        """Tracks of one playlist, in playlist order (does not touch the download tab).
+
+        ``fresh=True`` skips every cached copy of this playlist -- it is what
+        the refresh button asks for, so that a playlist edited elsewhere
+        shows its new contents right away.
+        """
         playlist_id = str(playlist_id or "").strip()
         if not playlist_id.isdigit():
             return {"success": False, "error_key": "playlist.invalid_input", "tracks": []}
-        info = self._safe("playlist info", self.api.get_playlist_info, playlist_id)
-        songs = self._safe("playlist songs", self.api.get_playlist_songs, playlist_id) or []
+        info = self._safe("playlist info", self.api.get_playlist_info, playlist_id, fresh=fresh)
+        songs = self._safe("playlist songs", self.api.get_playlist_songs, playlist_id,
+                           fresh=fresh) or []
         if not songs:
             return {"success": False, "error_key": "playlist.fetch_failed", "tracks": []}
         return {
@@ -1222,12 +1235,17 @@ class GuiBridge:
             "tracks": [self._track_payload(index, song) for index, song in enumerate(songs)],
         }
 
-    def get_liked_tracks(self) -> dict[str, Any]:
-        """The account's "liked" list (needs a login)."""
+    def get_liked_tracks(self, fresh: bool = False) -> dict[str, Any]:
+        """The account's "liked" list (needs a login).
+
+        ``fresh=True`` skips the cached id list, so a song that was just
+        liked appears at once instead of after the cache expires.
+        """
         user = self.login_manager.user_info
         if not user or not user.user_id:
             return {"success": False, "error_key": "player.login_required", "tracks": []}
-        ids = self._safe("liked ids", self.api.get_liked_song_ids, user.user_id)
+        ids = self._safe("liked ids", self.api.get_liked_song_ids, user.user_id,
+                         use_cache=not fresh)
         if not ids:
             return {"success": True, "tracks": []}
         songs = self._safe("liked songs", self.api.get_songs_detail, ids) or []

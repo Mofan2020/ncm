@@ -305,3 +305,39 @@ def test_every_identifier_the_script_uses_is_defined():
 
     assert used, "the script should use variables"
     assert missing == [], f"app.js uses undefined identifiers: {missing}"
+
+
+# --------------------------------------------------------------- the refresh
+def test_the_refresh_button_exists_and_is_wired_up():
+    """There must be a way to re-read the list without restarting."""
+    assert 'id="btn-refresh-list"' in HTML
+    assert "btn-refresh-list" in JS
+    assert "refreshCurrentSource" in JS
+
+
+def test_the_refresh_button_has_a_title_in_both_languages():
+    for lang in ("zh_cn", "en_us"):
+        flat = _flat_catalogue(lang)
+        assert flat.get("player.refresh_list"), f"{lang} misses player.refresh_list"
+
+
+def test_the_refresh_skips_the_cache():
+    """A refresh that reads the cache is not a refresh."""
+    assert re.search(r"loadLiked\(true\)", JS), "the liked list must be read fresh"
+    assert re.search(r"loadPlaylists\(true\)", JS), "the playlist list must be read fresh"
+    assert re.search(r"openPlaylist\(\s*player\.playlistOpen\s*,\s*true\s*\)", JS), \
+        "an open playlist must be re-read fresh"
+
+
+def test_a_favorite_refreshes_the_list_it_came_from():
+    """After a like the list on screen has to show the new state."""
+    assert "result.liked_dirty" in JS
+    assert re.search(r"if \(result\.liked_dirty\)\s*refreshCurrentSource\(\)", JS)
+
+
+def test_the_bridge_passes_the_fresh_flag_through():
+    bridge = BRIDGE.read_text(encoding="utf-8")
+    assert "def get_playlist_tracks(self, playlist_id: str, fresh: bool = False)" in bridge
+    assert "def get_playlists(self, fresh: bool = False)" in bridge
+    assert "def get_liked_tracks(self, fresh: bool = False)" in bridge
+    assert re.search(r"get_liked_song_ids\(\s*user\.user_id,\s*\n?\s*use_cache=not fresh\)", bridge)

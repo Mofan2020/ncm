@@ -136,10 +136,10 @@ class FakePlaylistAPI:
         self.debug = False
         self.last_url_error = None
 
-    def get_playlist_info(self, playlist_id):
+    def get_playlist_info(self, playlist_id, max_tracks=1000, fresh=False):
         return dict(self.INFO)
 
-    def get_playlist_songs(self, playlist_id):
+    def get_playlist_songs(self, playlist_id, fresh=False):
         return [dict(song) for song in self.SONGS]
 
     def get_song_url_info(self, song_id, quality="standard"):
@@ -163,10 +163,10 @@ class FakePlaylistAPI:
                   "specialType": 0, "subscribed": False,
                   "creator": {"userId": "42", "nickname": "tester"}}]
 
-    def get_user_playlists(self, uid, limit=100, offset=0):
+    def get_user_playlists(self, uid, limit=100, offset=0, fresh=False):
         return {"playlists": list(self.playlists), "more": False}
 
-    def get_user_playlists_all(self, uid, max_pages=20):
+    def get_user_playlists_all(self, uid, max_pages=20, fresh=False):
         return list(self.playlists)
 
     def get_liked_song_ids(self, uid, use_cache=True):

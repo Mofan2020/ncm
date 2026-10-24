@@ -246,7 +246,7 @@ def test_the_playlist_tracks_are_cached(isolated_home):
 
     calls = []
 
-    def fake_fetch(playlist_id):
+    def fake_fetch(playlist_id, use_cache=True):
         calls.append(playlist_id)
         return [{"id": 1}]
 
@@ -267,7 +267,7 @@ def test_the_playlist_metadata_is_cached(isolated_home):
 
     calls = []
 
-    def fake_eapi(path, data=None):
+    def fake_eapi(path, data=None, use_cache=True):
         calls.append(path)
         return {"playlist": {"id": 42, "name": "List", "coverImgId": 7,
                              "trackCount": 3, "creator": {"nickname": "me"}}}
@@ -289,12 +289,12 @@ def test_the_cached_playlist_metadata_is_used_when_the_server_is_down(isolated_h
     api_module._api_instance = None
     instance = api_module.NeteaseAPI()
 
-    instance._eapi = lambda path, data=None: {
+    instance._eapi = lambda path, data=None, use_cache=True: {
         "playlist": {"id": 42, "name": "List", "coverImgId": 7}}
     instance.get_playlist_info("42")
 
     # Now the server is unreachable.
-    instance._eapi = lambda path, data=None: None
+    instance._eapi = lambda path, data=None, use_cache=True: None
     instance._legacy = lambda *a, **k: None
     instance.clear_playlist_cache()
     fallback = instance.get_playlist_info("42")

@@ -158,6 +158,46 @@ class MetaCache:
         except OSError:
             pass
 
+    def discard_prefix(self, kind: str, prefix: str) -> int:
+        """Drop every entry of ``kind`` whose key starts with ``prefix``.
+
+        The keys are hashed, so the prefix cannot be matched on disk.  The
+        stored key is kept inside the file, which makes this a read of every
+        entry -- acceptable, because invalidation happens after a write and
+        the folders hold at most :data:`MAX_ENTRIES` files.
+        """
+        prefix = str(prefix or "")
+        if not prefix:
+            return 0
+        folder = self.root / kind
+        removed = 0
+        try:
+            entries = list(folder.iterdir())
+        except OSError:
+            return 0
+        for entry in entries:
+            try:
+                if not entry.is_file():
+                    continue
+                raw = entry.read_text(encoding="utf-8")
+                stored = json.loads(raw)
+                key = str(stored.get("key") or "")
+            except (OSError, UnicodeDecodeError, ValueError):
+                # A file we cannot read is a file we cannot trust either.
+                try:
+                    entry.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+                continue
+            if key.startswith(prefix):
+                try:
+                    entry.unlink()
+                    removed += 1
+                except OSError:
+                    continue
+        return removed
+
     def clear(self, kind: str | None = None) -> int:
         """Drop cached entries.  Returns how many files went."""
         removed = 0

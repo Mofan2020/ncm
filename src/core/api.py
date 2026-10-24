@@ -127,6 +127,17 @@ def quality_fallbacks(quality: str) -> list[str]:
     return list(reversed(QUALITY_ORDER[: index + 1]))
 
 
+def _scope_matches(scope: str, wanted: str) -> bool:
+    """Whether a cached scope is covered by an invalidation request.
+
+    ``liked:*`` matches every account's liked ids; everything else matches
+    exactly.
+    """
+    if wanted.endswith(":*"):
+        return scope.startswith(wanted[:-1])
+    return scope == wanted
+
+
 class NeteaseAPI:
     """HTTP client for the NetEase Cloud Music API."""
 
@@ -164,6 +175,10 @@ class NeteaseAPI:
         }
 
         self._playlist_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        #: The "liked music" playlists (specialType 5) we have seen.  Their
+        #: contents are the account's favourites, so a like or an unlike has
+        #: to invalidate their cached track list too.
+        self._liked_music_playlists: set[str] = set()
         # Cache for search and other API responses
         self._response_cache: dict[str, tuple[float, Any]] = {}
         self._cache_ttl = 60.0  # 60 seconds cache TTL
@@ -247,6 +262,26 @@ class NeteaseAPI:
             self._log(f"eapi returned non-JSON for {path}: {text[:120]!r}", "warning")
             return None
 
+    def _scope_for(self, path: str, data: dict[str, Any] | None) -> str:
+        """What a cached answer depends on, derived from the request.
+
+        The scope is what makes an answer *invalidatable*: when the account
+        likes a song, the answers that were built from the old liked list
+        have to be thrown away.  It is derived from the endpoint and the
+        request rather than passed in, so no caller can forget it.
+        """
+        payload = data or {}
+        if path == LIKE_LIST_ENDPOINT:
+            uid = payload.get("uid")
+            return f"liked:{uid}" if uid else ""
+        if path == USER_PLAYLIST_ENDPOINT:
+            uid = payload.get("uid")
+            return f"userplaylists:{uid}" if uid else ""
+        if path in ("/api/v6/playlist/detail", "/v3/playlist/detail"):
+            pid = payload.get("id")
+            return f"playlist:{pid}" if pid else ""
+        return ""
+
     def _cache_key(self, path: str, data: dict[str, Any] | None) -> str:
         """Generate a cache key for an API call."""
         import hashlib
@@ -261,7 +296,112 @@ class NeteaseAPI:
             return cached[1]
         return None
 
-    def _set_cached(self, cache_key: str, value: Any) -> None:
+    # ------------------------------------------------------------ invalidation
+    def invalidate_scopes(self, *scopes: str) -> int:
+        """Drop the cached responses that belong to the given scopes.
+
+        A *scope* is a label for what a cached answer depends on -- the
+        account's liked ids, one playlist, the account's playlist list.  When
+        the account changes something, the answers that depend on it are no
+        longer true, and the only safe way to keep them is to throw them
+        away.
+
+        Without this, the cache turns every write into a lie: the song was
+        liked on the server, but the app kept answering from the minute-old
+        cached id list, so "我喜欢的音乐" never showed the new song.
+
+        A scope ending in ``:*`` is a prefix match, so ``liked:*`` drops the
+        liked ids of every account.
+        """
+        wanted = {str(scope) for scope in scopes if scope}
+        if not wanted:
+            return 0
+        cache = getattr(self, "_response_cache", None)
+        if not cache:
+            return 0
+        removed = 0
+        for key, entry in list(cache.items()):
+            scope = entry[3] if len(entry) > 3 else ""
+            if scope and any(_scope_matches(scope, want) for want in wanted):
+                cache.pop(key, None)
+                removed += 1
+        return removed
+
+    def invalidate_paths(self, *paths: str) -> int:
+        """Drop the cached responses of the given endpoints."""
+        wanted = {str(path) for path in paths if path}
+        if not wanted:
+            return 0
+        cache = getattr(self, "_response_cache", None)
+        if not cache:
+            return 0
+        removed = 0
+        for key, entry in list(cache.items()):
+            if len(entry) > 2 and entry[2] in wanted:
+                cache.pop(key, None)
+                removed += 1
+        return removed
+
+    def invalidate_playlist(self, playlist_id: str) -> int:
+        """Forget everything the app knows about one playlist.
+
+        The in-memory playlist cache holds the **whole** playlist object,
+        track list included, so it has to go as well -- otherwise the
+        short-lived track list would still be read out of a five-minute-old
+        snapshot.
+        """
+        pid = str(playlist_id or "").strip()
+        if not pid:
+            return 0
+        removed = 0
+        cache = getattr(self, "_playlist_cache", None)
+        if cache is not None:
+            removed += cache.pop(pid, None) is not None
+        removed += self.invalidate_scopes(f"playlist:{pid}")
+        disk = get_meta_cache()
+        disk.discard("playlist", f"tracks:{pid}")
+        disk.discard("meta", f"playlist:{pid}")
+        return int(removed)
+
+    def invalidate_liked(self, uid: str = "") -> int:
+        """Forget the account's liked list.
+
+        The liked ids are the source of truth for every heart in the app, so
+        after a like or an unlike they have to be re-read.  The "liked music"
+        playlist *is* that list, so its cached track list goes too.
+
+        Called without a uid it drops the liked ids of every account -- the
+        app only ever has one account, and the like endpoint does not need
+        to know which one it was.
+        """
+        uid = str(uid or "").strip()
+        scope = f"liked:{uid}" if uid else "liked:*"
+        removed = self.invalidate_scopes(scope)
+        for pid in list(getattr(self, "_liked_music_playlists", ())):
+            removed += self.invalidate_playlist(pid)
+        # The "liked music" playlist also appears in the account's playlist
+        # list, with its track count.  A like changes that number, so the
+        # list has to be re-read as well.
+        removed += self.invalidate_user_playlists(uid)
+        return removed
+
+    def invalidate_user_playlists(self, uid: str = "") -> int:
+        """Forget the account's own playlist list.
+
+        The list holds the account's playlists **and** their track counts, so
+        a change to any of them makes it wrong.  Called without a uid it
+        drops the list of every account.
+        """
+        uid = str(uid or "").strip()
+        scope = f"userplaylists:{uid}" if uid else "userplaylists:*"
+        removed = self.invalidate_scopes(scope)
+        disk = get_meta_cache()
+        removed += disk.discard_prefix("playlist", f"userplaylists:{uid}:" if uid
+                                        else "userplaylists:")
+        return removed
+
+    def _set_cached(self, cache_key: str, value: Any, path: str = "",
+                    scope: str = "") -> None:
         """Cache a response.
 
         The cache is **bounded** in both directions.  An expired entry used to
@@ -270,16 +410,20 @@ class NeteaseAPI:
         entries (each holding a full API response) that nothing could reclaim.
         Expired keys are dropped on write, and the dict is capped so a burst
         of distinct requests cannot blow it up.
+
+        Every entry remembers the endpoint it came from and the *scope* it
+        depends on, so a write can throw away exactly the answers that the
+        write made wrong.
         """
         now = time.time()
         if len(self._response_cache) >= self._response_cache_max:
             self._prune_response_cache(now)
-        self._response_cache[cache_key] = (now + self._cache_ttl, value)
+        self._response_cache[cache_key] = (now + self._cache_ttl, value, path, scope)
 
     def _prune_response_cache(self, now: float | None = None) -> int:
         """Drop expired cache entries.  Returns how many went."""
         now = now if now is not None else time.time()
-        expired = [key for key, (until, _) in self._response_cache.items() if until <= now]
+        expired = [key for key, (until, *_rest) in self._response_cache.items() if until <= now]
         for key in expired:
             self._response_cache.pop(key, None)
         # Still over the cap: drop the oldest entries.
@@ -290,9 +434,13 @@ class NeteaseAPI:
                 self._response_cache.pop(key, None)
         return len(expired)
 
-    def _eapi(self, path: str, data: dict[str, Any] | None = None, use_cache: bool = True) -> dict[str, Any] | None:
+    def _eapi(self, path: str, data: dict[str, Any] | None = None,
+              use_cache: bool = True) -> dict[str, Any] | None:
         """Signed eapi call with retries, host rotation, and optional caching."""
-        cache_key = self._cache_key(path, data) if use_cache else None
+        scope = self._scope_for(path, data)
+        # The scope is part of the key: two answers to the same endpoint
+        # that depend on different things must not share one entry.
+        cache_key = self._cache_key(f"{path}|{scope}", data) if use_cache else None
         if cache_key:
             cached = self._get_cached(cache_key)
             if cached is not None:
@@ -310,7 +458,7 @@ class NeteaseAPI:
                     continue
                 self.stats["successful_requests"] += 1
                 if cache_key:
-                    self._set_cached(cache_key, result)
+                    self._set_cached(cache_key, result, path=path, scope=scope)
                 return result
             if attempt < self.MAX_RETRIES - 1:
                 self._switch_host()
@@ -331,7 +479,8 @@ class NeteaseAPI:
         url = f"{self.LEGACY_HOST}{endpoint}"
         payload = dict(params or {})
         payload.setdefault("timestamp", int(time.time() * 1000))
-        cache_key = self._cache_key(endpoint, payload) if use_cache else None
+        scope = self._scope_for(endpoint, payload)
+        cache_key = self._cache_key(f"{endpoint}|{scope}", payload) if use_cache else None
 
         if cache_key:
             cached = self._get_cached(cache_key)
@@ -348,7 +497,7 @@ class NeteaseAPI:
                     result = resp.json()
                     self.stats["successful_requests"] += 1
                     if cache_key:
-                        self._set_cached(cache_key, result)
+                        self._set_cached(cache_key, result, path=endpoint, scope=scope)
                     return result
                 self._log(f"legacy {endpoint} -> HTTP {resp.status_code} {resp.text[:80]!r}", "warning")
             except requests.exceptions.RequestException as exc:
@@ -362,43 +511,35 @@ class NeteaseAPI:
         return None
 
     # -------------------------------------------------------------- playlists
-    def get_playlist_info(self, playlist_id: str, max_tracks: int = 1000) -> dict[str, Any] | None:
-        """Fetch playlist metadata (with up to ``max_tracks`` tracks inline).
+    def _fetch_playlist_detail(self, playlist_id: str,
+                               max_tracks: int = 1000,
+                               use_cache: bool = True) -> dict[str, Any] | None:
+        """Ask the server for one playlist.  No caching happens here.
 
-        The metadata (name, cover, description) is cached on disk.  A
-        playlist's *contents* change when its owner edits it, but its name
-        and cover rarely do -- and the cover is a separate image request
-        the user should not pay for every time they open the list.
+        This is the single point where a playlist is fetched, so the two
+        cache layers above it can be reasoned about separately: the
+        in-memory one for the metadata, the on-disk one for the track list.
         """
-        cache_key = str(playlist_id)
-        cached = self._playlist_cache.get(cache_key)
-        if cached and time.time() - cached[0] < self.PLAYLIST_CACHE_TTL:
-            return cached[1]
-
-        disk = get_meta_cache()
-        stored = disk.get_meta(f"playlist:{cache_key}") or {}
-
         payload = {"id": int(playlist_id) if str(playlist_id).isdigit() else playlist_id,
                    "n": max_tracks, "s": 8}
-        result = self._eapi("/api/v6/playlist/detail", payload)
+        result = self._eapi("/api/v6/playlist/detail", payload, use_cache=use_cache)
         playlist = (result or {}).get("playlist")
         if not playlist:
             legacy = self._legacy("/v3/playlist/detail", {"id": playlist_id, "n": max_tracks})
             playlist = (legacy or {}).get("playlist") or (legacy or {}).get("result")
-        if not playlist:
-            # The server is unreachable, but the cached metadata still shows
-            # the playlist's name and cover.  Return it with an empty track
-            # list rather than nothing at all.
-            if stored:
-                fallback = dict(stored)
-                fallback.setdefault("tracks", [])
-                fallback.setdefault("trackIds", [])
-                return fallback
-            return None
+        return playlist
 
+    def _store_playlist_info(self, playlist_id: str, playlist: dict[str, Any]) -> None:
+        """Remember a playlist's metadata and refresh the on-disk copy."""
+        cache_key = str(playlist_id)
         self._playlist_cache[cache_key] = (time.time(), playlist)
+        # The "liked music" playlist is the account's favourites; a like or
+        # an unlike changes it, so it has to be droppable by id.
+        if int(playlist.get("specialType") or 0) == 5:
+            self._liked_music_playlists.add(cache_key)
         # Keep only the metadata, not the inline track list: the list is
         # long and changes; the name and cover do not.
+        disk = get_meta_cache()
         disk.set_meta(f"playlist:{cache_key}", {
             "id": playlist.get("id"),
             "name": playlist.get("name"),
@@ -413,9 +554,46 @@ class NeteaseAPI:
             "shareCount": playlist.get("shareCount"),
             "commentCount": playlist.get("commentCount"),
         })
+
+    def get_playlist_info(self, playlist_id: str, max_tracks: int = 1000,
+                          fresh: bool = False) -> dict[str, Any] | None:
+        """Fetch playlist metadata (with up to ``max_tracks`` tracks inline).
+
+        The metadata (name, cover, description) is cached on disk.  A
+        playlist's *contents* change when its owner edits it, but its name
+        and cover rarely do -- and the cover is a separate image request
+        the user should not pay for every time they open the list.
+
+        ``fresh=True`` skips the in-memory copy; it is what a manual
+        refresh asks for.
+        """
+        cache_key = str(playlist_id)
+        if not fresh:
+            cached = self._playlist_cache.get(cache_key)
+            if cached and time.time() - cached[0] < self.PLAYLIST_CACHE_TTL:
+                return cached[1]
+
+        disk = get_meta_cache()
+        stored = disk.get_meta(f"playlist:{cache_key}") or {}
+
+        playlist = self._fetch_playlist_detail(playlist_id, max_tracks,
+                                               use_cache=not fresh)
+        if not playlist:
+            # The server is unreachable, but the cached metadata still shows
+            # the playlist's name and cover.  Return it with an empty track
+            # list rather than nothing at all.
+            if stored:
+                fallback = dict(stored)
+                fallback.setdefault("tracks", [])
+                fallback.setdefault("trackIds", [])
+                return fallback
+            return None
+
+        self._store_playlist_info(cache_key, playlist)
         return playlist
 
-    def get_playlist_songs(self, playlist_id: str) -> list[dict[str, Any]] | None:
+    def get_playlist_songs(self, playlist_id: str,
+                            fresh: bool = False) -> list[dict[str, Any]] | None:
         """Return the complete track list of a playlist, in playlist order.
 
         Playlists longer than the inline page size are completed through
@@ -426,20 +604,37 @@ class NeteaseAPI:
         a playlist's *contents* change when the owner edits it, so the
         cache is short-lived and the playlist's own metadata (name, cover)
         is refreshed separately.
+
+        ``fresh=True`` skips the cached list entirely -- that is the manual
+        refresh, and it is also what a write uses to make sure the change
+        shows up at once.
         """
         cache = get_meta_cache()
-        cached = cache.get_playlist(f"tracks:{playlist_id}")
-        if cached:
-            return cached
-        tracks = self._fetch_playlist_songs(playlist_id)
+        if not fresh:
+            cached = cache.get_playlist(f"tracks:{playlist_id}")
+            if cached:
+                return cached
+        tracks = self._fetch_playlist_songs(playlist_id, use_cache=not fresh)
         if tracks:
             cache.set_playlist(f"tracks:{playlist_id}", tracks)
         return tracks
 
-    def _fetch_playlist_songs(self, playlist_id: str) -> list[dict[str, Any]] | None:
-        info = self.get_playlist_info(playlist_id)
+    def _fetch_playlist_songs(self, playlist_id: str,
+                               use_cache: bool = True) -> list[dict[str, Any]] | None:
+        """The playlist's tracks, read from the server.
+
+        This always asks the server.  Reading the tracks out of the
+        playlist-info cache instead would re-cache a stale list under a
+        fresh timestamp, and the staleness would then last another whole
+        TTL -- the cache would keep the wrong answer alive.
+        """
+        info = self._fetch_playlist_detail(playlist_id, use_cache=use_cache)
         if not info:
             return None
+        # The fetch above is the freshest answer, so it may as well refresh
+        # the metadata cache too; the caller that needs the metadata right
+        # after this gets it without another request.
+        self._store_playlist_info(str(playlist_id), info)
 
         tracks: list[dict[str, Any]] = list(info.get("tracks") or [])
         track_ids = [str(item.get("id")) for item in (info.get("trackIds") or [])]
@@ -734,7 +929,7 @@ class NeteaseAPI:
 
     # ----------------------------------------------------------- account music
     def get_user_playlists(self, uid: str, limit: int = 100,
-                           offset: int = 0) -> dict[str, Any]:
+                           offset: int = 0, fresh: bool = False) -> dict[str, Any]:
         """All playlists of ``uid`` -- ``{"playlists": [...], "more": bool}``.
 
         Verified live 2026-10-01: ``eapi /api/user/playlist`` answers ``code 200``
@@ -746,7 +941,7 @@ class NeteaseAPI:
             return {"playlists": [], "more": False}
         cache = get_meta_cache()
         page_key = f"userplaylists:{uid}:{limit}:{offset}"
-        if offset == 0:
+        if offset == 0 and not fresh:
             cached = cache.get_playlist(page_key)
             if cached:
                 return cached
@@ -754,7 +949,7 @@ class NeteaseAPI:
                    "limit": max(1, min(int(limit or 100), 1000)),
                    "offset": max(0, int(offset or 0)),
                    "includeVideo": "true"}
-        result = self._eapi(USER_PLAYLIST_ENDPOINT, payload)
+        result = self._eapi(USER_PLAYLIST_ENDPOINT, payload, use_cache=not fresh)
         playlists = (result or {}).get("playlist")
         if not isinstance(playlists, list):
             legacy = self._legacy("/user/playlist", payload)
@@ -767,12 +962,13 @@ class NeteaseAPI:
             cache.set_playlist(page_key, answer)
         return answer
 
-    def get_user_playlists_all(self, uid: str, max_pages: int = 20) -> list[dict[str, Any]]:
+    def get_user_playlists_all(self, uid: str, max_pages: int = 20,
+                               fresh: bool = False) -> list[dict[str, Any]]:
         """Page through :meth:`get_user_playlists` until ``more`` is false."""
         collected: list[dict[str, Any]] = []
         offset = 0
         for _ in range(max(1, max_pages)):
-            page = self.get_user_playlists(uid, limit=100, offset=offset)
+            page = self.get_user_playlists(uid, limit=100, offset=offset, fresh=fresh)
             batch = page["playlists"]
             collected.extend(batch)
             if not page["more"] or len(batch) < 100:
@@ -831,6 +1027,10 @@ class NeteaseAPI:
         result = self._eapi(LIKE_ENDPOINT, payload, use_cache=False)
         code = (result or {}).get("code")
         if code == 200:
+            # The liked ids, and with them every heart and the "liked music"
+            # playlist, are now different.  Cached answers would keep
+            # showing the old state until they expired.
+            self.invalidate_liked()
             return "ok"
         if code in (524, 512):
             # The reference implementation uses /api/radio/like; it answers
@@ -839,6 +1039,7 @@ class NeteaseAPI:
             legacy = self._eapi(LIKE_RADIO_ENDPOINT, payload, use_cache=False)
             legacy_code = (legacy or {}).get("code")
             if legacy_code == 200:
+                self.invalidate_liked()
                 return "ok"
             code = legacy_code if legacy_code is not None else code
         if code == 405:
@@ -937,6 +1138,8 @@ class NeteaseAPI:
         }
         # No caching: a write must always reach the server.
         result = self._eapi(PLAYLIST_CREATE_ENDPOINT, payload, use_cache=False)
+        if (result or {}).get("code") == 200:
+            self.invalidate_user_playlists()
         return result
 
     def update_playlist(self, playlist_id: str, name: str | None = None,
@@ -965,6 +1168,11 @@ class NeteaseAPI:
         if not batch:
             return None
         result = self._eapi("/api/batch", batch, use_cache=False)
+        if (result or {}).get("code") == 200:
+            # The name and the cover of the playlist changed, and the
+            # account's playlist list shows the old name.
+            self.invalidate_playlist(playlist_id)
+            self.invalidate_user_playlists()
         return result
 
     def delete_playlist(self, playlist_ids: list[str]) -> dict[str, Any] | None:
@@ -974,6 +1182,10 @@ class NeteaseAPI:
             return None
         payload = {"ids": json.dumps(ids)}
         result = self._eapi(PLAYLIST_DELETE_ENDPOINT, payload, use_cache=False)
+        if (result or {}).get("code") == 200:
+            for playlist_id in ids:
+                self.invalidate_playlist(playlist_id)
+            self.invalidate_user_playlists()
         return result
 
     def _manipulate_playlist_tracks(self, playlist_id: str, track_ids: list[str],
@@ -997,6 +1209,11 @@ class NeteaseAPI:
             "imme": "true",
         }
         result = self._eapi(PLAYLIST_TRACKS_ENDPOINT, payload, use_cache=False)
+        if (result or {}).get("code") == 200:
+            # The track list of this playlist is different now.  The
+            # in-memory playlist cache holds the whole playlist object, so it
+            # has to go too -- otherwise it would keep serving the old list.
+            self.invalidate_playlist(playlist_id)
         return result
 
     def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]) -> dict[str, Any] | None:
@@ -1017,6 +1234,10 @@ class NeteaseAPI:
             "t": 1 if subscribe else 2,  # 1=subscribe, 2=unsubscribe
         }
         result = self._eapi(PLAYLIST_SUBSCRIBE_ENDPOINT, payload, use_cache=False)
+        if (result or {}).get("code") == 200:
+            # The account's playlist list gains or loses this playlist.
+            self.invalidate_user_playlists()
+            self.invalidate_playlist(playlist_id)
         return result
 
     def update_playlist_cover(self, playlist_id: str, cover_url: str) -> dict[str, Any] | None:
@@ -1029,6 +1250,8 @@ class NeteaseAPI:
             "imgUrl": cover_url,
         }
         result = self._eapi(PLAYLIST_COVER_UPDATE_ENDPOINT, payload, use_cache=False)
+        if (result or {}).get("code") == 200:
+            self.invalidate_playlist(playlist_id)
         return result
 
     def get_playlist_detail_dynamic(self, playlist_id: str) -> dict[str, Any] | None:

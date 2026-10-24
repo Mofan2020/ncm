@@ -370,7 +370,8 @@
     "favorite_cloud_unsupported": "这首歌暂不支持云端收藏，已保存在本地",
     "favorite_cloud_busy": "操作太频繁，稍后再试一次即可同步到云端",
     "playlist_liked_locked": "「我喜欢的音乐」不能重命名或删除，收藏请点红心",
-    "playlist_not_owned": "只能取消收藏别人创建的歌单"
+    "playlist_not_owned": "只能取消收藏别人创建的歌单",
+    "refresh_list": "刷新列表"
   },
   "lyrics": {
     "loading": "正在加载歌词...",

@@ -370,7 +370,8 @@
     "favorite_cloud_unsupported": "NetEase does not accept this track for cloud favourites; it is saved locally",
     "favorite_cloud_busy": "Too many requests -- try again in a moment to sync to the cloud",
     "playlist_liked_locked": "\"Liked music\" cannot be renamed or deleted; use the heart to favourite",
-    "playlist_not_owned": "You can only un-subscribe a playlist somebody else created"
+    "playlist_not_owned": "You can only un-subscribe a playlist somebody else created",
+    "refresh_list": "Refresh list"
   },
   "lyrics": {
     "loading": "Loading lyrics...",

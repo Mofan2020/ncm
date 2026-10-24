@@ -1978,12 +1978,30 @@ function updateMobileLyricHighlight() {
     centerLyricLine(box, line, true);
 }
 
-async function loadPlaylists() {
+/** Re-read the list that is on screen, skipping every cache. */
+async function refreshCurrentSource() {
+    const source = player.sourceTab;
+    if (source === 'liked') {
+        await loadLiked(true);
+    } else if (source === 'playlists') {
+        if (player.playlistOpen) {
+            await openPlaylist(player.playlistOpen, true);
+        } else {
+            await loadPlaylists(true);
+        }
+    } else {
+        // The other tabs hold data that does not change under the user's
+        // feet; a plain reload of the current tab is enough.
+        await selectSource(source);
+    }
+}
+
+async function loadPlaylists(fresh) {
     setListTitle(t('player.source_playlists'));
     const container = document.getElementById('playlist-list');
     container.innerHTML = `<p class="empty">${t('common.loading')}</p>`;
     document.getElementById('track-list').innerHTML = '';
-    const result = await state.api.get_playlists();
+    const result = await state.api.get_playlists(!!fresh);
     if (!result.success) {
         player.playlists = [];
         container.innerHTML = '';
@@ -2095,11 +2113,11 @@ function renderPlaylists(playlists) {
     setListCount(playlists.length);
 }
 
-async function openPlaylist(playlist) {
+async function openPlaylist(playlist, fresh) {
     player.playlistOpen = playlist;
     document.getElementById('playlist-list').innerHTML =
         `<p class="empty">${t('common.loading')}</p>`;
-    const result = await state.api.get_playlist_tracks(playlist.id);
+    const result = await state.api.get_playlist_tracks(playlist.id, !!fresh);
     if (!result.success) {
         renderPlaylists(player.playlists);
         showError(result, 'playlist.fetch_failed');
@@ -2179,10 +2197,10 @@ async function toggleSubscribePlaylist(playlist) {
     }
 }
 
-async function loadLiked() {
+async function loadLiked(fresh) {
     setListTitle(t('player.source_liked'));
     document.getElementById('playlist-list').innerHTML = '';
-    const result = await state.api.get_liked_tracks();
+    const result = await state.api.get_liked_tracks(!!fresh);
     if (!result.success) {
         renderEmptyTracks(t(result.error_key || 'player.login_required'));
         return;
@@ -4087,6 +4105,9 @@ async function toggleFavorite(track) {
     else if (wanted) showToast('success', t('player.favorite_added'), 1800);
     refreshTrackRow(key);
     renderNowPlaying();
+    // The account's liked list changed, so the list on screen is out of
+    // date.  Re-read it now instead of waiting for the cache to expire.
+    if (result.liked_dirty) refreshCurrentSource();
 }
 
 /* ---------------------------------------------------------------- lyrics */
@@ -5944,6 +5965,12 @@ function bindStaticEvents() {
         else doSearch(true);
     });
     document.getElementById('btn-list-back').addEventListener('click', backToPlaylists);
+    // Re-read the list on screen, skipping every cache.  This is the way
+    // out when a playlist was changed on another device: the caches are
+    // there to spare the server, not to hide a change the user can see
+    // on their phone.
+    document.getElementById('btn-refresh-list')
+        .addEventListener('click', refreshCurrentSource);
     document.getElementById('btn-add-folder').addEventListener('click', addLocalFolder);
     document.getElementById('btn-rescan').addEventListener('click', rescanLocal);
     document.getElementById('btn-save-lyrics').addEventListener('click', () => {
