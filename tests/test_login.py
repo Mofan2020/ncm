@@ -362,10 +362,20 @@ def test_debug_log_is_capped(manager, monkeypatch):
     assert manager.config_path_for_debug().stat().st_size <= 400
 
 
-def test_client_identity_cookies_are_installed(manager):
+def test_the_device_id_is_installed_but_not_the_client_identity(manager):
+    """The fake PC-client cookies are gone on purpose.
+
+    Sending ``os=pc`` / ``appver=8.9.70`` makes NetEase's risk control
+    refuse to add a track to the account's favourites: the like endpoint
+    answers ``code 524 当前环境异常，已取消喜欢``.  Measured on 2026-10-24,
+    eight tracks that always failed with the cookies present all succeeded
+    without them.
+    """
     cookies = manager.get_cookies()
-    assert cookies.get("os") == "pc"
+
     assert len(cookies.get("_ntes_nuid", "")) == 32
+    for name in ("os", "appver", "channel"):
+        assert name not in cookies
 
 
 # ------------------------------------------------------------------ bridge

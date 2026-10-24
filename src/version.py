@@ -1,6 +1,6 @@
 """Single source of truth for application identity and version."""
 
-__version__ = "3.4.1"
+__version__ = "3.4.2"
 
 #: Version of the disclaimer text shown on the first start.  Bump it when the
 #: text changes so the dialog is shown again after an update.

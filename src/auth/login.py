@@ -135,10 +135,29 @@ class LoginManager:
     #: Seconds between QR polls (the phone needs a moment to confirm).
     QR_POLL_INTERVAL = 1.5
 
-    #: Identity cookies the official PC client always carries.  Some login
-    #: endpoints only hand out a session cookie when the caller looks like a PC
-    #: client; they are harmless for the endpoints that ignore them.
-    CLIENT_COOKIES = {"os": "pc", "appver": "8.9.70", "channel": "netease"}
+    #: Identity cookies the official PC client always carries.
+    #:
+    #: These were installed so that "some login endpoints only hand out a
+    #: session cookie when the caller looks like a PC client".  That turned
+    #: out to cost more than it bought: **the like endpoint refuses to add a
+    #: track when they are present.**  NetEase answers ``code 524
+    #: 当前环境异常，已取消喜欢`` ("the environment looks abnormal, the like was
+    #: cancelled") -- the risk control sees a session that claims to be the PC
+    #: client but was not issued to it.
+    #:
+    #: Measured on 2026-10-24, eight tracks that always fail with the full
+    #: cookie set, each tried from a clean "not liked" state:
+    #:
+    #:     full set (with os/appver)   -> 524, 524, 524, 524, 524, 524, 524, 524
+    #:     without os/appver           -> 200, 200, 200, 200, 200, 200, 200, 200
+    #:
+    #: and every other endpoint the project uses (account, liked ids, user
+    #: playlists, song detail, search, playlist detail, lyrics, play url)
+    #: answers the same with and without them.
+    #:
+    #: So they are gone.  The QR login still works without them: the session
+    #: cookie is minted from the account, not from the identity cookies.
+    CLIENT_COOKIES: dict[str, str] = {}
 
     #: Cap for ``login-debug.log`` before it is rotated away.
     DEBUG_LOG_MAX = 256 * 1024
@@ -195,11 +214,21 @@ class LoginManager:
         self.load_saved_cookie()
 
     def _install_client_identity(self) -> None:
-        """Pretend to be the PC client (cookies only; the API still acks us)."""
+        """Give the session a stable client id.
+
+        ``CLIENT_COOKIES`` is empty on purpose -- see its docstring.  The
+        ``_ntes_nuid`` is a plain device id that NetEase hands out to every
+        client; keeping it stable is harmless and keeps the session looking
+        like a returning one.
+        """
         for name, value in self.CLIENT_COOKIES.items():
             self._session.cookies.set(name, value, domain=".music.163.com")
         if not self._session.cookies.get("_ntes_nuid"):
             self._session.cookies.set("_ntes_nuid", uuid.uuid4().hex, domain=".music.163.com")
+        # A cookie saved before this change still carries the identity
+        # cookies; drop them so an upgraded app stops sending them.
+        for name in ("os", "appver", "channel"):
+            self._session.cookies.pop(name, None)
 
     # ------------------------------------------------------------ diagnostics
     def config_path_for_debug(self) -> Path:
@@ -242,11 +271,20 @@ class LoginManager:
         return cookies
 
     def _cookie_string(self) -> str:
-        return "; ".join(f"{k}={v}" for k, v in self._session.cookies.get_dict().items())
+        """The session cookies, without the identity cookies."""
+        return "; ".join(f"{k}={v}" for k, v in self._session.cookies.get_dict().items()
+                         if k not in ("os", "appver", "channel"))
 
     def apply_cookie_string(self, cookie_str: str) -> None:
-        """Merge a cookie header into the session."""
+        """Merge a cookie header into the session.
+
+        The identity cookies are dropped on the way in: a session saved by an
+        older build still carries them, and sending them makes the like
+        endpoint refuse to add tracks (see :attr:`CLIENT_COOKIES`).
+        """
         for key, value in self.parse_cookie_string(cookie_str).items():
+            if key in ("os", "appver", "channel"):
+                continue
             self._session.cookies.set(key, value, domain=".music.163.com")
 
     def _save_cookie(self) -> None:
