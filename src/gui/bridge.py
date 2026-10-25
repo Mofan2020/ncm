@@ -250,6 +250,7 @@ class GuiBridge:
                 "local_dirs": list(self.settings.playback.local_dirs),
                 "scan_depth": self.settings.playback.scan_depth,
                 "show_translation": self.settings.playback.show_translation,
+                "lyrics_scroll_idle_seconds": self.settings.playback.lyrics_scroll_idle_seconds,
             },
             "ui": {
                 "language": self.settings.ui.language,
@@ -326,7 +327,8 @@ class GuiBridge:
     def _clean_playback(self, data: dict[str, Any]) -> dict[str, Any]:
         cleaned = self._clean(data, {"prefer_online", "online_quality", "play_mode", "volume",
                                       "resume_playback", "report_play_count", "local_dirs",
-                                      "scan_depth", "show_translation", "last_local_dir"})
+                                      "scan_depth", "show_translation", "last_local_dir",
+                                      "lyrics_scroll_idle_seconds"})
         if "play_mode" in cleaned and cleaned["play_mode"] not in PLAY_MODES:
             cleaned["play_mode"] = "list"
         if isinstance(cleaned.get("local_dirs"), list):

@@ -139,3 +139,33 @@ def test_settings_is_marked_ready_only_after_it_is_usable(isolated_home):
 
     assert seen["ready_during_init"] is False
     assert settings.config_path.name.endswith(".yaml")
+
+
+# ------------------------------------------------------- lyrics scroll delay
+def test_the_lyrics_scroll_delay_defaults_to_four_seconds(isolated_home):
+    settings = get_settings()
+    assert settings.playback.lyrics_scroll_idle_seconds == 4
+
+
+def test_the_lyrics_scroll_delay_is_clamped(isolated_home):
+    """1-30 seconds: below one the panel would snap back while the user is
+    still reading, above thirty it would look broken."""
+    settings = get_settings()
+    settings.update_playback(lyrics_scroll_idle_seconds=99)
+    assert settings.playback.lyrics_scroll_idle_seconds == 30
+    settings.update_playback(lyrics_scroll_idle_seconds=0)
+    assert settings.playback.lyrics_scroll_idle_seconds == 1
+    settings.update_playback(lyrics_scroll_idle_seconds=-5)
+    assert settings.playback.lyrics_scroll_idle_seconds == 1
+    settings.update_playback(lyrics_scroll_idle_seconds="12")
+    assert settings.playback.lyrics_scroll_idle_seconds == 12
+
+
+def test_the_lyrics_scroll_delay_survives_a_restart(isolated_home):
+    from src.config import settings as settings_module
+
+    settings = get_settings()
+    settings.update_playback(lyrics_scroll_idle_seconds=9)
+    settings_module.Settings._instance = None
+    reloaded = get_settings()
+    assert reloaded.playback.lyrics_scroll_idle_seconds == 9

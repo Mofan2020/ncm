@@ -48,8 +48,9 @@ const player = {
     lyricIndex: -1,
     favoriteKeys: new Set(),
     counts: {},
-    autoScroll: true,
-    lastScrollAt: 0,
+    // Seconds the lyrics panel waits before it returns to the playing
+    // line after the user scrolled it away.
+    lyricsScrollIdleSeconds: 4,
     pendingPosition: 0,
     pendingRecord: false,
     recordedKey: '',
@@ -278,6 +279,9 @@ function refreshDynamicTexts() {
     updateStatusPill();
     renderTrackList();
     renderLyricSource();
+    // The idle delay is written in seconds, so the label follows the
+    // language like the rest of the settings.
+    updateLyricsScrollIdleLabel();
 }
 
 function failureReason(code) {
@@ -659,6 +663,7 @@ async function loadSettings() {
     player.mode = state.settings.playback.play_mode || 'list';
     player.volume = state.settings.playback.volume;
     player.crossfadeDuration = state.settings.playback.crossfade_duration || 0;
+    player.lyricsScrollIdleSeconds = state.settings.playback.lyrics_scroll_idle_seconds || 4;
     player.sleepTimer.minutes = state.settings.playback.sleep_timer_minutes || 0;
     applyAppearance(state.settings);
     fillSettingsForm();
@@ -689,6 +694,12 @@ function fillSettingsForm() {
     setChecked('show-translation-check', s.playback.show_translation);
     setValue('crossfade-duration', s.playback.crossfade_duration || 0);
     updateCrossfadeLabel();
+    setValue('lyrics-scroll-idle', String(s.playback.lyrics_scroll_idle_seconds || 4));
+    // The slider works right away, so the runtime has to follow the form
+    // both ways: an unsaved change is dropped when the form is filled in
+    // again.
+    player.lyricsScrollIdleSeconds = s.playback.lyrics_scroll_idle_seconds || 4;
+    updateLyricsScrollIdleLabel();
     setValue('exclusive-mode-select', s.playback.exclusive_mode || 'off');
     setValue('sleep-timer-select', String(s.playback.sleep_timer_minutes || 0));
 
@@ -902,6 +913,7 @@ async function saveSettings() {
             report_play_count: document.getElementById('report-play-check').checked,
             show_translation: document.getElementById('show-translation-check').checked,
             crossfade_duration: parseFloat(document.getElementById('crossfade-duration').value),
+            lyrics_scroll_idle_seconds: parseInt(document.getElementById('lyrics-scroll-idle').value, 10),
             exclusive_mode: document.getElementById('exclusive-mode-select').value,
             sleep_timer_minutes: parseInt(document.getElementById('sleep-timer-select').value, 10),
         },
@@ -949,6 +961,7 @@ function applyPlaybackSettings() {
     player.mode = playback.play_mode || player.mode;
     player.volume = playback.volume;
     player.crossfadeDuration = playback.crossfade_duration || 0;
+    player.lyricsScrollIdleSeconds = playback.lyrics_scroll_idle_seconds || 4;
     player.sleepTimer.minutes = playback.sleep_timer_minutes || 0;
     audio.volume = player.volume;
     syncVolumeSlider();
@@ -2166,6 +2179,7 @@ function initMobileLyricsRenderer() {
     player.lyrics = player.lyrics || [];
     clearLyricsMessage(box);
     box.innerHTML = '';
+    resetLyricsList(box);
     if (!player.lyrics.length) {
         // Same centred message as the desktop panel, so "暂无歌词" is in the
         // middle of the area the user is looking at instead of the top.
@@ -2217,7 +2231,7 @@ function updateMobileLyricHighlight() {
     // rect-based maths as the desktop panel: `offsetTop` is relative to
     // whatever happens to be positioned, which is not always this box.
     syncLyricsPadding(box);
-    centerLyricLine(box, line, true);
+    if (lyricsList(box).following) centerLyricLine(box, line, true);
 }
 
 /** Re-read the list that is on screen, skipping every cache. */
@@ -4446,6 +4460,130 @@ function watchLyricsBox(box) {
     lyricsResizeObserver.observe(box);
 }
 
+/* ------------------------------------------------------ lyrics following */
+
+/**
+ * Who drives a lyrics list: the song, or the user.
+ *
+ * `lyrics-scroll` is the panel next to the player, `npm-lyrics` the
+ * full-screen now-playing view on narrow windows.  Both keep the line
+ * that is playing in the middle.  The user can scroll either one
+ * somewhere else; the list then stays where they left it and returns
+ * to the playing line once they have been idle for a while.
+ *
+ * The return is driven by a timer, not by the `scroll` event: a scroll
+ * event only fires *while* the list moves, so a check placed there is
+ * never evaluated again once the user stops scrolling.  The old code
+ * did exactly that, and the panel never came back on its own.
+ */
+const lyricsLists = new Map();
+
+/** The follow state of one lyrics list. */
+function lyricsList(box) {
+    let entry = lyricsLists.get(box);
+    if (!entry) {
+        entry = {
+            following: true,     // does the list follow the playing line?
+            idleTimer: null,     // pending return to the playing line
+            autoScrollUntil: 0,  // scroll events before this are ours
+            refocus: null,       // put the playing line back in the middle
+        };
+        lyricsLists.set(box, entry);
+    }
+    return entry;
+}
+
+/**
+ * How long a lyrics list may stay where the user left it before it
+ * returns to the line that is playing, in milliseconds.
+ */
+function lyricsIdleMs() {
+    const seconds = Number(player.lyricsScrollIdleSeconds);
+    if (!isFinite(seconds) || seconds < 1) return 4000;
+    return seconds * 1000;
+}
+
+/**
+ * Remember that the panel moved by itself, so the scroll event it
+ * fires is not read as the user taking over.
+ */
+function markLyricsAutoScroll(box) {
+    lyricsList(box).autoScrollUntil = Date.now() + 120;
+}
+
+/**
+ * The list was rebuilt, so the browser fires a scroll event for the
+ * position it clamped the list to.  That is not the user scrolling:
+ * ignore it for a moment and follow the song again.
+ */
+function resetLyricsList(box) {
+    const entry = lyricsList(box);
+    entry.following = true;
+    entry.autoScrollUntil = Date.now() + 250;
+    if (entry.idleTimer) {
+        clearTimeout(entry.idleTimer);
+        entry.idleTimer = null;
+    }
+}
+
+/**
+ * The user moved the list: stop following the playing line and let
+ * them read.  The list returns to the playing line on a timer, so it
+ * comes back even though no further scroll events arrive.
+ */
+function takeOverLyrics(box) {
+    const entry = lyricsList(box);
+    entry.following = false;
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    entry.idleTimer = setTimeout(() => {
+        entry.idleTimer = null;
+        entry.following = true;
+        if (entry.refocus) entry.refocus();
+    }, lyricsIdleMs());
+}
+
+/**
+ * Re-arm the pending return of every list, with the current interval.
+ *
+ * Called when the setting changes: a list that is already waiting for
+ * the user to stop should wait for the new interval, not the old one.
+ */
+function rearmLyricsReturn() {
+    lyricsLists.forEach((entry) => {
+        if (!entry.idleTimer) return;
+        clearTimeout(entry.idleTimer);
+        entry.idleTimer = setTimeout(() => {
+            entry.idleTimer = null;
+            entry.following = true;
+            if (entry.refocus) entry.refocus();
+        }, lyricsIdleMs());
+    });
+}
+
+/**
+ * Wire a lyrics list to the user.
+ *
+ * The list moves when the song advances and when the user scrolls it,
+ * and the two have to be told apart -- otherwise every line change
+ * would look like the user taking over and the panel would stop
+ * following the song.
+ */
+function bindLyricsList(box, refocus) {
+    if (!box) return;
+    lyricsList(box).refocus = refocus;
+    // A wheel or a finger is the user driving, whether or not the list
+    // can still move.
+    ['wheel', 'touchmove'].forEach((name) => {
+        box.addEventListener(name, () => takeOverLyrics(box));
+    });
+    box.addEventListener('scroll', () => {
+        // Scrolls the panel made itself (see centerLyricLine) are not
+        // the user taking over.
+        if (Date.now() < lyricsList(box).autoScrollUntil) return;
+        takeOverLyrics(box);
+    });
+}
+
 /**
  * Scroll `box` so that `line` sits in the middle of it.
  *
@@ -4464,6 +4602,7 @@ function centerLyricLine(box, line, smooth) {
     const limit = Math.max(0, box.scrollHeight - box.clientHeight);
     const top = Math.max(0, Math.min(wanted, limit));
     if (!smooth) {
+        markLyricsAutoScroll(box);
         box.scrollTo({ top, behavior: 'auto' });
         return;
     }
@@ -4492,9 +4631,16 @@ function smoothScrollTo(box, top) {
     const duration = 240;
     const started = Date.now();
     const step = () => {
+        // The user scrolled while we were gliding: their scroll wins.
+        if (!lyricsList(box).following) {
+            clearInterval(lyricScrollTimer);
+            lyricScrollTimer = null;
+            return;
+        }
         const progress = Math.min(1, (Date.now() - started) / duration);
         // easeOutCubic: quick start, gentle landing.
         const eased = 1 - Math.pow(1 - progress, 3);
+        markLyricsAutoScroll(box);
         box.scrollTo({ top: from + (top - from) * eased, behavior: 'auto' });
         if (progress >= 1) {
             clearInterval(lyricScrollTimer);
@@ -4545,6 +4691,9 @@ function renderLyricLines() {
     if (!box) return;
     clearLyricsMessage(box);
     box.innerHTML = '';
+    // The old scroll position died with the old DOM, so the list starts
+    // following the playing line again.
+    resetLyricsList(box);
     // The DOM is about to be rebuilt, so the remembered index no longer
     // describes anything.  Leaving it in place made `updateLyricHighlight`
     // early-return (`found === player.lyricIndex`) and highlight *nothing*
@@ -4708,6 +4857,14 @@ function updateKaraokeProgress(box, index, ms) {
     const cutoff = lit > 0 ? visible[Math.min(lit, visible.length) - 1] : -1;
     for (let i = 0; i < chars.length; i += 1) {
         chars[i].classList.toggle('is-sung', i <= cutoff);
+    }
+}
+
+function updateLyricsScrollIdleLabel() {
+    const label = document.getElementById('lyrics-scroll-idle-value');
+    const slider = document.getElementById('lyrics-scroll-idle');
+    if (label && slider) {
+        label.textContent = t('player.seconds', { seconds: parseInt(slider.value, 10) });
     }
 }
 
@@ -4927,7 +5084,7 @@ function updateLyricHighlight(force) {
     if (!target) return;
     target.classList.add('is-active');
     syncLyricsPadding(box);
-    if (player.autoScroll) centerLyricLine(box, target, true);
+    if (lyricsList(box).following) centerLyricLine(box, target, true);
     // Mobile mirror: the full-screen now-playing view has its own lyrics
     // container; share the same found index.
     updateMobileLyricHighlight();
@@ -6328,6 +6485,14 @@ function bindStaticEvents() {
         }
     });
 
+    // lyrics scroll idle time: how long the panel waits before it
+    // returns to the line that is playing.
+    document.getElementById('lyrics-scroll-idle').addEventListener('input', (event) => {
+        player.lyricsScrollIdleSeconds = parseInt(event.target.value, 10);
+        rearmLyricsReturn();
+        updateLyricsScrollIdleLabel();
+    });
+
     // sleep timer select
     document.getElementById('sleep-timer-select').addEventListener('change', (event) => {
         const minutes = parseInt(event.target.value, 10);
@@ -6338,19 +6503,10 @@ function bindStaticEvents() {
         }
     });
 
-    // lyrics: pause auto-scroll while the user is reading somewhere else
-    const lyricsBox = document.getElementById('lyrics-scroll');
-    ['wheel', 'touchstart', 'mousedown'].forEach((name) => {
-        lyricsBox.addEventListener(name, () => {
-            player.autoScroll = false;
-            player.lastScrollAt = Date.now();
-        });
-    });
-    lyricsBox.addEventListener('scroll', () => {
-        if (!player.autoScroll && Date.now() - player.lastScrollAt > 4000) {
-            player.autoScroll = true;
-        }
-    });
+    // lyrics: the panel follows the playing line until the user scrolls
+    // it somewhere else, and comes back on its own once they stop.
+    bindLyricsList(document.getElementById('lyrics-scroll'), () => updateLyricHighlight(true));
+    bindLyricsList(document.getElementById('npm-lyrics'), () => updateMobileLyricHighlight());
 
     // modals
     document.getElementById('login-tabs').addEventListener('click', (event) => {

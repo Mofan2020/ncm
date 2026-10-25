@@ -246,3 +246,69 @@ def test_the_height_report_survives_a_stalled_frame_loop():
     assert "requestAnimationFrame" in body
     assert "setTimeout" in body, (
         "a timer is needed as well, in case frames are not delivered")
+
+
+# ------------------------------------------------------ following the song
+def test_the_playing_line_stays_centred_while_nobody_scrolls():
+    """The centring must not depend on a scroll event: the song moves the
+    line, not the user."""
+    body = _js_body("function updateLyricHighlight")
+    assert "centerLyricLine(box" in body
+    assert "lyricsList(box).following" in body, (
+        "the panel must only centre the line while it is following the song")
+
+
+def test_a_user_scroll_takes_the_panel_over():
+    """A scroll by the user has to stop the panel from following, so the
+    user can read another part of the lyrics."""
+    assert "function takeOverLyrics" in JS
+    body = _js_body("function takeOverLyrics")
+    assert "following = false" in body
+
+
+def test_the_return_is_driven_by_a_timer():
+    """The return must not be checked inside the scroll handler.
+
+    A scroll event only fires *while* the list moves, so an idle check
+    placed there is never evaluated again once the user stops scrolling --
+    the panel never came back on its own.  The old code did exactly that.
+    """
+    body = _js_body("function takeOverLyrics")
+    assert "setTimeout" in body, (
+        "the return to the playing line has to be driven by a timer")
+    scroll_body = _js_body("function bindLyricsList")
+    assert "Date.now() -" not in scroll_body, (
+        "the scroll handler must not decide when the panel returns")
+
+
+def test_the_idle_delay_comes_from_the_setting():
+    body = _js_body("function lyricsIdleMs")
+    assert "player.lyricsScrollIdleSeconds" in body
+    assert "lyricsIdleMs()" in _js_body("function takeOverLyrics")
+
+
+def test_the_panels_own_scrolling_is_not_a_takeover():
+    """The panel scrolls itself to the playing line.  That scroll must not
+    be read as the user taking over, or the panel stops following the
+    song after the first line change."""
+    body = _js_body("function bindLyricsList")
+    assert "autoScrollUntil" in body
+    assert "function markLyricsAutoScroll" in JS
+
+
+def test_the_glide_gives_up_when_the_user_scrolls():
+    """A glide that is still running while the user scrolls would fight
+    them for the list."""
+    body = _js_body("function smoothScrollTo")
+    assert "following" in body
+
+
+def test_a_rebuilt_list_follows_the_song_again():
+    """The DOM is rebuilt when the lyrics arrive or the mode changes.  The
+    old scroll position died with it, so the list has to start following
+    the song again."""
+    assert "function resetLyricsList" in JS
+    body = _js_body("function resetLyricsList")
+    assert "following = true" in body
+    renderer = _js_body("function renderLyricLines")
+    assert "resetLyricsList(box)" in renderer

@@ -274,3 +274,22 @@ def test_send_phone_code_result_shape(bridge, monkeypatch):
     result = bridge.send_phone_code("13800000000")
     assert result["success"] is False
     assert result["error_key"] == "login.code_send_failed"
+
+
+# ------------------------------------------------------- lyrics scroll delay
+def test_the_lyrics_scroll_delay_travels_through_the_bridge(bridge):
+    """The frontend reads the delay from get_settings() and writes it back
+    through update_settings('playback', ...).  If the bridge drops the key,
+    the setting silently stays at its default."""
+    settings = bridge.get_settings()
+    assert settings["playback"]["lyrics_scroll_idle_seconds"] == 4
+
+    result = bridge.update_settings("playback", {"lyrics_scroll_idle_seconds": 7})
+    assert result["success"] is True
+    assert result["settings"]["playback"]["lyrics_scroll_idle_seconds"] == 7
+    assert bridge.get_settings()["playback"]["lyrics_scroll_idle_seconds"] == 7
+
+
+def test_the_lyrics_scroll_delay_is_clamped_by_the_bridge(bridge):
+    result = bridge.update_settings("playback", {"lyrics_scroll_idle_seconds": 999})
+    assert result["settings"]["playback"]["lyrics_scroll_idle_seconds"] == 30

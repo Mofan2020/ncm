@@ -1664,3 +1664,104 @@ header 是 8 个键。值是每次请求新生成的 UUID。
   身份不对。分清它们靠的是「同一批请求里只有一路被拒」这个细节。
 - **退避要留够，而且必须留一条「把账号还原回去」的路。** 探针 9 退订了
   用户的歌单，恢复脚本撞 405 差点没还原回去。
+
+
+## 23. 歌词自动滚动：居中、手动接管、空闲回弹（2026-10-25）
+
+### 原来的毛病
+
+`app.js` 里旧的做法是这样：
+
+```js
+['wheel', 'touchstart', 'mousedown'].forEach((name) => {
+    lyricsBox.addEventListener(name, () => {
+        player.autoScroll = false;
+        player.lastScrollAt = Date.now();
+    });
+});
+lyricsBox.addEventListener('scroll', () => {
+    if (!player.autoScroll && Date.now() - player.lastScrollAt > 4000) {
+        player.autoScroll = true;
+    }
+});
+```
+
+空闲判断写在 `scroll` 回调里。`scroll` 事件只在**列表正在动**的时候触发，用户
+停手之后就不会再有事件，那句 `Date.now() - player.lastScrollAt > 4000` 永远得不到
+重新求值 —— 所以「自动回弹」在旧代码里实际上是失效的：手动滚走之后，歌词再也回
+不到正在唱的那一行。`player.autoScroll` 也就此变成一个只能被置 false 的单向开关。
+
+另外旧代码绑的是 `mousedown`：在歌词面板里点一下鼠标（哪怕只是想拖选一段歌词）
+也会把自动跟随关掉。
+
+### 改法
+
+把「谁在驱动列表」这件事变成显式的状态机，每个歌词列表一份：
+
+| 字段 | 意思 |
+|------|------|
+| `following` | 列表是否跟着歌曲走 |
+| `idleTimer` | 待执行的「回到正在播放的那一行」定时器 |
+| `autoScrollUntil` | 这段时间内的 `scroll` 事件是面板自己造成的 |
+| `refocus` | 把正在播放的那一行放回中间 |
+
+- **接管**：`wheel` / `touchmove` / 用户造成的 `scroll` → `following = false`，
+  同时挂一个 `setTimeout`。
+- **回弹**：定时器到期 → `following = true` → 调用 `refocus()` 重新定位。**这个
+  定时器是回弹唯一的驱动力**，不依赖任何 `scroll` 事件，所以用户停手之后照样
+  会回弹。
+- **不误判**：面板自己滚动前先 `markLyricsAutoScroll(box)`，记一个 120 ms 的
+  窗口，窗口内的 `scroll` 事件不算用户操作。
+- **动画让位**：`smoothScrollTo` 的每一步都检查 `following`，用户中途接手，正在
+  跑的滑动立刻停。
+- **重建后复位**：歌词重新渲染（`renderLyricLines` / `initMobileLyricsRenderer`）
+  会清掉旧的 DOM，滚动位置随之消失，所以这时要 `resetLyricsList(box)` 让列表
+  重新跟随歌曲。
+
+两个歌词面板（播放器旁边的 `lyrics-scroll` 和窄窗口下全屏的 `npm-lyrics`）各
+有一份独立状态，互不干扰。
+
+### 设置项
+
+`playback.lyrics_scroll_idle_seconds`，单位秒，默认 4，取值 1–30。走的是现成的
+链路：`Settings` → `GuiBridge.get_settings()` → `state.settings` → 设置面板
+→ `update_settings('playback', ...)`，没有另起一套。
+
+| 位置 | 内容 |
+|------|------|
+| `src/config/settings.py` | `PlaybackSettings.lyrics_scroll_idle_seconds`，`_normalize()` 里夹到 1–30 |
+| `src/gui/bridge.py` | `get_settings()` 带上它，`_clean_playback()` 放行它 |
+| `src/gui/assets/app.js` | `player.lyricsScrollIdleSeconds` 运行时值、`lyricsIdleMs()`、设置面板的滑块 |
+| `src/gui/assets/index.html` | 设置 → 播放 → 歌词滚动 → 回弹等待 |
+| `src/i18n/zh_cn.json` / `en_us.json` | `settings.lyrics_scroll` / `_idle` / `_idle_hint` |
+
+界面上是 1–30 秒的滑块，旁边显示当前秒数；改完立刻生效（正在等待回弹的列表会
+按新的间隔重新计时），保存后写进 `settings.yaml`。
+
+### 验证
+
+- `node scripts/check-lyrics-scroll.mjs` —— 15 项全过。这个脚本用假时钟加载
+  真的 `app.js`，把「用户滚动 → 接管 → 定时器回弹」整条路走一遍。
+- **变异测试**（改了实现看测试会不会红），6 处变异全部被抓住：
+
+  | 变异 | 被哪条抓住 |
+  |------|-----------|
+  | 回弹改回由 `scroll` 事件驱动 | the panel returns to the playing line on its own |
+  | 用户滚动后歌曲仍然把列表拉回去 | the song does not pull the panel back while the user reads |
+  | 认不出面板自己的滚动 | the panel's own scroll is not read as a takeover |
+  | 空闲间隔写死成 4 秒 | the configured delay is used |
+  | 改设置不重新计时 | changing the setting re-arms the pending return |
+  | 不标记面板自己的滚动 | the panel's own scroll is not read as a takeover |
+
+- `pytest` 659 passed, 6 skipped（新增 `tests/test_lyrics_layout.py` 7 条、
+  `tests/test_settings.py` 3 条、`tests/test_bridge.py` 2 条）。
+- `ruff check .` All checks passed；`python3 main.py --self-test` result: OK。
+
+### 没做的事
+
+- **没有动 `src/gui/assets/desktop-lyrics.js`**：那是独立的桌面歌词浮窗，没有
+  自己的滚动状态机（`grep -n "scroll\|autoScroll\|lastScrollAt\|4000"` 只命中
+  一句说明文字），改它没有意义。
+- **没有加「0 = 永不回弹」**：回弹是这次需求的核心，滑块下限取 1 秒。
+- **`npm-lyrics` 的回弹只在窄窗口下生效**：全屏播放视图只在移动端布局出现，
+  桌面端那个容器是空的。

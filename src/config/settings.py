@@ -94,6 +94,9 @@ class PlaybackSettings:
     last_local_dir: str = ""
     scan_depth: int = 6
     show_translation: bool = True
+    #: Seconds the lyrics panel waits before it returns to the line that
+    #: is playing after the user scrolled it somewhere else (1-30).
+    lyrics_scroll_idle_seconds: int = 4
     #: Crossfade duration in seconds (0 = disabled, 1-12).
     crossfade_duration: float = 0.0
     #: Exclusive audio output mode: off|wasapi|coreaudio|auto
@@ -294,6 +297,8 @@ class Settings:
         for flag in ("overwrite", "download_lyrics", "lyrics_translation"):
             setattr(self._data.download, flag, _as_bool(getattr(self._data.download, flag)))
         playback.crossfade_duration = self._clamp_float(playback.crossfade_duration, 0.0, 12.0, 0.0)
+        playback.lyrics_scroll_idle_seconds = self._clamp_range(
+            playback.lyrics_scroll_idle_seconds, 1, 30, 4)
         if playback.exclusive_mode not in ("off", "wasapi", "coreaudio", "auto"):
             playback.exclusive_mode = "off"
         playback.sleep_timer_minutes = self._clamp_range(playback.sleep_timer_minutes, 0, 720, 0)
