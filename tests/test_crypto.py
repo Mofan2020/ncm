@@ -59,10 +59,48 @@ def test_encode_type_mapping():
 
 
 def test_client_header_defaults_and_overrides():
+    """The header states the official desktop client.
+
+    The field set is the one the official client builds
+    (``+[YYYSystemInfoHelper systemInfo]``), plus the per-request
+    ``requestId`` that the request layer adds.
+    """
     header = build_client_header()
-    assert set(header) >= {"os", "appver", "osver", "deviceId", "requestId", "clientSign"}
-    assert header["requestId"].isdigit()
+    assert set(header) >= {
+        "os", "appver", "buildver", "osver", "mobilename", "brand",
+        "deviceId", "requestId",
+    }
+    assert header["os"] == "osx"
+    assert header["brand"] == "Apple"
+    # The request id is a fresh UUID, not a timestamp.
+    assert len(header["requestId"]) == 36 and header["requestId"].count("-") == 4
     assert build_client_header(appver="1.2.3")["appver"] == "1.2.3"
+
+
+def test_the_header_and_the_body_state_the_same_client():
+    """The business ``os`` and the header's ``os`` differ on purpose.
+
+    The official client writes ``OSX`` in the business JSON and ``osx`` in
+    the header -- two different spellings, both correct.
+    """
+    body = eapi_body("/api/x", {"a": 1})
+    payload = json.loads(_decode(body["params"]).decode("utf-8").split(EAPI_SEPARATOR)[1])
+    assert payload["os"] == "OSX"
+    assert payload["verifyId"] == 1
+    assert payload["deviceId"]
+    assert payload["header"]["os"] == "osx"
+
+
+def test_the_two_device_ids_are_different():
+    """The body device id and the header device id are two values.
+
+    The official client keeps them apart (the body one comes from the
+    CoSDK, the header one from the system info helper) and the reverse
+    engineering report warns explicitly against mixing them up.
+    """
+    body = eapi_body("/api/x", {"a": 1})
+    payload = json.loads(_decode(body["params"]).decode("utf-8").split(EAPI_SEPARATOR)[1])
+    assert payload["deviceId"] != payload["header"]["deviceId"]
 
 
 def test_request_id_is_fresh_per_call():

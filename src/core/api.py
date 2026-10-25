@@ -51,7 +51,13 @@ import requests
 
 from src.auth import get_login_manager
 from src.config import get_settings
-from src.core.crypto import eapi_body, encode_type_for_level
+from src.core.crypto import (
+    CLIENT_USER_AGENT,
+    build_client_header,
+    build_client_identity,
+    eapi_body,
+    encode_type_for_level,
+)
 from src.core.lyrics import LYRIC_ENDPOINT
 from src.core.metacache import get_meta_cache
 
@@ -108,22 +114,22 @@ PLAYLIST_COVER_UPDATE_ENDPOINT = "/api/playlist/cover/update"
 #: ``code 403 illegal request!`` -- measured on 2026-10-25, see
 #: ``docs/notes.md`` section 21.
 #:
-#: The official clients put their whole eapi header into the cookie (the
-#: reference implementation builds it with ``createHeaderCookie``), and
-#: this is the same idea: the cookie states the client that the eapi
-#: header states.  It has to be **complete** -- a cookie with only ``os``
-#: while the header carries ``os`` *and* ``appver`` is a half-stated
-#: identity, and the risk engine answers ``code -462`` ("your network
-#: environment looks risky") where the complete one is accepted.
+#: The official client states the same client in the eapi header and in the
+#: cookie, so the two agree; the cookie is built from the very header that
+#: goes into the signed body (see
+#: :func:`src.core.crypto.build_client_identity`).  It has to be
+#: **complete** -- a cookie with only ``os`` while the header carries ``os``
+#: *and* ``appver`` is a half-stated identity, and the risk engine answers
+#: ``code -462`` ("your network environment looks risky") where the complete
+#: one is accepted.
 #:
 #: The cookie is per request, never in the session jar: a session that
 #: carries this identity makes the like endpoint answer ``code 524``
 #: (section 18).
-WRITE_IDENTITY_COOKIE: dict[str, str] = {
-    "os": "pc",
-    "appver": "8.9.70",
-    "channel": "netease",
-}
+#:
+#: It is built on demand rather than kept as a constant, because the header
+#: carries a fresh ``requestId`` on every request and the cookie has to
+#: match it.
 
 #: The routes that are gated behind that identity, measured 2026-10-25.
 #: Everything else is **not** gated, and sending an identity to them is
@@ -140,6 +146,42 @@ IDENTITY_REQUIRED_ROUTES: frozenset[str] = frozenset({
     PLAYLIST_UNSUBSCRIBE_ENDPOINT,
     "/api/batch",
 })
+
+#: The routes that **write**: they change something on the account, and
+#: NetEase limits them far harder than the reads.  Measured on 2026-10-25:
+#: a dozen writes in a row answer ``code 405`` ("操作过于频繁") and the
+#: account then needs minutes to breathe -- see ``docs/notes.md`` section 22.
+#:
+#: The routes are matched exactly, so ``/api/song/like`` (a write) and
+#: ``/api/song/like/get`` (a read) never get mixed up.
+WRITE_ROUTES: frozenset[str] = frozenset({
+    LIKE_ENDPOINT,
+    LIKE_RADIO_ENDPOINT,
+    WEBLOG_ENDPOINT,
+    PLAYLIST_CREATE_ENDPOINT,
+    PLAYLIST_UPDATE_ENDPOINT,
+    PLAYLIST_DELETE_ENDPOINT,
+    PLAYLIST_TRACKS_ENDPOINT,
+    PLAYLIST_SUBSCRIBE_ENDPOINT,
+    PLAYLIST_UNSUBSCRIBE_ENDPOINT,
+    PLAYLIST_COVER_UPDATE_ENDPOINT,
+    "/api/batch",
+})
+
+#: The words NetEase uses when it refuses a request because it came too
+#: fast.  ``code 405`` is the usual answer; the message is what tells a
+#: rate limit apart from another refusal that happens to use the same code.
+#:
+#: The Chinese entries are the whole phrases, not fragments: a message that
+#: merely contains a character like "频" would match far too much.
+RATE_LIMIT_HINTS: tuple[str, ...] = (
+    "操作过于频繁",
+    "请求过于频繁",
+    "访问过于频繁",
+    "too often",
+    "too frequent",
+    "rate limit",
+)
 
 #: Audio levels from lowest to highest.
 QUALITY_ORDER: tuple[str, ...] = ("standard", "higher", "exhigh", "lossless", "hires")
@@ -193,6 +235,22 @@ class NeteaseAPI:
     MAX_RETRIES = 3
     PLAYLIST_CACHE_TTL = 300.0
 
+    #: Minimum seconds between two **writes**, plus a little jitter.  A write
+    #: is something the user asked for (a like, a subscribe), so the wait has
+    #: to be invisible -- but the writes still go out one at a time, never as
+    #: a burst, because NetEase counts them per route.
+    WRITE_MIN_INTERVAL = 0.4
+
+    #: How long to wait before retrying a request the server refused for
+    #: coming too fast.  The ladder is walked one step per attempt, so a
+    #: single refusal costs a few seconds and a persistent one costs a
+    #: minute.
+    RATE_LIMIT_BACKOFF: tuple[float, ...] = (3.0, 8.0, 15.0, 30.0, 60.0)
+
+    #: How many times a write is sent before giving up.  One more than the
+    #: length of the backoff ladder, so the last attempt waits a minute.
+    WRITE_MAX_ATTEMPTS = 6
+
     def __init__(self, debug: bool = False) -> None:
         self.debug = debug
         self.login_manager = get_login_manager()
@@ -201,6 +259,14 @@ class NeteaseAPI:
         self._host_index = 0
         self._request_lock = threading.Lock()
         self._last_request_ts = 0.0
+
+        #: Held while a write is in flight, so two writes never overlap.
+        self._write_lock = threading.Lock()
+        #: When the last write went out.
+        self._last_write_ts = 0.0
+        #: Until when no write may go out.  A rate limit anywhere raises
+        #: this, so a refusal on one route also slows the others down.
+        self._write_cooldown_until = 0.0
 
         # Session (cookies shared with the login manager).
         self.session = self.login_manager.get_session()
@@ -252,12 +318,66 @@ class NeteaseAPI:
                 time.sleep(wait + random.uniform(0.0, 0.08))
             self._last_request_ts = time.monotonic()
 
+    def _throttle_write(self) -> None:
+        """Hold back a write until it may go out.
+
+        Two things are waited for, and both are about not being the client
+        that gets the account throttled:
+
+        * the gap since the last write, plus a little jitter, so the writes
+          do not arrive in a burst;
+        * the shared cooldown, which a rate limit anywhere raises.  That is
+          what makes a refusal on one route slow the other routes down too.
+
+        The caller holds :attr:`_write_lock` while calling this, so only one
+        write is ever in flight -- and while it sleeps, the next write is
+        already queued behind it.
+        """
+        with self._request_lock:
+            now = time.monotonic()
+            gap = self.WRITE_MIN_INTERVAL - (now - self._last_write_ts)
+            cooldown = self._write_cooldown_until - now
+            wait = max(gap, cooldown, 0.0)
+            if wait > 0:
+                self._log(f"write waits {wait:.1f}s", "debug")
+                time.sleep(wait)
+            self._last_write_ts = time.monotonic()
+
+    def _raise_cooldown(self, attempt: int) -> float:
+        """Put every write on hold after a rate limit.  Returns the wait."""
+        ladder = self.RATE_LIMIT_BACKOFF
+        delay = ladder[min(attempt, len(ladder) - 1)]
+        self._write_cooldown_until = time.monotonic() + delay
+        self._log(f"rate limited, writes pause for {delay:.0f}s", "warning")
+        return delay
+
+    @staticmethod
+    def _is_rate_limited(result: dict[str, Any] | None) -> bool:
+        """Whether the server refused the request for coming too fast.
+
+        ``code 405`` is the usual answer, but the same code is used for
+        other refusals, so the message is what confirms it.
+        """
+        if not result:
+            return False
+        code = result.get("code")
+        if code in (-460, 429):
+            return True
+        if code != 405:
+            return False
+        message = str(result.get("msg") or result.get("message") or "")
+        if not message:
+            # A bare 405 with no explanation is the rate limit.
+            return True
+        return any(hint in message for hint in RATE_LIMIT_HINTS)
+
     def _headers(self) -> dict[str, str]:
         return {
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15"
-            ),
+            # The official desktop client's UA names the client it is
+            # pretending to be, and that has to agree with the eapi header:
+            # "NeteaseMusicDesktop/<appver>.<buildver>" next to a header that
+            # says os=osx / appver=3.1.9 / buildver=3364.
+            "User-Agent": CLIENT_USER_AGENT,
             "Referer": "https://music.163.com/",
             "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/x-www-form-urlencoded",
@@ -269,7 +389,7 @@ class NeteaseAPI:
         self.stats["total_requests"] += 1
         # ``cookies`` is passed per request, not written into the session
         # jar: the identity cookie must reach the write routes and nothing
-        # else (see ``WRITE_IDENTITY_COOKIE``).
+        # else (see ``IDENTITY_REQUIRED_ROUTES``).
         return self.session.post(url, data=data, headers=self._headers(), timeout=timeout,
                                  cookies=cookies)
 
@@ -281,11 +401,15 @@ class NeteaseAPI:
     # --------------------------------------------------------------- eapi API
     def _eapi_once(self, path: str, data: dict[str, Any] | None) -> dict[str, Any] | None:
         """Single attempt at a signed eapi call (no retries)."""
-        body = eapi_body(path, data)
+        # One header, used twice: the signed body carries it and the cookie
+        # repeats it.  A request whose two halves disagree is a request that
+        # looks forged, so they must come from the same dictionary.
+        header = build_client_header()
+        body = eapi_body(path, data, header=header)
         url = f"{self.eapi_host}/eapi{path}"
         # The identity cookie is added here, for the routes that need it and
         # for those alone -- see IDENTITY_REQUIRED_ROUTES.
-        cookies = WRITE_IDENTITY_COOKIE if path in IDENTITY_REQUIRED_ROUTES else None
+        cookies = build_client_identity(header) if path in IDENTITY_REQUIRED_ROUTES else None
         try:
             resp = self._post(url, body, cookies=cookies)
         except requests.exceptions.RequestException as exc:
@@ -486,6 +610,12 @@ class NeteaseAPI:
 
         Whether the request carries the client identity cookie is decided
         by the route, not by the caller: see ``IDENTITY_REQUIRED_ROUTES``.
+
+        Whether it is a **write** is decided the same way: see
+        ``WRITE_ROUTES``.  A write is sent on its own -- one at a time, with
+        a gap between the two -- and when the server refuses it for coming
+        too fast it is retried after a wait.  A read is not held back by
+        that: reading is not what the risk engine counts.
         """
         scope = self._scope_for(path, data)
         # The scope is part of the key: two answers to the same endpoint
@@ -496,6 +626,29 @@ class NeteaseAPI:
             if cached is not None:
                 return cached
 
+        if path in WRITE_ROUTES:
+            result = self._eapi_write(path, data)
+        else:
+            result = self._eapi_read(path, data)
+
+        if result is not None:
+            self.stats["successful_requests"] += 1
+            if cache_key:
+                self._set_cached(cache_key, result, path=path, scope=scope)
+            return result
+
+        self.stats["failed_requests"] += 1
+        return None
+
+    def _eapi_read(self, path: str, data: dict[str, Any] | None) -> dict[str, Any] | None:
+        """A read: fast, with host rotation when a host misbehaves.
+
+        A read that is refused for coming too fast is retried after a
+        short wait, but the wait stays **local to this read**: it does not
+        hold up the other reads, and it does not hold up the writes either.
+        The server counts the requests per route, so a read route being
+        throttled says nothing about the write routes.
+        """
         for attempt in range(self.MAX_RETRIES):
             result = self._eapi_once(path, data)
             if result is not None:
@@ -506,15 +659,48 @@ class NeteaseAPI:
                     time.sleep(delay)
                     self._switch_host()
                     continue
-                self.stats["successful_requests"] += 1
-                if cache_key:
-                    self._set_cached(cache_key, result, path=path, scope=scope)
+                if self._is_rate_limited(result) and attempt < self.MAX_RETRIES - 1:
+                    delay = self.RATE_LIMIT_BACKOFF[min(attempt, len(self.RATE_LIMIT_BACKOFF) - 1)]
+                    self._log(f"rate limited on {path}, sleeping {delay:.1f}s", "warning")
+                    time.sleep(delay)
+                    continue
                 return result
             if attempt < self.MAX_RETRIES - 1:
                 self._switch_host()
                 time.sleep(0.4 * (attempt + 1) + random.uniform(0.1, 0.4))
+        return None
 
-        self.stats["failed_requests"] += 1
+    def _eapi_write(self, path: str, data: dict[str, Any] | None) -> dict[str, Any] | None:
+        """A write: one at a time, and retried when the server says "too fast".
+
+        The whole call happens under :attr:`_write_lock`, so a second write
+        waits for the first one -- including the wait after a rate limit.
+        That is the point: the writes leave the app one by one, spaced out,
+        and when the server pushes back the app waits instead of hammering.
+
+        A rate limit is answered by waiting and trying again, walking
+        :attr:`RATE_LIMIT_BACKOFF` one step per attempt.  The refusal is
+        returned to the caller once the ladder is exhausted.
+        """
+        with self._write_lock:
+            for attempt in range(self.WRITE_MAX_ATTEMPTS):
+                self._throttle_write()
+                result = self._eapi_once(path, data)
+                if result is None:
+                    # A transport failure: the request never reached the
+                    # server, so it does not count against the rate limit.
+                    if attempt < self.WRITE_MAX_ATTEMPTS - 1:
+                        self._switch_host()
+                        time.sleep(0.4 * (attempt + 1) + random.uniform(0.1, 0.4))
+                        continue
+                    return None
+                if not self._is_rate_limited(result):
+                    return result
+                if attempt < self.WRITE_MAX_ATTEMPTS - 1:
+                    self._raise_cooldown(attempt)
+                    continue
+                self._log(f"giving up on {path} after {attempt + 1} attempts", "warning")
+                return result
         return None
 
     # ------------------------------------------------------------- legacy API

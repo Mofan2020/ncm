@@ -28,6 +28,7 @@ import webview
 
 from src.auth import LoginStatus, get_login_manager
 from src.config import PLAY_MODES, default_download_dir, get_settings
+from src.core import backup as backup_core
 from src.core import get_api
 from src.core.downloader import MAX_CONCURRENT, DownloadStats, DownloadTask, SongDownloader
 from src.core.library import get_library, track_key
@@ -38,6 +39,7 @@ from src.core.localmusic import (
 )
 from src.core.lyrics import build_timed_lyrics
 from src.core.mediaserver import get_media_server
+from src.core.metacache import get_meta_cache
 from src.gui.theme import effective_theme, normalize_theme, system_theme
 from src.i18n import get_i18n, t
 from src.version import (
@@ -139,6 +141,9 @@ class GuiBridge:
         self._match_index_token: Any = None
         self._favorite_ids: set[str] = set()
         self._favorite_ids_loaded = False
+        #: 上一次导入算出来的计划和备份内容：确认冲突要用，写入的时候才有。
+        self._backup_plan: dict[str, Any] | None = None
+        self._backup_payload: dict[str, Any] | None = None
 
         self.login_manager.on("status_change", self._on_login_status_change)
         self.login_manager.on("qrcode_update", self._on_qrcode_update)
@@ -376,6 +381,191 @@ class GuiBridge:
         chosen = result[0] if isinstance(result, list | tuple) else result
         self.settings.update_download(download_dir=str(chosen))
         return str(chosen)
+
+    # ------------------------------------------------------------ account backup
+    def export_account_backup(self) -> dict[str, Any]:
+        """把账号数据导出成一个 ``.ncmbk`` 文件。
+
+        先弹原生保存对话框让用户选位置，再去云端把数据拉下来写进去。云端
+        读不到的部分退到本地缓存，导出的文件里会标明每一节的来源。
+        """
+        user = self.login_manager.user_info
+        if not user or not user.user_id:
+            return {"success": False, "error_key": "backup.login_required"}
+        path = self._choose_backup_save_path(user.nickname)
+        if not path:
+            return {"success": False, "cancelled": True}
+        try:
+            payload = backup_core.export_account_data(
+                self.api,
+                uid=user.user_id,
+                account=self._backup_account_payload(user),
+                cloud_profile=self._backup_cloud_profile,
+                cache=get_meta_cache(),
+                progress=self._on_backup_progress,
+            )
+        except Exception as exc:
+            self.logger.warning("account backup export failed: %s", exc)
+            return {"success": False, "error_key": "backup.export_failed",
+                    "message": str(exc)}
+        try:
+            backup_core.write_backup_file(path, payload)
+        except OSError as exc:
+            self.logger.warning("cannot write the backup file: %s", exc)
+            return {"success": False, "error_key": "backup.write_failed",
+                    "message": str(exc)}
+        return {
+            "success": True,
+            "path": str(path),
+            "sources": payload.get("sources", {}),
+            "playlists": len(payload.get("playlists") or []),
+            "songs": sum(len(item.get("song_ids") or [])
+                         for item in payload.get("playlists") or []),
+            "favorites": len(payload.get("liked_song_ids") or []),
+            "errors": payload.get("errors", []),
+        }
+
+    def import_account_backup(self, file_path: str) -> dict[str, Any]:
+        """读一个 ``.ncmbk`` 文件，算出导入要做的事。
+
+        这一步**不写任何东西**：先把冲突清单交给用户确认，拿到决定之后才
+        调 :meth:`apply_account_backup` 真正写入。
+        """
+        user = self.login_manager.user_info
+        if not user or not user.user_id:
+            return {"success": False, "error_key": "backup.login_required"}
+        try:
+            payload = backup_core.read_backup_file(file_path)
+        except backup_core.BackupFormatError as exc:
+            return {"success": False, "error_key": "backup.invalid_file",
+                    "message": str(exc)}
+        except (OSError, backup_core.BackupError) as exc:
+            return {"success": False, "error_key": "backup.read_failed",
+                    "message": str(exc)}
+        try:
+            plan = backup_core.plan_import(self.api, payload, uid=user.user_id)
+        except Exception as exc:
+            self.logger.warning("cannot plan the account backup import: %s", exc)
+            return {"success": False, "error_key": "backup.plan_failed",
+                    "message": str(exc)}
+        self._backup_plan = plan
+        self._backup_payload = payload
+        return {
+            "success": True,
+            "summary": plan.get("summary", {}),
+            "conflicts": plan.get("conflicts", []),
+            "skipped": [{"id": item.get("id"), "name": item.get("name"),
+                         "reason": item.get("reason")}
+                        for item in plan.get("playlists", [])
+                        if item.get("action") == "skip"],
+            "source": plan.get("source", {}),
+        }
+
+    def apply_account_backup(self, decisions: dict[str, Any] | None) -> dict[str, Any]:
+        """按用户的决定把备份并进当前账号。
+
+        ``decisions`` 的形状是 ``{"playlists": {歌单 id: {"action": ..., "name": ...}}}``。
+        冲突没给决定就一步都不写。
+        """
+        plan = self._backup_plan
+        payload = self._backup_payload
+        if not plan or not payload:
+            return {"success": False, "error_key": "backup.no_plan"}
+        try:
+            result = backup_core.apply_import(
+                self.api, payload, plan, decisions,
+                progress=self._on_backup_progress,
+            )
+        except Exception as exc:
+            self.logger.warning("account backup import failed: %s", exc)
+            return {"success": False, "error_key": "backup.import_failed",
+                    "message": str(exc)}
+        if not result.get("ok"):
+            return {"success": False, "error_key": "backup.conflict_unresolved",
+                    "missing": result.get("missing", [])}
+        self._backup_plan = None
+        self._backup_payload = None
+        return {
+            "success": True,
+            "songs_liked": result.get("songs_liked", 0),
+            "songs_skipped": result.get("songs_skipped", 0),
+            "playlists_created": result.get("playlists_created", 0),
+            "playlists_merged": result.get("playlists_merged", 0),
+            "playlists_skipped": result.get("playlists_skipped", 0),
+            "tracks_added": result.get("tracks_added", 0),
+            "failed": result.get("failed", 0),
+            "skipped_detail": result.get("skipped_detail", []),
+            "errors": result.get("errors", []),
+        }
+
+    def choose_backup_file(self) -> dict[str, Any]:
+        """弹原生打开对话框选一个 ``.ncmbk`` 文件。"""
+        if not self._window:
+            return {"success": False, "error_key": "error.unknown"}
+        try:
+            result = self._window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False,
+                file_types=(f"Account backup (*{backup_core.BACKUP_SUFFIX})",))
+        except Exception as exc:
+            self.logger.warning("backup open dialog failed: %s", exc)
+            return {"success": False, "error_key": "error.permission"}
+        if not result:
+            return {"success": False, "cancelled": True}
+        chosen = result[0] if isinstance(result, list | tuple) else result
+        return {"success": True, "path": str(chosen)}
+
+    def _choose_backup_save_path(self, nickname: str) -> str | None:
+        """弹原生保存对话框，返回用户选好的路径。"""
+        if not self._window:
+            return None
+        default_name = backup_core.default_backup_name(nickname)
+        try:
+            result = self._window.create_file_dialog(
+                webview.SAVE_DIALOG,
+                directory=str(Path.home()),
+                save_filename=default_name,
+                file_types=(f"Account backup (*{backup_core.BACKUP_SUFFIX})",))
+        except Exception as exc:
+            self.logger.warning("backup save dialog failed: %s", exc)
+            return None
+        if not result:
+            return None
+        chosen = result[0] if isinstance(result, list | tuple) else result
+        path = Path(str(chosen))
+        # 用户改了扩展名也按备份文件写回去，省得下次导入认不出来。
+        if path.suffix.lower() != backup_core.BACKUP_SUFFIX:
+            path = path.with_name(path.name + backup_core.BACKUP_SUFFIX)
+        return str(path)
+
+    def _backup_account_payload(self, user: Any) -> dict[str, Any]:
+        """导出时用的账号资料——本地会话里已经有的那些。"""
+        profile = dict(getattr(user, "profile", None) or {})
+        return {
+            "user_id": str(getattr(user, "user_id", "") or ""),
+            "nickname": str(getattr(user, "nickname", "") or ""),
+            "avatar_url": str(getattr(user, "avatar_url", "") or ""),
+            "vip_type": getattr(user, "vip_type", 0),
+            "profile": profile,
+        }
+
+    def _backup_cloud_profile(self) -> dict[str, Any] | None:
+        """再读一次账号资料，拿到最新的注册时间之类的字段。"""
+        user = self.login_manager.user_info
+        if not user or not user.user_id:
+            return None
+        detail = self._safe("user detail", self.api.get_user_detail, user.user_id)
+        if not isinstance(detail, dict):
+            return None
+        profile = detail.get("profile")
+        return dict(profile) if isinstance(profile, dict) else None
+
+    def _on_backup_progress(self, phase: str, current: int, total: int) -> None:
+        """导出 / 导入的进度推给前端。"""
+        self._call_js("onAccountBackupProgress", {
+            "phase": phase,
+            "current": int(current),
+            "total": int(total),
+        })
 
     # ---------------------------------------------------------------- language
     def get_languages(self) -> dict[str, str]:

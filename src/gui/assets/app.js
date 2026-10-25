@@ -985,6 +985,248 @@ async function chooseDirectory() {
     }
 }
 
+/* ------------------------------------------------------------ account backup */
+
+/** Pending import plan: the conflicts the user still has to decide about. */
+const backup = {
+    conflicts: [],
+    summary: null,
+};
+
+/** Human name of a backup progress phase. */
+function backupPhaseText(phase) {
+    const key = 'backup.phase_' + phase;
+    const text = t(key);
+    return text === key ? phase : text;
+}
+
+/** Where a section of the backup came from. */
+function backupSourceText(source) {
+    const key = 'backup.source_' + (source || 'missing');
+    const text = t(key);
+    return text === key ? (source || '') : text;
+}
+
+function setBackupStatus(text) {
+    const el = document.getElementById('backup-status');
+    if (el) el.textContent = text || '';
+}
+
+function setBackupProgress(current, total) {
+    const track = document.getElementById('backup-progress-track');
+    const fill = document.getElementById('backup-progress-fill');
+    if (!track || !fill) return;
+    if (!total) {
+        track.hidden = true;
+        fill.style.width = '0%';
+        return;
+    }
+    track.hidden = false;
+    fill.style.width = `${Math.min(100, Math.round((current / total) * 100))}%`;
+}
+
+/**
+ * Export the account data into a .ncmbk file.
+ *
+ * The backend pulls everything from the cloud first and falls back to the
+ * local cache for whatever it cannot read, so the file always says where
+ * each part came from.
+ */
+async function exportAccountBackup() {
+    if (!state.api || !state.api.export_account_backup) return;
+    const button = document.getElementById('btn-backup-export');
+    if (button) button.disabled = true;
+    setBackupStatus(t('backup.exporting'));
+    setBackupProgress(0, 1);
+    try {
+        const result = await state.api.export_account_backup();
+        if (!result) return;
+        if (result.cancelled) {
+            setBackupStatus('');
+            setBackupProgress(0, 0);
+            return;
+        }
+        if (!result.success) {
+            showError(result, 'backup.export_failed');
+            setBackupStatus(t('backup.export_failed'));
+            setBackupProgress(0, 0);
+            return;
+        }
+        const sources = result.sources || {};
+        const parts = ['account', 'favorites', 'playlists']
+            .map((key) => `${backupSourceText(sources[key])}`)
+            .join(' · ');
+        setBackupStatus(t('backup.export_done', {
+            path: result.path || '',
+            playlists: result.playlists || 0,
+            songs: result.songs || 0,
+            favorites: result.favorites || 0,
+            sources: parts,
+        }));
+        setBackupProgress(0, 0);
+        showToast('success', t('backup.export_done_short', {
+            playlists: result.playlists || 0,
+            songs: result.songs || 0,
+        }), 6000);
+    } catch (err) {
+        console.error(err);
+        showToast('error', t('backup.export_failed'));
+        setBackupStatus(t('backup.export_failed'));
+        setBackupProgress(0, 0);
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+/**
+ * Pick a backup file and work out what the import would do.
+ *
+ * Nothing is written yet: the conflicts go to the dialog first, and the
+ * backend only touches the account after the user has decided.
+ */
+async function importAccountBackup() {
+    if (!state.api || !state.api.import_account_backup) return;
+    const button = document.getElementById('btn-backup-import');
+    if (button) button.disabled = true;
+    try {
+        const chosen = await state.api.choose_backup_file();
+        if (!chosen) return;
+        if (!chosen.success) {
+            if (!chosen.cancelled) showError(chosen, 'backup.import_failed');
+            return;
+        }
+        setBackupStatus(t('backup.importing'));
+        const plan = await state.api.import_account_backup(chosen.path);
+        if (!plan) return;
+        if (!plan.success) {
+            showError(plan, 'backup.import_failed');
+            setBackupStatus(t('backup.import_failed'));
+            return;
+        }
+        backup.conflicts = plan.conflicts || [];
+        backup.summary = plan.summary || {};
+        renderBackupConflicts(plan);
+        openModal('backup-conflict-modal');
+    } catch (err) {
+        console.error(err);
+        showToast('error', t('backup.import_failed'));
+        setBackupStatus(t('backup.import_failed'));
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+/** Draw the conflict list: one row per playlist the user has to decide about. */
+function renderBackupConflicts(plan) {
+    const list = document.getElementById('backup-conflict-list');
+    const summary = document.getElementById('backup-conflict-summary');
+    if (!list) return;
+    list.innerHTML = '';
+    const stats = plan.summary || {};
+    if (summary) {
+        summary.textContent = t('backup.conflict_summary', {
+            favorites: stats.favorites_to_add || 0,
+            playlists: stats.playlists_to_create || 0,
+            conflicts: stats.conflicts || 0,
+            skipped: stats.skipped || 0,
+        });
+    }
+    (plan.skipped || []).forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'folder-row';
+        const name = document.createElement('span');
+        name.textContent = t('backup.skip_' + (item.reason || 'other'), {
+            name: item.name || '',
+        });
+        row.appendChild(name);
+        list.appendChild(row);
+    });
+    (plan.conflicts || []).forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'folder-row';
+        const name = document.createElement('span');
+        name.textContent = t('backup.conflict_row', {
+            name: item.name || '',
+            count: item.song_count || 0,
+        });
+        row.appendChild(name);
+
+        const select = document.createElement('select');
+        select.dataset.backupConflict = item.id;
+        [['skip', 'backup.action_skip'], ['merge', 'backup.action_merge'],
+         ['rename', 'backup.action_rename']].forEach(([value, key]) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = t(key);
+            select.appendChild(option);
+        });
+        row.appendChild(select);
+
+        const rename = document.createElement('input');
+        rename.type = 'text';
+        rename.placeholder = t('backup.rename_placeholder');
+        rename.dataset.backupRename = item.id;
+        rename.hidden = true;
+        rename.value = `${item.name || ''} (2)`;
+        select.addEventListener('change', () => {
+            rename.hidden = select.value !== 'rename';
+        });
+        row.appendChild(rename);
+
+        list.appendChild(row);
+    });
+}
+
+/** Collect the user's decisions and hand them to the backend. */
+async function applyBackupConflicts() {
+    if (!state.api || !state.api.apply_account_backup) return;
+    const decisions = { playlists: {} };
+    document.querySelectorAll('#backup-conflict-list select[data-backup-conflict]')
+        .forEach((select) => {
+            const id = select.dataset.backupConflict;
+            const action = select.value;
+            const rename = document.querySelector(
+                `#backup-conflict-list input[data-backup-rename="${CSS.escape(id)}"]`);
+            const entry = { action };
+            if (action === 'rename') entry.name = (rename && rename.value) || '';
+            decisions.playlists[id] = entry;
+        });
+    closeModal('backup-conflict-modal');
+    const button = document.getElementById('btn-backup-conflict-apply');
+    if (button) button.disabled = true;
+    setBackupStatus(t('backup.importing'));
+    setBackupProgress(0, 1);
+    try {
+        const result = await state.api.apply_account_backup(decisions);
+        if (!result) return;
+        if (!result.success) {
+            showError(result, 'backup.import_failed');
+            setBackupStatus(t('backup.import_failed'));
+            setBackupProgress(0, 0);
+            return;
+        }
+        setBackupStatus(t('backup.import_done', {
+            songs: result.songs_liked || 0,
+            playlists: result.playlists_created || 0,
+            merged: result.playlists_merged || 0,
+            skipped: result.playlists_skipped || 0,
+            failed: result.failed || 0,
+        }));
+        setBackupProgress(0, 0);
+        showToast('success', t('backup.import_done_short', {
+            songs: result.songs_liked || 0,
+            playlists: result.playlists_created || 0,
+        }), 6000);
+    } catch (err) {
+        console.error(err);
+        showToast('error', t('backup.import_failed'));
+        setBackupStatus(t('backup.import_failed'));
+        setBackupProgress(0, 0);
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
 async function changeLanguage(code) {
     const result = await state.api.set_language(code);
     if (result && result.success) {
@@ -5912,6 +6154,14 @@ function bindStaticEvents() {
     // appearance
     document.getElementById('btn-choose-background').addEventListener('click', chooseBackground);
     document.getElementById('btn-clear-background').addEventListener('click', clearBackground);
+
+    // account backup
+    document.getElementById('btn-backup-export').addEventListener('click', exportAccountBackup);
+    document.getElementById('btn-backup-import').addEventListener('click', importAccountBackup);
+    document.getElementById('btn-backup-conflict-apply')
+        .addEventListener('click', applyBackupConflicts);
+    document.getElementById('btn-backup-conflict-cancel')
+        .addEventListener('click', () => closeModal('backup-conflict-modal'));
     ['background-blur', 'background-dim'].forEach((id) => {
         document.getElementById(id).addEventListener('input', () => {
             updateRangeLabels();
@@ -6322,4 +6572,17 @@ function onLoginFailed(payload) {
 function onLanguageChanged(translations) {
     if (translations) state.translations = translations;
     applyTranslations();
+}
+
+/** Progress of the account backup export / import. */
+function onAccountBackupProgress(payload) {
+    if (!payload) return;
+    const total = payload.total || 0;
+    const current = payload.current || 0;
+    if (!total) {
+        setBackupProgress(0, 0);
+        return;
+    }
+    setBackupProgress(current, total);
+    setBackupStatus(`${backupPhaseText(payload.phase)} ${current}/${total}`);
 }

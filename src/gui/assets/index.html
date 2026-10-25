@@ -555,6 +555,7 @@
                         data-i18n="settings.general"></button>
                 <button class="tab" type="button" data-tab="playback" data-i18n="settings.playback"></button>
                 <button class="tab" type="button" data-tab="download" data-i18n="settings.download"></button>
+                <button class="tab" type="button" data-tab="account" data-i18n="backup.tab"></button>
                 <button class="tab" type="button" data-tab="advanced"
                         data-i18n="settings.advanced"></button>
             </div>
@@ -782,6 +783,23 @@
                 </label>
             </div>
 
+            <div class="tab-panel" data-panel="account">
+                <div class="group">
+                    <h3 class="group-title" data-i18n="backup.group_title"></h3>
+                    <p class="muted" data-i18n="backup.group_hint"></p>
+                    <div class="inline-form">
+                        <button id="btn-backup-export" class="btn btn-secondary" type="button"
+                                data-i18n="backup.export"></button>
+                        <button id="btn-backup-import" class="btn btn-secondary" type="button"
+                                data-i18n="backup.import"></button>
+                    </div>
+                    <p class="muted" id="backup-status"></p>
+                    <div class="progress-track" id="backup-progress-track" hidden>
+                        <div class="progress-fill" id="backup-progress-fill"></div>
+                    </div>
+                </div>
+            </div>
+
             <div class="tab-panel" data-panel="advanced">
                 <label class="option checkbox">
                     <input type="checkbox" id="remember-login-check">
@@ -848,6 +866,28 @@
                     data-i18n="common.cancel"></button>
             <button id="btn-confirm-ok" class="btn btn-danger" type="button"
                     data-i18n="common.ok"></button>
+        </footer>
+    </div>
+</div>
+
+<!-- ============ backup conflict modal ============ -->
+<div class="modal" id="backup-conflict-modal" hidden>
+    <div class="modal-backdrop" data-close="backup-conflict-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="backup.conflict_title"></h2>
+            <button class="btn btn-icon" type="button" data-close="backup-conflict-modal"
+                    data-icon="close"></button>
+        </header>
+        <div class="modal-body">
+            <p class="muted" id="backup-conflict-summary"></p>
+            <div class="folder-list" id="backup-conflict-list"></div>
+        </div>
+        <footer class="modal-foot">
+            <button id="btn-backup-conflict-cancel" class="btn btn-ghost" type="button"
+                    data-i18n="common.cancel"></button>
+            <button id="btn-backup-conflict-apply" class="btn btn-primary" type="button"
+                    data-i18n="backup.conflict_apply"></button>
         </footer>
     </div>
 </div>

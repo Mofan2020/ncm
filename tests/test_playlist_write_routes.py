@@ -6,6 +6,8 @@ symptom: "收藏失败：illegal request!".  See ``docs/notes.md`` section 21.
 """
 from __future__ import annotations
 
+import threading
+
 from src.core import api as api_module
 
 # --------------------------------------------------------------- the routes
@@ -39,6 +41,12 @@ def _write_api(bridge):
     api._response_cache = {}
     api._playlist_cache = {}
     api._liked_music_playlists = set()
+    # The write queue (see ``NeteaseAPI._eapi_write``).
+    api._request_lock = threading.Lock()
+    api._last_request_ts = 0.0
+    api._write_lock = threading.Lock()
+    api._last_write_ts = 0.0
+    api._write_cooldown_until = 0.0
     api.login_manager = type("LM", (), {"user_info": type(
         "UI", (), {"user_id": "42"})()})()  # type: ignore[assignment]
     return api
@@ -121,36 +129,59 @@ def test_the_ungated_routes_are_left_alone():
 
 
 def test_the_identity_cookie_states_the_same_client_as_the_header():
-    """The cookie has to be **complete**.
+    """The cookie has to be **complete** and it has to match the header.
 
-    The eapi header of this app carries ``os=pc`` and ``appver=8.9.70``.
-    A cookie that states only ``os`` contradicts that header, and the risk
-    engine answers ``code -462`` where the complete identity is accepted
-    (measured 2026-10-25: ``manipulate/tracks`` answered -462 with ``os``
-    alone and 200 with the full set).
+    The eapi header states the official desktop client: ``os=osx``,
+    ``appver=3.1.9``, ``buildver=3364``, ``brand=Apple``.  A cookie that
+    states something else contradicts that header, and the risk engine can
+    see the contradiction (measured 2026-10-25: ``manipulate/tracks``
+    answered -462 with ``os`` alone and 200 with the full set).
 
-    It is the same idea as the official clients, which put their whole
-    eapi header into the cookie (``createHeaderCookie``).
+    The cookie is built from the very header that goes into the signed
+    body, so the two cannot drift apart.
     """
-    from src.core.crypto import build_client_header
+    from src.core.crypto import build_client_header, build_client_identity
 
     header = build_client_header()
-    assert api_module.WRITE_IDENTITY_COOKIE == {
-        "os": "pc", "appver": "8.9.70", "channel": "netease"}
+    cookie = build_client_identity(header)
+
     # Every field the cookie states has to agree with the header.
-    assert api_module.WRITE_IDENTITY_COOKIE["os"] == header["os"]
-    assert api_module.WRITE_IDENTITY_COOKIE["appver"] == header["appver"]
+    for field, value in cookie.items():
+        assert header[field] == value, field
+    # And the fields the risk engine looks at have to be there.
+    for field in ("os", "appver", "buildver", "brand", "deviceId"):
+        assert field in cookie, field
 
 
 def test_the_identity_is_not_half_stated():
     """A half-stated identity is what draws the risk control."""
-    from src.core.crypto import build_client_header
+    from src.core.crypto import build_client_header, build_client_identity
 
     header = build_client_header()
-    cookie = api_module.WRITE_IDENTITY_COOKIE
-    for field in ("os", "appver"):
+    cookie = build_client_identity(header)
+    for field in ("os", "appver", "buildver", "brand"):
         if field in header:
             assert field in cookie, field
+
+
+def test_the_identity_does_not_contradict_itself():
+    """The version number has to belong to the platform it is paired with.
+
+    The identity used to be ``os=pc`` with ``appver=8.9.70`` -- 8.9.70 is
+    the **Android** client's version, so a request claiming to be a Windows
+    PC was carrying an Android release number.  Nothing broke because of
+    it, but it is a contradiction for free, so it is gone.
+    """
+    from src.core.crypto import CLIENT_APPVER, CLIENT_BODY_OS, CLIENT_OS, build_client_header
+
+    header = build_client_header()
+    assert header["os"] == CLIENT_OS == "osx"
+    assert header["appver"] == CLIENT_APPVER == "3.1.9"
+    # The business os is upper case, the header's is lower case -- the
+    # official client spells them differently on purpose.
+    assert CLIENT_BODY_OS == "OSX"
+    # The Android version number must not come back.
+    assert "8.9.70" not in (header["appver"], header.get("buildver", ""))
 
 
 def test_the_identity_is_decided_by_the_route_not_by_the_caller(bridge):
@@ -160,6 +191,8 @@ def test_the_identity_is_decided_by_the_route_not_by_the_caller(bridge):
     write method would have silently sent no identity and answered
     ``403 illegal request!``.
     """
+    from src.core.crypto import build_client_header
+
     api = _write_api(bridge)
     api._throttle = lambda: None
     session = _FakeSession()
@@ -167,7 +200,18 @@ def test_the_identity_is_decided_by_the_route_not_by_the_caller(bridge):
 
     api._eapi(api_module.PLAYLIST_SUBSCRIBE_ENDPOINT, {"id": "7"}, use_cache=False)
 
-    assert session.posted[0]["cookies"] == api_module.WRITE_IDENTITY_COOKIE
+    cookie = session.posted[0]["cookies"]
+    # The cookie repeats the header's fields, so the two cannot disagree.
+    # ``requestId`` is the one field that is new on every request, so it is
+    # checked for being there and looking right rather than for equality.
+    header = build_client_header()
+    for field, value in cookie.items():
+        if field == "requestId":
+            assert len(value) == 36 and value.count("-") == 4
+            continue
+        assert value in header.values(), field
+    # And the fields the risk engine looks at have to be there.
+    assert cookie["os"] == "osx"
 
 
 def test_a_read_does_not_carry_the_identity(bridge):
@@ -213,7 +257,14 @@ def test_the_identity_never_reaches_the_session_jar(bridge):
     api._eapi(api_module.PLAYLIST_SUBSCRIBE_ENDPOINT, {"id": "7"},
               use_cache=False)
 
-    assert session.posted[0]["cookies"] == api_module.WRITE_IDENTITY_COOKIE
+    from src.core.crypto import build_client_header
+
+    cookie = session.posted[0]["cookies"]
+    header = build_client_header()
+    for field, value in cookie.items():
+        if field == "requestId":
+            continue
+        assert value in header.values(), field
     # The session jar itself is untouched.
     assert session.cookies == {}
 

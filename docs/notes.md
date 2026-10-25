@@ -1522,3 +1522,145 @@ subscribed），收藏列表 183 → 184 → 183 没多没少，歌单总数 19 
   半截身份在 `manipulate/tracks` 上直接吃 -462。
 - **写接口的限流比读接口狠**。连打十几个写请求就会被限流到 405，
   探针的退避要留够，而且必须留一条「把账号还原回去」的路。
+
+## 22. 客户端身份与写请求节奏
+
+### 起因
+
+第 21 节修好了「收藏/退订报 illegal request!」，但 2026-10-25 下午
+排查 405 的时候把用户的账号打进了风控：登录态失效、公网不可见、所有
+设备被踢下线。
+
+**先说清楚结论：405 不是身份形状不对，是打的次数太多。**
+
+证据在同一批 `/api/batch` 内层路由、同一个身份、同一时刻：
+
+```
+batch rename   → outer 200  inner 200
+batch desc     → outer 200  inner 405   ← 只有它被限流
+batch privacy  → outer 200  inner 200
+```
+
+身份错了三个都得过不去。按路由计数才对 —— 探针打 `subscribe` 的次数
+远多于 `unsubscribe`，所以 `subscribe` 405 而 `unsubscribe` 200。
+
+**所以「把请求伪装得更像」不是防封的关键，节奏才是。** 身份该修还是修
+（自相矛盾的身份是不必要的风险），但真正保命的是写请求别连发。
+
+### 身份：按官方客户端改
+
+用 IDA Professional 9.5 反编译官方客户端（`网易云音乐.app`
+`Contents/MacOS/NeteaseMusic`），核对了报告里写的几处。地址与伪代码：
+
+| 函数 | 地址 | 结论 |
+|---|---|---|
+| `+[YYYSystemInfoHelper systemInfo]` | `0x10018EC7C` | header 字典只有 7 个键 |
+| `+[YYYSystemInfoHelper getUserAgent]` | `0x10018EE20` | UA 格式 |
+| `+[CloudMusicCoSDK internalGenerateSerial:jsonDict:type:]` | `0x1006A00B0` | body 顶层追加三个字段 |
+| `+[YYYRequestSecureHelper _secureParamStringWithURI:params:]` | `0x1001ACD20` | requestId 加在哪 |
+
+**header 字典**（`systemInfo`）：`deviceId` / `osver` / `appver` /
+`buildver` / `mobilename` / `os` / `brand`，其中 `os="osx"`、
+`brand="Apple"` 是硬编码常量。
+
+**body 顶层**（`internalGenerateSerial`）强制追加三个字段：
+`os="OSX"`（大写，和 header 里的 `osx` 不是一回事）、
+`verifyId=1`（NSNumber）、`deviceId`（CoSDK 的，和 header 里那个
+**不是同一个值**，报告特别警告别混用）。
+
+**requestId**：报告 §6.2 漏了它。反编译显示它是在
+`_secureParamStringWithURI` 里加到 `systemInfo` 的**副本**上，所以最终
+header 是 8 个键。值是每次请求新生成的 UUID。
+
+**UA**：`... Chrome/120.0.0.0 Safari/537.36 NeteaseMusicDesktop/%@`，
+参数是 `appver.buildver`。系统版本和 Chrome 版本在官方客户端里也是
+硬编码的，跟真实机器无关。
+
+**改之前的样子**：`os=pc` 配 `appver=8.9.70` —— **8.9.70 是安卓客户端
+的版本号**，一个自称 Windows PC 的请求带着安卓发行号。它没炸（网易云
+收下了），但那是个白送的矛盾。现在换成官方桌面客户端的身份：
+`os=osx` / `appver=3.1.9` / `buildver=3364` / `brand=Apple`，
+`mobilename` 读 `hw.model`（`Mac14,7`），UA 结尾同步。
+
+**cookie 和 body header 同源**：`build_client_identity(header)` 直接从
+那份 header 生成，所以两个地方不可能对不上。以前 cookie 是手写的
+三个字段常量，跟 header 各写各的。
+
+### 节奏：写请求串行 + 405 自动退避
+
+`WRITE_ROUTES` 列出会改账号的路由（`/api/song/like`、`/api/playlist/*`
+的写接口、`/api/batch` 等）。注意 `/api/song/like/get` 是**读**，不在
+里面 —— 搞错了会让每次读收藏列表都排在写队列后面。
+
+- **写请求排队**：`_write_lock` 保证同一时刻只有一个写在飞。第二个人
+  的写请求排队等着，连退避等待也在队列里。
+- **写请求之间有间隔**：`WRITE_MIN_INTERVAL`（0.4 秒）+ 抖动。不做成
+  几秒级，因为写操作是用户点的，等太久体验就差了。
+- **405 自动退避重试**：`RATE_LIMIT_BACKOFF` 是 3 → 8 → 15 → 30 → 60
+  秒的阶梯，每挨一次拒绝对应一级，最多试 6 次。挨完就放弃，把 405
+  原样返回给调用方。
+- **退避是共享的**：一次 405 抬起的冷却对所有写请求生效，所以一个路由
+  被拒了，其它路由也会慢下来。
+- **读请求不受影响**：读照常走自己的节流（0.15 秒 + 抖动），不会被写
+  的冷却挡住。读被限流了也只在自己这条路上退避，不牵连写。
+
+### 验证
+
+全部离线，没有碰任何账号：
+
+- `tests/test_request_pacing.py`（新）：写请求不重叠（用假 session
+  统计在飞数量）、读请求不被写的冷却挡住、405 会重试、退避阶梯逐级
+  变长、共享冷却生效、阶梯走完会放弃、`403 illegal request!` 不被误判
+  成限流、身份 cookie 仍与 header 一致。
+- `tests/test_crypto.py`：header 的字段集、`os` 大小写两处不同、两个
+  deviceId 不是同一个值、requestId 每次都新。
+- `tests/test_playlist_write_routes.py`：身份 cookie 与 header 同源、
+  身份不自相矛盾、身份按路由决定、session jar 保持干净。
+
+`647 passed, 6 skipped`，Ruff 干净。
+
+**测试自己也要验**：光看测试全绿不算数，得确认测试真的能抓住回归。
+用「改坏代码，看测试会不会红」的方式逐个试过：
+
+| 改坏的地方 | 被谁抓住 |
+|---|---|
+| 写请求不拿锁（会重叠） | `test_two_writes_never_overlap` |
+| 405 不抬冷却 | `test_a_rate_limited_write_is_retried_after_a_wait` |
+| 写请求的间隔没了 | `test_writes_are_spaced_out` |
+| 冷却不起作用 | `test_the_next_write_waits_for_the_cooldown` |
+| 读请求也抬写冷却 | `test_a_read_does_not_raise_the_write_cooldown` |
+| 把 403 当成限流 | `test_another_refusal_is_not_a_rate_limit` |
+| 写请求无限重试 | `test_a_refusal_is_not_retried_forever` |
+| 任何 code 都当限流 | 5 个测试 |
+| `appver` 换回安卓号 | `test_the_identity_does_not_contradict_itself` |
+| `os` 换回 pc | 4 个测试 |
+| body 的 `os` 变小写 | 2 个测试 |
+| 少掉 `verifyId` | `test_the_header_and_the_body_state_the_same_client` |
+| 两个 deviceId 变成一个 | `test_the_two_device_ids_are_different` |
+| 丢掉 `brand` | `test_client_header_defaults_and_overrides` |
+
+备份功能那边也照样试过：去掉「没决定就不写」的闸门、去掉「已有的收藏
+不重复加」、去掉「别人建的歌单跳过」、去掉同名冲突检测、去掉分批 ——
+五处全被测试抓住。
+
+**第一版的节流测试是废的**：它只断言「等过」，而通用节流（每请求
+0.15 秒）自己就满足了这个断言，所以把写队列整个拆掉测试还是绿的。
+现在的测试断言的是**具体的那次等待**（退避阶梯的哪一级、写间隔、
+共享冷却），并且把通用节流也 stub 掉，逼着等待只能来自被测的那段
+代码。
+
+教训：**测试绿了不代表它在测东西。** 改坏一次看看它会不会红。
+
+### 教训
+
+- **探针打的是真账号，代价是真的。** 这次把账号打进了风控，所有设备
+  被踢下线。以后测写接口只用假 session，真实账号只留给用户自己手动
+  验。
+- **先读完逆向文档再设计探针。** 报告 §5.4/§6.2 早写清楚了 body 顶层
+  追加三个字段这件事，我先探了三个小时才发现。
+- **报告也会有不准确的地方**，用 IDA 核一遍比信报告快。§6.2 漏了
+  requestId 就是这么发现的。
+- **「同一个错误码」不一定同一个原因。** 405 有两种来源：打太快，和
+  身份不对。分清它们靠的是「同一批请求里只有一路被拒」这个细节。
+- **退避要留够，而且必须留一条「把账号还原回去」的路。** 探针 9 退订了
+  用户的歌单，恢复脚本撞 405 差点没还原回去。
