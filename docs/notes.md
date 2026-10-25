@@ -1328,3 +1328,197 @@ release notes 手工撰写（`--notes-file`），两块：修复 + 其它。
 `git checkout` 把刷新按钮一起revert了，后来手动补回。**教训**：
 浏览器测试的桩只放 scratch 目录的副本里，不要碰仓库里的真文件。
 
+## 21. 收藏/退订失败：illegal request!（2026-10-25）
+
+### 现象
+
+收藏和**退订**歌单失败，提示「收藏失败：illegal request!」。退订别人的
+歌单必现。仓库里搜不到 `illegal request!` 这个字符串 —— 是服务器返回的。
+
+### 两个原因叠在一起
+
+**原因一：路由形状错了。** 老代码一个路由走两个方向：
+
+```python
+# 改之前
+PLAYLIST_SUBSCRIBE_ENDPOINT = "/api/playlist/subscribe"
+payload = {"id": pid, "t": 1 if subscribe else 2}
+```
+
+实测（自己的账号，真歌单）：
+
+| 形状 | 答案 |
+|---|---|
+| `/api/playlist/subscribe` + `t=1` | 200 |
+| `/api/playlist/subscribe` + `t=2` | 403 illegal request! |
+| `/api/playlist/unsubscribe` | 200 |
+
+参考实现（`module/playlist_subscribe.js`）也是**按方向选路由**的：
+`const path = query.t == 1 ? 'subscribe' : 'unsubscribe'`，payload 只有
+`{id}`，没有 `t`。方向在路由里，不在参数里。
+
+**原因二：写接口被风控门控。** 光把路由改对还不够 —— 同一个
+`/api/playlist/unsubscribe`，不带身份还是 403。带 `os=pc` 就过了。
+
+### 门控矩阵（2026-10-25 实测，每个都是真实请求）
+
+| 路由 | 无身份 | 只带 os | os+appver+channel |
+|---|---|---|---|
+| `/api/playlist/subscribe` | **403** | 404（过了门） | 404 |
+| `/api/playlist/unsubscribe` | **403** | 404（过了门） | 404 |
+| `/api/playlist/update/name` | **403** | 404（过了门） | 404 |
+| `/api/playlist/create` | **403** | 200 | 200 |
+| `/api/batch`（内层 rename） | **内层 403** | 内层 404 | 内层 404 |
+| `/api/playlist/remove` | 200 | 200 | — |
+| `/api/playlist/manipulate/tracks` | 404 | **-462 风控** | 404 |
+| `/api/playlist/cover/update` | 400 | 400 | 400 |
+
+三条结论：
+
+1. **门控是按路由的**，不是所有写接口都要身份。
+2. **只有 `os` 能开门**：`appver` 单独带还是 403。
+3. **身份要写完整**：`os` 单独带在 `manipulate/tracks` 上得到
+   `-462 检测到您的网络环境存在风险`，什么都不带反而正常
+   （404 = 过了门，只是歌单不存在）。
+
+第 3 条后来在真歌单上又测了一遍（探针 20），结果更清楚：
+
+| `manipulate/tracks`（真歌单） | 答案 |
+|---|---|
+| 只带 `os` | **-462 风控** |
+| os+appver+channel | 200 |
+| 完全不带身份 | 200 |
+
+为什么？本项目的 eapi **header** 里带的是 `os=pc` **和**
+`appver=8.9.70`。cookie 只写 `os` 就是在说「我是 pc 客户端，但我不说
+版本」—— 和 header 对不上，看起来像伪造了一半的身份，风控就拦了。
+写完整（和 header 说同一个客户端）就没事。
+
+**这跟官方客户端的做法是同一回事**：它把整个 eapi header 当 cookie 发
+（`createHeaderCookie(header)`）。本项目取 header 里和身份有关的那几项。
+
+所以身份**只发给被门控的那几条路由**，而且**要写完整**。
+
+### 官方客户端是怎么做的
+
+`~/Documents/temp/NeteaseMusic.app`（3.1.9，Cef）的逆向报告
+（`~/Documents/temp/Netease/API.md`）给出的答案和实测一致：
+
+- 官方客户端**把整个 eapi header 当 cookie 发**
+  （`createHeaderCookie(header)`），header 里就有 `os` / `appver` /
+  `osver` / `channel` / `deviceId` / `requestId` / `__csrf`
+- 写操作走 **weapi**，需要 `__csrf` 和登录 `MUSIC_U`
+- eapi body 顶层强制追加 `os="OSX"` / `verifyId=1` / `deviceId`
+
+参考实现（NeteaseMusic-API）也是同一套：`createHeaderCookie(header)` 把
+header 逐字段拼成 cookie。本项目只取其中**能开门的最小那块**。
+
+### /api/batch 的外层 200 是个谎
+
+`/api/batch` 的外层 `code` **永远是 200**，里面的路由成没成都一样。
+所以老代码的改名一直是坏的，只是没人发现：
+
+```
+outer code=200  inner code=403  inner msg=illegal request!
+```
+
+界面报「改名成功」，服务器上歌单名字没变。
+
+### 改法
+
+**身份按路由决定**，不靠每个调用点记得传：
+
+```python
+# src/core/api.py
+IDENTITY_REQUIRED_ROUTES: frozenset[str] = frozenset({
+    PLAYLIST_CREATE_ENDPOINT,
+    PLAYLIST_UPDATE_ENDPOINT,
+    PLAYLIST_SUBSCRIBE_ENDPOINT,
+    PLAYLIST_UNSUBSCRIBE_ENDPOINT,
+    "/api/batch",
+})
+```
+
+`_eapi_once()` 里查这个集合决定要不要加 cookie。这样**新写方法不可能
+忘记带身份**，也**不可能给不该带的路由乱带**。
+
+身份写完整（`os` / `appver` / `channel`），和 eapi header 说同一个
+客户端；而且**只在这一个请求上带**（`requests` 的 `cookies=` 参数，
+合并进请求头但不写回 session jar）：
+
+- 第 18 节说「session 里带 os+appver，like 接口会回 524」—— 那是
+  **session jar** 的问题。现在身份是 per-request 的，like 路由不在集合
+  里，永远不带身份，所以 524 的修复完好
+- 登录时读进来的旧 cookie 里的 `os`/`appver`/`channel` 依然被丢掉
+  （`apply_cookie_string()`），session jar 一直是干净的
+
+**退订走自己的路由**，payload 只有 id，没有 `t`：
+
+```python
+if subscribe:
+    endpoint = PLAYLIST_SUBSCRIBE_ENDPOINT
+else:
+    endpoint = PLAYLIST_UNSUBSCRIBE_ENDPOINT
+payload = {"id": playlist_id}
+```
+
+**batch 看内层结果**：`_batch_result()` 把内层第一个失败挑出来当答案，
+这样改名失败会真的报出来。
+
+**文案分开**：退订失败不再显示「收藏失败」。i18n 补
+`player.unsubscribe_failed`（中英各一份）。
+
+### 验证
+
+**真实账号闭环**（`8425278693`，别人创建的歌单，正是用户的操作），
+身份带全套：
+
+```
+S1  订阅前:      subscribed
+S2  订阅:        200（探针 17 用只带 os 也 200）
+S3  订阅后:      subscribed
+S4  退订:        code=200          ← 用户的那个操作
+S5  退订后:      absent            ← 状态真的翻了
+S6  再订阅:      （撞上 405 限流，见下）
+S7  最终:        subscribed         ← 账号恢复原状
+```
+
+**账号最终状态没变**：`8425278693` 回到 subscribed（探针开始前就是
+subscribed），收藏列表 183 → 184 → 183 没多没少，歌单总数 19 没变，
+探针建的临时歌单已删干净。
+
+**batch 内层**：真实歌单上实测 `outer 200 / inner 200`（带身份），
+`outer 200 / inner 403`（不带身份）。
+
+**create**：不带身份 403，带身份 200。
+
+**like 没被带坏**：写操作带身份之后，like 路由（不带身份）仍然是 200，
+而且那首「524 组」的歌**真的进了收藏列表**（183 → 184），unlike 之后
+又真的出去了（184 → 183）。这是最尖的一次测试 —— 第 18 节那批歌就是
+会 524 的。
+
+**风险控制没被踩到**：真歌单上 `manipulate/tracks` 带全套身份 200，
+不带身份 200，带半个身份 -462。所以那个路由不在集合里。
+
+### 顺带发现的另一个坏：写接口的限流
+
+探针 9 退订了 `8425278693` 之后，恢复一直撞 405
+（`操作过于频繁，请稍后再试`），那个歌单在账号上少了将近一天。
+写接口的 405 比读接口频繁得多 —— 探针间隔从 40 秒放到 80 秒才稳，
+探针 22 打十几个写请求之后更是连着 405，退订成功之后**补订阅的那一步
+差点没做上**（探针的退避最多到 450 秒，不够）。
+
+**教训**：测写接口要留足退避，并且**每个探针都要能把账号还原回去**，
+哪怕是靠另一个脚本兜底。
+
+### 教训
+
+- **`/api/batch` 的外层 code 不能信**。改批量接口时先看内层。
+- **风控门控是按路由的**。给不需要身份的接口乱加身份，可能把
+  「正常」变成「-462 风控」——比不加更糟。
+- **测写接口要考虑幂等**：like 过一次的歌再 like 永远 200（第 18 节）。
+  测完要还原。
+- **身份 cookie 要和 eapi header 说同一个客户端**，不能只写一半。
+  半截身份在 `manipulate/tracks` 上直接吃 -462。
+- **写接口的限流比读接口狠**。连打十几个写请求就会被限流到 405，
+  探针的退避要留够，而且必须留一条「把账号还原回去」的路。

@@ -1585,7 +1585,10 @@ class GuiBridge:
         if not result:
             return {"success": False, "error_key": "error.network"}
         if result.get("code") != 200:
-            return {"success": False, "error_key": "player.subscribe_failed", "message": result.get("msg") or ""}
+            # The two directions fail for different reasons, so they get
+            # different messages.
+            key = "player.subscribe_failed" if subscribe else "player.unsubscribe_failed"
+            return {"success": False, "error_key": key, "message": result.get("msg") or ""}
         return {"success": True, "subscribed": subscribe}
 
     def update_playlist_cover(self, playlist_id: str, cover_url: str) -> dict[str, Any]:

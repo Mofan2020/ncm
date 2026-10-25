@@ -282,6 +282,7 @@
     "add_failed": "添加失败",
     "remove_failed": "移除失败",
     "subscribe_failed": "收藏失败",
+    "unsubscribe_failed": "取消收藏失败",
     "cover_update_failed": "封面更新失败",
     "cover_url_empty": "封面链接不能为空",
     "no_tracks_to_add": "没有可添加的歌曲",

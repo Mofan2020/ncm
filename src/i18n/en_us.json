@@ -277,6 +277,7 @@
     "add_failed": "Add failed",
     "remove_failed": "Remove failed",
     "subscribe_failed": "Subscribe failed",
+    "unsubscribe_failed": "Unsubscribe failed",
     "cover_update_failed": "Cover update failed",
     "cover_url_empty": "Cover URL cannot be empty",
     "no_tracks_to_add": "No tracks to add",

@@ -103,6 +103,44 @@ PLAYLIST_UNSUBSCRIBE_ENDPOINT = "/api/playlist/unsubscribe"
 PLAYLIST_DETAIL_DYNAMIC_ENDPOINT = "/api/playlist/detail/dynamic"  # for track operations
 PLAYLIST_COVER_UPDATE_ENDPOINT = "/api/playlist/cover/update"
 
+#: The client identity NetEase's risk control wants to see on some of the
+#: playlist **write** routes.  Without it those routes answer
+#: ``code 403 illegal request!`` -- measured on 2026-10-25, see
+#: ``docs/notes.md`` section 21.
+#:
+#: The official clients put their whole eapi header into the cookie (the
+#: reference implementation builds it with ``createHeaderCookie``), and
+#: this is the same idea: the cookie states the client that the eapi
+#: header states.  It has to be **complete** -- a cookie with only ``os``
+#: while the header carries ``os`` *and* ``appver`` is a half-stated
+#: identity, and the risk engine answers ``code -462`` ("your network
+#: environment looks risky") where the complete one is accepted.
+#:
+#: The cookie is per request, never in the session jar: a session that
+#: carries this identity makes the like endpoint answer ``code 524``
+#: (section 18).
+WRITE_IDENTITY_COOKIE: dict[str, str] = {
+    "os": "pc",
+    "appver": "8.9.70",
+    "channel": "netease",
+}
+
+#: The routes that are gated behind that identity, measured 2026-10-25.
+#: Everything else is **not** gated, and sending an identity to them is
+#: not free: a partial identity makes the track manipulation route answer
+#: ``code -462`` ("your network environment looks risky") instead of doing
+#: the work.  So the identity goes to these routes and to nothing else.
+#:
+#: ``/api/batch`` is here because the routes *inside* it are gated -- its
+#: outer answer is always 200, whatever the inner route said.
+IDENTITY_REQUIRED_ROUTES: frozenset[str] = frozenset({
+    PLAYLIST_CREATE_ENDPOINT,
+    PLAYLIST_UPDATE_ENDPOINT,
+    PLAYLIST_SUBSCRIBE_ENDPOINT,
+    PLAYLIST_UNSUBSCRIBE_ENDPOINT,
+    "/api/batch",
+})
+
 #: Audio levels from lowest to highest.
 QUALITY_ORDER: tuple[str, ...] = ("standard", "higher", "exhigh", "lossless", "hires")
 
@@ -225,10 +263,15 @@ class NeteaseAPI:
             "Content-Type": "application/x-www-form-urlencoded",
         }
 
-    def _post(self, url: str, data: dict[str, Any], timeout: tuple[int, int] = (5, 20)):
+    def _post(self, url: str, data: dict[str, Any], timeout: tuple[int, int] = (5, 20),
+              cookies: dict[str, str] | None = None):
         self._throttle()
         self.stats["total_requests"] += 1
-        return self.session.post(url, data=data, headers=self._headers(), timeout=timeout)
+        # ``cookies`` is passed per request, not written into the session
+        # jar: the identity cookie must reach the write routes and nothing
+        # else (see ``WRITE_IDENTITY_COOKIE``).
+        return self.session.post(url, data=data, headers=self._headers(), timeout=timeout,
+                                 cookies=cookies)
 
     def _get(self, url: str, params: dict[str, Any], timeout: tuple[int, int] = (5, 20)):
         self._throttle()
@@ -240,8 +283,11 @@ class NeteaseAPI:
         """Single attempt at a signed eapi call (no retries)."""
         body = eapi_body(path, data)
         url = f"{self.eapi_host}/eapi{path}"
+        # The identity cookie is added here, for the routes that need it and
+        # for those alone -- see IDENTITY_REQUIRED_ROUTES.
+        cookies = WRITE_IDENTITY_COOKIE if path in IDENTITY_REQUIRED_ROUTES else None
         try:
-            resp = self._post(url, body)
+            resp = self._post(url, body, cookies=cookies)
         except requests.exceptions.RequestException as exc:
             self._log(f"eapi transport error {path}: {exc}", "warning")
             return None
@@ -436,7 +482,11 @@ class NeteaseAPI:
 
     def _eapi(self, path: str, data: dict[str, Any] | None = None,
               use_cache: bool = True) -> dict[str, Any] | None:
-        """Signed eapi call with retries, host rotation, and optional caching."""
+        """Signed eapi call with retries, host rotation, and optional caching.
+
+        Whether the request carries the client identity cookie is decided
+        by the route, not by the caller: see ``IDENTITY_REQUIRED_ROUTES``.
+        """
         scope = self._scope_for(path, data)
         # The scope is part of the key: two answers to the same endpoint
         # that depend on different things must not share one entry.
@@ -1168,11 +1218,36 @@ class NeteaseAPI:
         if not batch:
             return None
         result = self._eapi("/api/batch", batch, use_cache=False)
+        result = self._batch_result(batch, result)
         if (result or {}).get("code") == 200:
             # The name and the cover of the playlist changed, and the
             # account's playlist list shows the old name.
             self.invalidate_playlist(playlist_id)
             self.invalidate_user_playlists()
+        return result
+
+    @staticmethod
+    def _batch_result(batch: dict[str, str],
+                      result: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The real answer of a ``/api/batch`` call.
+
+        The outer ``code`` of a batch is **always** 200, whatever the routes
+        inside it answered -- so reading it tells the caller nothing.  Each
+        inner route has its own answer, keyed by its path, and that is where
+        a failure shows up: a rename without the client identity comes back
+        as ``inner code 403 illegal request!`` under a cheerful outer 200.
+
+        The first inner failure is returned as the result of the call, so
+        the caller sees the code and the message that actually happened.
+        """
+        if not result:
+            return result
+        for route in batch:
+            inner = result.get(route)
+            if isinstance(inner, dict) and inner.get("code") not in (None, 200):
+                return {"code": inner.get("code"),
+                        "msg": inner.get("msg") or inner.get("message") or "",
+                        "route": route}
         return result
 
     def delete_playlist(self, playlist_ids: list[str]) -> dict[str, Any] | None:
@@ -1225,15 +1300,28 @@ class NeteaseAPI:
         return self._manipulate_playlist_tracks(playlist_id, track_ids, "del")
 
     def subscribe_playlist(self, playlist_id: str, subscribe: bool = True) -> dict[str, Any] | None:
-        """Subscribe or unsubscribe from a playlist."""
+        """Subscribe or unsubscribe from a playlist.
+
+        The two directions have **separate routes**: ``/api/playlist/subscribe``
+        and ``/api/playlist/unsubscribe``.  The old shape -- one route with a
+        ``t`` field -- is what the reference implementation used to send and
+        what this app sent until 2026-10-25; NetEase answers it with
+        ``code 403 illegal request!`` on the write routes.  See
+        ``docs/notes.md`` section 21.
+        """
         playlist_id = str(playlist_id or "").strip()
         if not playlist_id:
             return None
-        payload = {
-            "id": playlist_id,
-            "t": 1 if subscribe else 2,  # 1=subscribe, 2=unsubscribe
-        }
-        result = self._eapi(PLAYLIST_SUBSCRIBE_ENDPOINT, payload, use_cache=False)
+        if subscribe:
+            endpoint = PLAYLIST_SUBSCRIBE_ENDPOINT
+        else:
+            endpoint = PLAYLIST_UNSUBSCRIBE_ENDPOINT
+        # The payload is just the id -- the direction is in the route, not in
+        # a ``t`` field.  The old shape (one route, ``t`` 1 or 2) is what
+        # this app sent until 2026-10-25; NetEase answers the ``t`` form on
+        # the write routes with ``code 403 illegal request!``.
+        payload = {"id": playlist_id}
+        result = self._eapi(endpoint, payload, use_cache=False)
         if (result or {}).get("code") == 200:
             # The account's playlist list gains or loses this playlist.
             self.invalidate_user_playlists()
