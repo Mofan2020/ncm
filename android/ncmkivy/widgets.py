@@ -385,10 +385,14 @@ class CoverImage(AsyncImage):
 
     def _upgrade_source(self, *_args: Any) -> None:
         source = self.source or ""
-        if source.startswith("http://"):
-            secure = "https://" + source[len("http://"):]
-            if secure != self.source:
-                self.source = secure
+        if not source.startswith("http://"):
+            return
+        # The loopback proxy is plain http on purpose; do not touch it.
+        if "127.0.0.1" in source or "localhost" in source:
+            return
+        secure = "https://" + source[len("http://"):]
+        if secure != self.source:
+            self.source = secure
 
     def _sync(self, *_args: Any) -> None:
         for item in self.canvas.before.children:
@@ -397,7 +401,19 @@ class CoverImage(AsyncImage):
                 item.size = self.size
 
 
-class TrackRow(BoxLayout):
+class TappableRow(ButtonBehavior, BoxLayout):
+    """A row that can be pressed.
+
+    ``BoxLayout`` has no ``on_release`` event of its own: binding one to it
+    does nothing, because nothing ever dispatches it.  ``ButtonBehavior``
+    brings the press handling and the event with it.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+
+
+class TrackRow(TappableRow):
     """One row in a track list.
 
     Layout: cover, title / artist, and an optional trailing action.  The row

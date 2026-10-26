@@ -169,7 +169,8 @@ class Controller:
             out.append({
                 "id": str(item.get("id") or ""),
                 "name": item.get("name") or "",
-                "cover_url": item.get("coverImgUrl") or item.get("picUrl") or "",
+                "cover_url": self._cover_url(
+                    item.get("coverImgUrl") or item.get("picUrl") or ""),
                 "track_count": int(item.get("trackCount") or 0),
                 "creator": (item.get("creator") or {}).get("nickname") or "",
                 "subscribed": bool(item.get("subscribed")),
@@ -220,7 +221,7 @@ class Controller:
                 {
                     "id": str(a.get("id") or ""),
                     "name": a.get("name") or "",
-                    "cover_url": a.get("picUrl") or a.get("img1v1Url") or "",
+                    "cover_url": self._cover_url(a.get("picUrl") or a.get("img1v1Url") or ""),
                     "album_size": int(a.get("albumSize") or 0),
                 }
                 for a in artists
@@ -229,7 +230,7 @@ class Controller:
                 {
                     "id": str(a.get("id") or ""),
                     "name": a.get("name") or "",
-                    "cover_url": a.get("picUrl") or "",
+                    "cover_url": self._cover_url(a.get("picUrl") or ""),
                     "artist": (a.get("artist") or {}).get("name") or "",
                 }
                 for a in albums
@@ -238,7 +239,8 @@ class Controller:
                 {
                     "id": str(p.get("id") or ""),
                     "name": p.get("name") or "",
-                    "cover_url": p.get("coverImgUrl") or p.get("picUrl") or "",
+                    "cover_url": self._cover_url(
+                        p.get("coverImgUrl") or p.get("picUrl") or ""),
                     "track_count": int(p.get("trackCount") or 0),
                 }
                 for p in playlists
@@ -263,8 +265,10 @@ class Controller:
             "artist": {
                 "id": str(artist.get("id") or ""),
                 "name": artist.get("name") or "",
-                "cover_url": artist.get("picUrl") or artist.get("img1v1Url") or "",
-                "avatar_url": artist.get("img1v1Url") or artist.get("picUrl") or "",
+                "cover_url": self._cover_url(
+                    artist.get("picUrl") or artist.get("img1v1Url") or ""),
+                "avatar_url": self._cover_url(
+                    artist.get("img1v1Url") or artist.get("picUrl") or ""),
                 "description": artist.get("briefDesc") or "",
                 "alias": list(artist.get("alias") or []),
                 "music_size": int(artist.get("musicSize") or 0),
@@ -367,16 +371,24 @@ class Controller:
 
     def cover_url(self, track: dict[str, Any]) -> str:
         """A loopback URL for a cover, or an empty string."""
-        raw = str(track.get("cover_url") or "").strip()
-        if not raw:
+        return self._cover_url(str(track.get("cover_url") or ""))
+
+    def _cover_url(self, raw: str) -> str:
+        """Turn a CDN picture URL into a loopback one.
+
+        The cover bytes live on the CDN, and the loopback proxy is how they
+        get here: the CDN refuses requests that do not carry the right
+        Referer, and routing through 127.0.0.1 also fills the on-disk cache
+        so scrolling a long list does not hammer the CDN.
+        """
+        text = str(raw or "").strip()
+        if not text:
             return ""
-        if raw.startswith("http://127.0.0.1") or raw.startswith("http://localhost"):
-            return raw
-        ext = "jpg"
-        if ".png" in raw.lower():
-            ext = "png"
+        if text.startswith("http://127.0.0.1") or text.startswith("http://localhost"):
+            return text
+        ext = "png" if ".png" in text.lower() else "jpg"
         try:
-            return self.media.url_for_remote_cover(raw, ext)
+            return self.media.url_for_remote_cover(text, ext) or ""
         except Exception:  # pragma: no cover - defensive
             return ""
 
@@ -546,8 +558,7 @@ class Controller:
         self._match_index = index
         self._match_index_token = token
 
-    @staticmethod
-    def _track(song: dict[str, Any], index: int) -> Track:
+    def _track(self, song: dict[str, Any], index: int) -> Track:
         """Turn a NetEase song object into the flat shape the UI uses."""
         artists = song.get("artists") or song.get("ar") or []
         album = song.get("album") or song.get("al") or {}
@@ -562,7 +573,8 @@ class Controller:
                 a.get("name", "") for a in artists if isinstance(a, dict)
             ) or "",
             "album": album.get("name") or "",
-            "cover_url": album.get("picUrl") or song.get("cover_url") or "",
+            "cover_url": self._cover_url(
+                album.get("picUrl") or song.get("cover_url") or ""),
             "duration": int(song.get("dt") or song.get("duration") or 0),
             "fee": int(song.get("fee") or 0),
             "vip": bool(song.get("fee") or 0),

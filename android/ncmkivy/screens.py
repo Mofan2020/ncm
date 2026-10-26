@@ -25,6 +25,7 @@ from ncmkivy.widgets import (
     IconButton,
     LoadingView,
     SectionHeader,
+    TappableRow,
     ThemedLabel,
     TrackList,
     TrackRow,
@@ -125,8 +126,8 @@ class HomeScreen(_Screen):
         self.body.add_widget(scroll)
 
     def _entry(self, label: str, action: Callable[[], None]) -> BoxLayout:
-        row = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(56),
-                        spacing=dp(12))
+        row = TappableRow(orientation="horizontal", size_hint_y=None, height=dp(56),
+                           spacing=dp(12))
         row.add_widget(ThemedLabel(text=label, role="body_large"))
         row.bind(on_release=lambda *_a: action())
         return row
@@ -168,8 +169,15 @@ class SearchScreen(_Screen):
         self.input.bind(on_text_validate=self._run)
         self.body.add_widget(self.input)
 
-        self.results = BoxLayout(orientation="vertical")
-        self.body.add_widget(self.results)
+        self.results = BoxLayout(orientation="vertical", size_hint_y=None,
+                                 spacing=dp(4), padding=(0, dp(4), 0, dp(4)))
+        self.results.bind(minimum_height=self.results.setter("height"))
+        # The results live in a scroll view.  A plain box grows with its
+        # content and spills over the header as soon as there are more rows
+        # than the screen can hold.
+        scroll = ScrollView(do_scroll_x=False, bar_width=dp(2))
+        scroll.add_widget(self.results)
+        self.body.add_widget(scroll)
         self._show_hint(_t(self.app, "player.search_hint", "输入关键词后按回车开始搜索"))
 
     def _show_hint(self, message: str) -> None:
@@ -227,13 +235,15 @@ class SearchScreen(_Screen):
             self.results.add_widget(SectionHeader(
                 text=_t(self.app, "player.search_multi_songs", "歌曲")))
             listing = TrackList(songs, on_play=self._play)
+            # Inside the scroll column the list may be as tall as its
+            # content; the scroll view around it does the scrolling.
             listing.size_hint_y = None
             listing.height = dp(64) * len(songs) + dp(8)
             self.results.add_widget(listing)
 
     def _artist_row(self, artist: dict[str, Any]) -> BoxLayout:
-        row = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(64),
-                        spacing=dp(12))
+        row = TappableRow(orientation="horizontal", size_hint_y=None, height=dp(64),
+                           spacing=dp(12))
         cover = CoverImage(size=dp(48))
         if artist.get("cover_url"):
             cover.source = artist["cover_url"]
@@ -299,8 +309,8 @@ class LibraryScreen(_Screen):
         self.content.add_widget(scroll)
 
     def _playlist_row(self, playlist: dict[str, Any]) -> BoxLayout:
-        row = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(64),
-                        spacing=dp(12))
+        row = TappableRow(orientation="horizontal", size_hint_y=None, height=dp(64),
+                           spacing=dp(12))
         cover = CoverImage(size=dp(48))
         if playlist.get("cover_url"):
             cover.source = playlist["cover_url"]
@@ -332,8 +342,14 @@ class DownloadsScreen(_Screen):
         self.status_label = ThemedLabel(text="", role="body_medium",
                                         color_name="on_surface_variant")
         self.body.add_widget(self.status_label)
-        self.rows = BoxLayout(orientation="vertical")
-        self.body.add_widget(self.rows)
+        self.rows = BoxLayout(orientation="vertical", size_hint_y=None,
+                              spacing=dp(4))
+        self.rows.bind(minimum_height=self.rows.setter("height"))
+        # A plain box grows with its content and spills over the header once
+        # the download list gets long.
+        scroll = ScrollView(do_scroll_x=False, bar_width=dp(2))
+        scroll.add_widget(self.rows)
+        self.body.add_widget(scroll)
         self._refresh()
 
     def _refresh(self, *_args: Any) -> None:
@@ -585,15 +601,15 @@ class FollowedArtistsScreen(_Screen):
         column.bind(minimum_height=column.setter("height"))
         scroll.add_widget(column)
         for artist in artists:
-            row = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(64),
-                            spacing=dp(12))
+            row = TappableRow(orientation="horizontal", size_hint_y=None, height=dp(64),
+                               spacing=dp(12))
             cover = CoverImage(size=dp(48))
             if artist.get("cover_url"):
                 cover.source = artist["cover_url"]
             row.add_widget(cover)
             row.add_widget(ThemedLabel(text=artist.get("name") or "", role="title_medium"))
-            # The id is bound now: a lambda would capture the loop variable
-            # and every row would open the last artist.
+            # The id is bound now: a lambda would capture the loop variable and
+            # every row would open the last artist.
             artist_id = str(artist.get("id") or "")
             row.bind(on_release=lambda *_a, aid=artist_id: self.app.open_artist(aid))
             column.add_widget(row)
