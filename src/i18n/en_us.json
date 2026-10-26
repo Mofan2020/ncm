@@ -691,6 +691,8 @@
     "tracks_count": "{count} tracks",
     "artist_info": "Artist",
     "albums": "Albums",
+    "play_unavailable": "This track cannot be played right now",
+    "play_failed": "Playback failed, try again later",
     "songs": "Songs"
   }
 }

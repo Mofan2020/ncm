@@ -305,3 +305,21 @@ def test_a_wide_window_gets_a_side_rail():
     stub = _Stub()
     NcmApp._apply_size_class(stub, 1280, 1.0)
     assert stub.theme.size_class.name == "expanded"
+
+
+def test_a_track_that_cannot_be_played_says_so():
+    """The message has to name the problem, not the error code."""
+    from ncmkivy.app import NcmApp
+
+    class _Stub:
+        _text = NcmApp._text
+
+    stub = _Stub()
+    message = NcmApp._play_error_message(
+        stub, {"message": "standard:song_not_found, no_local_copy"})
+    assert "无法播放" in message
+    assert "song_not_found" not in message
+
+    generic = NcmApp._play_error_message(stub, {"message": "network down"})
+    assert generic != message
+

@@ -691,6 +691,8 @@
     "tracks_count": "{count} 首",
     "artist_info": "歌手信息",
     "albums": "专辑",
+    "play_unavailable": "这首歌暂时无法播放",
+    "play_failed": "播放失败，请稍后再试",
     "songs": "歌曲"
   }
 }

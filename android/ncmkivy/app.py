@@ -75,6 +75,7 @@ class NcmApp(App):
         self.root_widget: Widget | None = None
         self._nav_rail: BoxLayout | None = None
         self._bottom_nav: BoxLayout | None = None
+        self._mini_player: Any = None
         self._content: BoxLayout | None = None
         self._detail: BoxLayout | None = None
         self._current_section = "home"
@@ -105,6 +106,15 @@ class NcmApp(App):
         self._content = BoxLayout(orientation="vertical")
         body.add_widget(self._content)
 
+        # The strip that shows what is playing.  It stays at zero height
+        # until something plays.
+        from ncmkivy.widgets import MiniPlayer
+
+        self._mini_player = MiniPlayer(on_toggle=self._toggle_playback,
+                                        on_next=self._play_next)
+        self._mini_player.height = 0
+        root.add_widget(self._mini_player)
+
         # The bottom bar (compact / medium).
         self._bottom_nav = self._build_bottom_nav()
         root.add_widget(self._bottom_nav)
@@ -117,6 +127,7 @@ class NcmApp(App):
         self.controller.start()
         self.player.on_completed = self._on_track_finished
         self.player.on_error = self._on_play_error
+        self.player.on_state_changed = self._on_player_state
         # Nothing else ever calls go() at startup, so without this the content
         # area stays empty and the app looks like a blank page.
         self.go(self._current_section)
@@ -302,10 +313,92 @@ class NcmApp(App):
         resolved = self.controller.resolve(track)
         if not resolved.get("success"):
             log.warning("cannot resolve track: %s", resolved.get("message"))
+            # Silently doing nothing is the worst answer: the user tapped a
+            # song and nothing happened at all.
+            self._toast(self._play_error_message(resolved))
             return
         self.current_tracks = list(tracks)
         self.current_index = index
         self.player.play(resolved.get("url") or "")
+        self._mini_player.show_track(track, playing=True)
+        self._mini_player.height = dp(64)
+
+    def _play_error_message(self, resolved: dict[str, Any]) -> str:
+        """A message the user can act on, not an internal error code."""
+        detail = str(resolved.get("message") or "")
+        # ``song_not_found`` and the copyright errors all mean the same thing
+        # to the listener: this track has nothing to play right now.
+        if ("copyright" in detail or "unavailable" in detail
+                or "not_found" in detail):
+            return self._text("android.play_unavailable", "这首歌暂时无法播放")
+        return self._text("android.play_failed", "播放失败，请稍后再试")
+
+    def _text(self, key: str, fallback: str) -> str:
+        try:
+            from src.i18n import t
+
+            value = t(key)
+        except Exception:  # pragma: no cover - the bundle may not carry it
+            return fallback
+        # ``t`` hands back the key itself when there is no translation.
+        return fallback if not value or value == key else value
+
+    def _toast(self, message: str) -> None:
+        """A short message.  Android's own toast is the right one.
+
+        Kivy has no toast widget any more, so the native one is raised
+        through jnius.  It has to happen on the UI thread.
+        """
+        from kivy.clock import Clock
+
+        def show(*_args: Any) -> None:
+            try:
+                from jnius import autoclass
+
+                from android.runnable import run_on_ui_thread
+
+                activity = autoclass("org.kivy.android.PythonActivity").mActivity
+                toast_class = autoclass("android.widget.Toast")
+                # jnius only matches a python str against java/lang/String,
+                # and makeText wants a CharSequence -- a plain string scores
+                # -1 there and no overload is left.  A java.lang.String object
+                # is accepted for any object parameter.
+                text = autoclass("java.lang.String")(message)
+
+                def on_ui() -> None:
+                    # makeText needs a Looper, so it has to run on the UI
+                    # thread as well -- calling show() there alone is not
+                    # enough and raises "Can't toast on a thread that has
+                    # not called Looper.prepare()".
+                    toast = toast_class.makeText(activity, text,
+                                                 toast_class.LENGTH_SHORT)
+                    toast.show()
+
+                run_on_ui_thread(on_ui)()
+            except Exception as exc:  # pragma: no cover - no toast off device
+                log.warning("toast failed: %s (%s)", message, exc)
+
+        Clock.schedule_once(show, 0)
+
+    def _toggle_playback(self) -> None:
+        """Pause or resume what is playing."""
+        if self.player.state == "playing":
+            self.player.pause()
+        else:
+            self.player.resume()
+
+    def _play_next(self) -> None:
+        """Skip to the next track in the queue."""
+        if not self.current_tracks:
+            return
+        nxt = self.current_index + 1
+        if nxt < len(self.current_tracks):
+            self.play_tracks(self.current_tracks, nxt)
+
+    def _on_player_state(self, state: str) -> None:
+        if self._mini_player is None:
+            return
+        self._mini_player.set_playing(state == "playing")
 
     def _on_track_finished(self) -> None:
         """Move on to the next track when one ends."""
@@ -318,3 +411,4 @@ class NcmApp(App):
 
     def _on_play_error(self, message: str) -> None:
         log.warning("playback error: %s", message)
+        self._toast(self._text("android.play_failed", "播放失败，请稍后再试"))

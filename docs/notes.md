@@ -1870,13 +1870,14 @@ Kivy 自带的 SDL2_mixer 播不了 HTTP 流，而网易云 CDN 要 `Referer`。
 
 ### 没做完 / 没验证的
 
-- **APK 没打出来。** p4a 还在编依赖（CPython 3.14 + SDL2 + Kivy 一轮十几分钟），
-  所以包体、真机启动、后台播放、锁屏控制都还没有实测数据。
+- **APK 已经打出来并在模拟器上跑过**，见第 27 节；真机播放和锁屏控制仍然没有实测
+  数据。
 - **Android 的本地音乐要走 MediaStore**，`LocalMusicLibrary` 的目录扫描在
   Android 上不能直接用（scoped storage），需要一条适配分支。
 - **KivyMD 没用。** 它依赖 pillow，跟「去掉 PIL 瘦身」的目标直接冲突；所以
   Material 3 的主题层是手写的，图标是 canvas 画的简笔，不是 Material 图标库。
-- **UI 只在桌面 Kivy 上跑过**，没在真机或模拟器上看过。
+- **界面在模拟器上逐屏看过，但没有在真机小屏上验证过**（模拟器是 Pixel 6 模板，
+  411dp 宽）。
 
 ## 26. 卸掉 Pillow：安装包 38 MB → 26 MB（2026-10-26）
 
@@ -1944,3 +1945,46 @@ libjpeg / libpng / libwebp* / libfreetype ...）。PIL 在运行时只干三件�
   Windows 的 `System.Drawing` 走 GDI+，只认 BMP/GIF/JPEG/PNG/TIFF，WebP/HEIC 壁纸
   会走降级：原文件照原样复制成 `background.jpg`（浏览器按内容嗅探，仍然能显示），
   不吃缩放这层优化。
+
+## 27. Android 上真机（模拟器）跑起来之后（2026-10-27）
+
+APK 打出来了：`neteasemusic-3.5.1-arm64-v8a-debug.apk`，22.3 MB，装在 Android 14
+arm64 模拟器（Pixel 6 模板，411dp 宽）上，首页、搜索、歌手主页、播放条、扫码登录
+都逐个点过。这一节记的是几个不看源码就会重踩的坑。
+
+### 原生 Toast：两个坑叠在一起
+
+Kivy 2.3 里已经没有 `kivy.uix.toast`，所以走 jnius 调 `android.widget.Toast`。
+第一版报 `No static methods called makeText in android/widget/Toast matching your
+arguments`：jnius 是按参数类型打分的，Python 的 `str` 只认 `java/lang/String`，
+而 `makeText` 要的是 `CharSequence`，于是直接被判 -1，一个重载都不剩。改成传
+`java.lang.String` 对象就过了（JavaObject 对任何 `L...;` 形参都接受）。
+
+第二版报 `Can't toast on a thread that has not called Looper.prepare()`：
+`makeText` 自己也要 Looper，所以不能只把 `show()` 扔到 UI 线程，**建对象和显示
+都得在 UI 线程**。
+
+### 封面：模拟器直连 CDN 会超时
+
+模拟器访问 `p2.music.126.net` 会读超时。封面现在统一走本机媒体服务器代理
+（`/m/<token>/cover?u=...`），代理自己下载时在 p1/p2/p3 之间轮换重试，缓存键仍
+用原始 URL。请求头带 `Referer: https://music.163.com/`，Kivy 直连是拿不到的。
+
+### 播放条
+
+`MiniPlayer` 默认高度 0，播起来才撑到 64dp。加在 root 上，位置在底部导航之上。
+
+调试时走了弯路：低分辨率截图里它看着像没渲染，其实几何完全正确（root 的三个
+子控件高度 168 / 168 / 1873，都在窗口 2400 之内）。**Kivy 的 px 在 Android 上
+等于设备 px，`dp()` 要乘 density（模拟器 2.625），拿窗口高度除密度会算错一大截。**
+
+### 没做的 / 还没验证的
+
+- **只有 debug APK，没有正式签名**，CI 也没有 Android 的 release 资产流程。
+  签名密钥怎么管还没定。
+- **真机播放没验过。** 模拟器上未登录时部分歌拿不到播放地址
+  （`copyright_unavailable` / `song_not_found`），登录后的真实解码、音频路由、
+  后台播放、锁屏控制都还是空白。
+- **本地音乐在 Android 上没通**：scoped storage 下 `LocalMusicLibrary` 的目录扫描
+  直接用不了，要走 MediaStore。
+- **字体缺字。** 系统字体对生僻字符会出豆腐块（歌手名里的 `JA□-Z`）。

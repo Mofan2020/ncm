@@ -34,6 +34,7 @@ __all__ = [
     "CoverImage",
     "TrackRow",
     "TrackList",
+    "MiniPlayer",
     "EmptyState",
     "SectionHeader",
     "LoadingView",
@@ -405,6 +406,73 @@ class CoverImage(AsyncImage):
                 item.size = self.size
 
 
+def _fit_height(label: Widget) -> None:
+    """Make a label exactly as tall as its text.
+
+    ``minimum_height`` on a Label is an AliasProperty -- there is no event
+    to bind to -- so the texture height is what has to be followed.
+    """
+    label.size_hint_y = None
+    label.bind(
+        texture_size=lambda _i, _v, _l=label: setattr(_l, "height", _l.texture_size[1]))
+
+
+class MiniPlayer(BoxLayout):
+    """The strip above the navigation: what is playing right now.
+
+    It takes no space when nothing is playing, so the app never carries a
+    bar nobody is listening to.
+    """
+
+    def __init__(self, on_toggle: Callable[[], None] | None = None,
+                 on_next: Callable[[], None] | None = None, **kwargs: Any) -> None:
+        super().__init__(orientation="horizontal", size_hint_y=None, height=dp(64),
+                         spacing=dp(10), padding=(dp(12), dp(6)), **kwargs)
+        self._on_toggle = on_toggle
+        self._on_next = on_next
+
+        self.cover = CoverImage(size=dp(44), radius=dp(6))
+        self.add_widget(self.cover)
+
+        text_box = BoxLayout(orientation="vertical", spacing=dp(2))
+        self.title = ThemedLabel(text="", role="title_medium")
+        self.subtitle = ThemedLabel(text="", role="body_small",
+                                     color_name="on_surface_variant")
+        for label in (self.title, self.subtitle):
+            _fit_height(label)
+        text_box.add_widget(self.title)
+        text_box.add_widget(self.subtitle)
+        self.add_widget(text_box)
+
+        self.toggle_button = IconButton(icon="play", size=dp(44))
+        self.toggle_button.bind(on_release=lambda *_a: self._toggle())
+        self.add_widget(self.toggle_button)
+
+        self.next_button = IconButton(icon="next", size=dp(44))
+        self.next_button.bind(on_release=lambda *_a: self._next())
+        self.add_widget(self.next_button)
+
+    def _toggle(self) -> None:
+        if self._on_toggle is not None:
+            self._on_toggle()
+
+    def _next(self) -> None:
+        if self._on_next is not None:
+            self._on_next()
+
+    def show_track(self, track: dict[str, Any], playing: bool = True) -> None:
+        """Show a track and make the bar visible."""
+        self.title.text = str(track.get("name") or "")
+        self.subtitle.text = str(track.get("artists") or "")
+        url = str(track.get("cover_url") or "")
+        if url:
+            self.cover.source = url
+        self.set_playing(playing)
+
+    def set_playing(self, playing: bool) -> None:
+        self.toggle_button.icon = "pause" if playing else "play"
+
+
 class TappableRow(ButtonBehavior, BoxLayout):
     """A row that can be pressed.
 
@@ -512,8 +580,7 @@ class EmptyState(BoxLayout):
         # ``minimum_height`` on a Label is an AliasProperty: it has no event
         # to bind to, and binding it raises KeyError.  The texture height is
         # what the label actually needs.
-        label.bind(
-            texture_size=lambda *_a: setattr(label, "height", label.texture_size[1]))
+        _fit_height(label)
         self.add_widget(label)
         if action_text and on_action is not None:
             button = _TextButton(text=action_text, on_press=on_action)
