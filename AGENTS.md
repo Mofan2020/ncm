@@ -8,8 +8,16 @@ tabs — **download** and **player** — over the same backend. The player cover
 songs, account playlists, local folders, lyrics, favourites and resume-on-start.
 One codebase targets **Windows and macOS**; the UI ships in **zh_cn + en_us**.
 
-**Entry point:** `main.py` · **Bridge:** `src/gui/bridge.py` · **Frontend:** `src/gui/assets/`
-**Targets:** Windows x64, macOS arm64, macOS x64 (no Linux support, no CLI anymore)
+An **Android build** shares the whole business core (`src/core`, `src/auth`,
+`src/config`, `src/i18n`) behind a native Kivy UI — see `android/ARCHITECTURE.md`.
+It is a separate presentation layer, not a webview shell: the desktop HTML never
+runs on Android.
+
+**Entry point:** `main.py` (desktop) · `android/main.py` (Android)
+**Bridge:** `src/gui/bridge.py` · **Frontend:** `src/gui/assets/`
+**Android UI:** `android/ncmkivy/`
+**Targets:** Windows x64, macOS arm64, macOS x64, Android arm64 (no Linux support,
+no CLI anymore)
 
 ---
 
@@ -32,6 +40,30 @@ pyinstaller --clean --noconfirm main.spec # package
 #  macOS   -> dist/NeteaseMusicDownloader.app
 python3 scripts/make_icon.py              # regenerate assets/icon.{png,ico,icns}
 ```
+
+### Android
+
+The Android build needs a toolchain that the desktop build does not: JDK 17
+(python-for-android rejects 21), the Android SDK with platform 34, NDK 26.1,
+`pkgconf`, `cmake`, `autoconf`. Build with
+[p4a](https://github.com/kivy/python-for-android); `android/buildozer.spec` holds
+the packaging settings.
+
+```bash
+# headless checks (no device needed) -- run these before every build
+python3 android/main.py --self-test
+python3 android/tools/check_screens.py            # every screen at 5 widths
+python3 android/tools/check_artist_flow.py        # real API, read-only
+
+# build (needs ANDROIDSDK, JAVA_HOME, and SSL_CERT_FILE on a MITM network)
+p4a apk --sdk "$ANDROIDSDK" --ndk-dir "$ANDROIDSDK/ndk/26.1.10909125" \
+    --arch arm64-v8a --android-api 34 --requirements=python3,kivy,requests,pyyaml,qrcode \
+    --bootstrap=sdl2 --dist-name ncm android/main.py
+```
+
+`python3 android/main.py --self-test` checks the shared core, the i18n catalogue,
+the loopback media server and the player backend; it skips checks that only make
+sense on a device instead of failing them.
 
 CI: `.github/workflows/build.yml` — `test` (ruff + pytest) → `build-macos` (arm64 on
 `macos-15`, x64 on `macos-15-intel`), `build-windows` (x64) → `release` (tag `v*` only).
@@ -60,6 +92,14 @@ bundle can never reach a release.
 | `src/gui/bridge.py` | `GuiBridge` — every JS-callable method (returns JSON-safe data) |
 | `src/gui/theme.py` | Native window chrome: macOS `NSAppearance`, Windows dark title bar |
 | `src/gui/assets/` | `index.html` (markup + no-flash theme bootstrap), `style.css`, `app.js` |
+| `android/main.py` | Android entry: logging, `--self-test`, Kivy app launch |
+| `android/ncmkivy/controller.py` | The **only** boundary between the Kivy UI and the shared core |
+| `android/ncmkivy/theme.py` | Material 3 palette + the three size buckets |
+| `android/ncmkivy/player.py` | Playback through `android.media.MediaPlayer` (pyjnius) |
+| `android/ncmkivy/screens.py` | One widget per page; nothing overflows, everything scrolls |
+| `android/ncmkivy/widgets.py` | Reusable controls: 48dp touch targets, shortening labels, canvas icons |
+| `android/tools/` | Headless checks: every screen at 5 widths, the artist flow against the real API |
+| `android/ARCHITECTURE.md` | Why the split works and what the Android UI must obey |
 | `tests/` | pytest suite: crypto, api, downloader, settings, i18n, theme, bridge, live, library, localmusic, mediaserver, lyrics, player bridge (`tests/audio_fixtures.py` synthesises real MP3/FLAC bytes) |
 | `scripts/check-player-js.mjs` | Statistical checks for the frontend queue logic (node, run manually) |
 | `legacy/` | The abandoned v2.0 CLI (`netease_api.py`, `cli_downloader.py`) — **not maintained** |
@@ -101,6 +141,12 @@ Playback audio never travels through the bridge: `GuiBridge.resolve_track()` ret
 | Logout | `/api/logout` | |
 | Search | eapi `/api/cloudsearch/pc` | `s` / `type=1` / `limit` / `offset` |
 | Account playlists | eapi `/api/user/playlist` | `uid` + `limit`/`offset`, `more` for paging |
+| Artist profile | eapi `/api/v1/artist/{id}` | the profile **and** the hot songs; songs sit next to the profile under `hotSongs`, not inside it |
+| Artist songs (all) | eapi `/api/v1/artist/songs` | `id`/`limit`/`offset`/`total=true`; answers `total` + `more` |
+| Artist albums | eapi `/api/artist/albums/{id}` | path-style; the flat `/api/artist/album` answers `400` |
+| Artist follow state | eapi `/api/artist/follow/count/get` | `isFollow` + `fansCnt` + `followDayCnt` |
+| Follow / unfollow artist | eapi `/api/artist/sub` and `/api/artist/unsub` | **two routes**, one per direction; the param is `artistId` (not `id`), plus `artistIds` as a stringified list |
+| Followed artists | eapi `/api/artist/sublist` | `data` / `count` / `hasMore`; `code 301` when not signed in |
 | Favourite / unfavourite | eapi `/api/song/like` | `trackId` + `like` |
 | Liked song ids | eapi `/api/song/like/get` | `uid` |
 | Play report | eapi `/api/feedback/weblog` | best effort, only when the user opted in |
@@ -158,6 +204,25 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
   `updateLyricHighlight()` is the only place that should subtract it from
   `audio.currentTime * 1000`.  Re-fetching lyrics on slider input is wrong: it is a
   *playback* offset, not a request parameter.
+- **The artist profile does not carry its own songs.** `/api/v1/artist/{id}` answers
+  `{artist: {...}, hotSongs: [...]}` — the hot songs are a **sibling** of `artist`, not a
+  field inside it. Reading `artist.get("hotSongs")` silently yields an empty list, which
+  is how the artist page shipped with no songs. `get_artist_detail()` folds the songs
+  back in; use it instead of reaching into the raw answer.
+- **Artist songs and playlist songs use different field names.** `/api/v1/artist/songs`
+  answers `artists` / `album` / `duration`, while the playlist and search routes answer
+  `ar` / `al` / `dt`. Every consumer has to accept both spellings — `_track_payload()`
+  and the Android `Controller._track()` already do.
+- **Follow and unfollow are two routes, and the param is `artistId`.** `/api/artist/sub`
+  and `/api/artist/unsub`; sending `id` instead answers `400 参数错误`, which looks like a
+  malformed request rather than a wrong parameter name.
+- **The follow state has its own route.** The `followed` flag on the artist payload is
+  not reliable for the "am I following this" question; `/api/artist/follow/count/get`
+  answers `isFollow` and is what the follow button reads.
+- **A write must never be sent with the real account during development.**
+  Follow/unfollow, like and the playlist writes all change the account; the tests fake
+  the transport instead, and the user verifies the real round-trip by hand. An automated
+  write probe has already put the account into a bad state once.
 
 ---
 

@@ -1765,3 +1765,182 @@ lyricsBox.addEventListener('scroll', () => {
 - **没有加「0 = 永不回弹」**：回弹是这次需求的核心，滑块下限取 1 秒。
 - **`npm-lyrics` 的回弹只在窄窗口下生效**：全屏播放视图只在移动端布局出现，
   桌面端那个容器是空的。
+
+## 24. 歌手主页与关注（2026-10-26）
+
+### 顺手修掉的一个旧 bug
+
+歌手页一直显示「热门单曲 0 首」。原因不在前端，在接口形状：
+`/api/v1/artist/{id}` 的返回是
+
+```
+{ "artist": {...}, "hotSongs": [...50], "code": 200, "more": true }
+```
+
+`hotSongs` 是 `artist` 的**兄弟节点**，不是它的字段。旧代码读的是
+`artist.get("hotSongs")`，永远拿到空列表 —— 不报错，只是什么都没有。
+`get_artist_detail()` 现在把歌曲折回 `artist` 里再返回，调用方不用再关心这个
+分层。
+
+### 新增的接口（全部 2026-10-26 实测）
+
+| 用途 | 路由 | 要点 |
+|------|------|------|
+| 歌手自己的全部歌曲 | `/api/v1/artist/songs` | `id`/`limit`/`offset`/`total=true`，返回 `total` + `more`；周杰伦 total=580 |
+| 歌手专辑 | `/api/artist/albums/<id>` | 路径式；扁平的 `/api/artist/album` 恒返回 `400 参数错误` |
+| 关注状态 | `/api/artist/follow/count/get` | `isFollow` / `fansCnt` / `followDayCnt` |
+| 关注 / 取关 | `/api/artist/sub`、`/api/artist/unsub` | 两个方向是**两条路由**，不是 `t` 字段 |
+| 已关注歌手 | `/api/artist/sublist` | `data` / `count` / `hasMore`；未登录返回 `code 301` |
+
+### 两个容易踩的点
+
+**参数名是 `artistId`，不是 `id`。** 传 `id` 得到的是 `400 参数错误`，看起来像请求
+格式坏了，实际上只是字段名不对。匿名探测时 `artistId` 会得到 `301 未登录` ——
+这才说明路由和参数都对，只差登录态。
+
+**`/api/v1/artist/songs` 的歌曲字段名跟别处不一样。** 歌单和搜索接口用
+`ar` / `al` / `dt`，这个接口用 `artists` / `album` / `duration`。所以
+`_track_payload()` 和新加的 `Controller._track()` 都同时认两种拼法，否则歌手页
+的每一行都会是「未知歌手」。
+
+### 写请求没有自动验证
+
+关注/取关是**写操作**。之前用真实账号跑自动写探测，把账号打进了风控状态（第 22
+节），所以这次的规矩是：写路由只做匿名探测确认「路由存在、参数名正确」，真正的
+关注/取关由人手动点一次确认。单元测试用假的传输层覆盖成功、限流、未登录、异常
+四种返回。
+
+匿名探测结果（不带 MUSIC_U，不可能改动任何数据）：
+
+```
+/api/artist/sub    -> code=301 未登录
+/api/artist/unsub  -> code=301 未登录
+```
+
+### 关注状态实测
+
+拿已关注列表里的歌手和未关注的歌手各验一次，确认按钮不会永远显示「关注」：
+
+```
+win7mus            follow_state=True   artist_page.followed=True    fans=279
+封茗囧菌            follow_state=True   artist_page.followed=True    fans=2599437
+周杰伦（未关注）     follow_state=False  artist_page.followed=False   fans=19139626
+```
+
+## 25. Android 版（2026-10-26）
+
+### 为什么不是套壳
+
+桌面端是 pywebview：Python 后端 + HTML/CSS/JS 前端，靠 `window.pywebview.api`
+对话。Android 上没有 pywebview，把整个 Python 运行时塞进 WebView 壳的代价是
+APK 40MB 起、内存翻倍，而且 HTML 布局是照着鼠标和 1080px 宽写的，手机上要重做
+一遍才勉强能用。
+
+实际做法是**共用业务核心、分开表现层**：
+
+- `src/core`、`src/auth`、`src/config`、`src/i18n` 共约 12400 行，**零 webview
+  依赖**（核对过：没有 `import webview`，没有 `from src.gui`），原样跑在
+  Android 的 Python 3.11 上；
+- 表现层是 Kivy 原生控件树，`android/ncmkivy/`；
+- `controller.py` 是唯一的分界线：Kivy 永远不直接碰 `NeteaseAPI`。
+
+完整设计见 `android/ARCHITECTURE.md`。
+
+### 音频怎么播
+
+Kivy 自带的 SDL2_mixer 播不了 HTTP 流，而网易云 CDN 要 `Referer`。所以：
+
+- `MediaServer` 原样复用（它本来就在 `127.0.0.1` 上提供带 Range 的代理）；
+- `android.media.MediaPlayer`（pyjnius 调）直接吃那个 loopback URL，不经过
+  WebView，所以没有 CORS、`Referer`、沙箱 origin 这些问题。
+
+### 尺寸分档
+
+按**可用宽度**（dp）分三档，不按设备型号，因为手机横屏会跨档、折叠屏会变宽：
+
+| 档 | 宽度 | 布局 |
+|----|------|------|
+| compact | < 600dp | 单栏，底部导航 |
+| medium | 600–839dp | 底部导航，列表与详情并排 |
+| expanded | ≥ 840dp | 侧边导航 + 列表 + 详情 |
+
+`check_screens.py` 把 8 个屏幕在 5 种宽度（360/411/600/840/1280dp）下各建一遍，
+逐个检查子控件有没有横向溢出的父容器——**这是「不要有显示不下的 UI」的机器判据**，
+不靠肉眼看某台机器。
+
+### 没做完 / 没验证的
+
+- **APK 没打出来。** p4a 还在编依赖（CPython 3.14 + SDL2 + Kivy 一轮十几分钟），
+  所以包体、真机启动、后台播放、锁屏控制都还没有实测数据。
+- **Android 的本地音乐要走 MediaStore**，`LocalMusicLibrary` 的目录扫描在
+  Android 上不能直接用（scoped storage），需要一条适配分支。
+- **KivyMD 没用。** 它依赖 pillow，跟「去掉 PIL 瘦身」的目标直接冲突；所以
+  Material 3 的主题层是手写的，图标是 canvas 画的简笔，不是 Material 图标库。
+- **UI 只在桌面 Kivy 上跑过**，没在真机或模拟器上看过。
+
+## 26. 卸掉 Pillow：安装包 38 MB → 26 MB（2026-10-26）
+
+### 起因
+
+`requirements.txt` 里 `qrcode[pil]` 的 `[pil]` 把 Pillow 拖进了运行时依赖。
+Pillow 自己不说，它还带进来一堆 dylib（libavif / libbrotli* / libharfbuzz /
+libjpeg / libpng / libwebp* / libfreetype ...）。PIL 在运行时只干三件事：
+
+| 位置 | 用途 |
+|------|------|
+| `src/auth/login.py` `get_qrcode_image()` | 把登录二维码 URL 画成 PNG |
+| `src/config/settings.py` `_write_background()` | 壁纸缩到 ≤3840 px 存成 JPEG |
+| `src/core/mediaserver.py` `scaled_background()` | 壁纸再缩到 ≤1920 px 给 WebView |
+
+### 改法
+
+- **二维码：自己写 PNG。** `qrcode` 的 `QRCode.get_matrix()` 直接给布尔矩阵，
+  `src/core/png.py` 用 `zlib` + `struct` 拼 IHDR/IDAT/IEND 输出 8-bit 灰度 PNG
+  （约 90 行，纯标准库）。`get_qrcode_image()` 的返回类型、`data:image/png;base64,`
+  这条契约、前端 `<img>` 一行都没动。每个模块给同样的像素数（不再像以前那样
+  LANCZOS 缩到 256），扫码反而更清楚。
+- **壁纸：交给系统自带的工具。** 新增 `src/core/imaging.py`：
+  - macOS → `/usr/bin/sips`（`-z` 精确重采样 + `-s format jpeg`）；
+  - Windows → Windows PowerShell 5.1 + `System.Drawing`（脚本写临时 .ps1 再 `-File`
+    跑，避开任意路径的引号地狱）；
+  - 都没有 / 工具失败 → `downscale_to_jpeg()` 返回 False，调用方沿用原来的降级：
+    存原文件、`scaled_background` 返回 None（`/bg` 直接发原图）。
+  **注意 `sips -Z` 会把小图放大**（800x600 会被撑到 1920x1440），所以尺寸先在
+  `target_size()` 里算好，只传 `-z`，且只缩不放。
+- `requirements.txt`：`qrcode[pil]` → `qrcode`。`pillow` 留在 requirements-dev
+  （`scripts/make_icon.py` 和壁纸测试的 fixture 要用），它不进包。
+- `main.spec`：hiddenimports 去掉 `PIL` / `PIL.Image` / `qrcode.image.pil`，
+  并把 `PIL`、`qrcode.image.pil`、`qrcode.image.styles.moduledrawers.pil` 等写进
+  `excludes`。**这一步是必须的**：`qrcode/image/styles/moduledrawers/__init__.py`
+  在 try/except 里 import 了 `.pil`，PyInstaller 静态分析照样会收进去；光把 Pillow
+  从环境里卸掉不够。
+- `main.py --self-test`：qrcode 那一项改成真的画一张 PNG（不再只是 `import qrcode`），
+  并新增 `image scaling` 一项——冻结包里实际跑一次平台缩放，macOS runner 验 sips、
+  Windows runner 验 PowerShell，两边各自证明。
+
+### 验证
+
+- `du -sh dist/NeteaseMusicDownloader.app`：**38 MB → 26 MB**（−12 MB，−32%）。
+  包里 `find -iname "*PIL*"` 为空；libjpeg/libwebp/libavif/libfreetype 也都不在了。
+- 体积是在 **venv 里装着 pillow** 的情况下量出来的（CI 就是这条路径：requirements-dev
+  装了 pillow 再打包），说明 main.spec 的 excludes 真拦住了，不是靠卸包凑出来的。
+- 冻结产物 `--self-test`：`qrcode: 288B png, no imaging library`、
+  `image scaling: 5155B jpeg`，`result: OK`。
+- 新二维码不是"看着像"：用 macOS CoreImage 的 `CIDetectorTypeQRCode` 解回来，
+  拿到的正是原 URL（`tests/test_qrcode_image.py::test_the_qr_code_decodes_back_to_the_url`）。
+- `pytest -q` 全绿（含新增 `tests/test_qrcode_image.py`、`tests/test_imaging.py`、
+  `tests/test_runtime_deps.py`）；把 pillow 从 venv 卸掉后再跑一遍，同样全绿。
+
+### 没做的 / 需要知道的
+
+- **libcrypto.3.dylib 4.6 MB + libssl.3.dylib 848 KB 还在包里。** 它们不是 Pillow
+  独有的：`requests` → `urllib3` → `ssl` 这条链要 `_ssl` 扩展，`_ssl` 就链着 OpenSSL。
+  除非把 HTTPS 换成别的实现，这部分动不了。（`main.spec` 里对 `cryptography` 的
+  exclude 仍然有效——那是 pywebview 可选的 HTTPS server 路径。）
+- **Windows 那条 PowerShell 路径本机没法实测**（只有 macOS）。它被设计成失败即降级
+  （存原图、壁纸照常显示），并且 `--self-test` 的 `image scaling` 会在 Windows CI
+  上真跑一次；但真机上第一次缩放值得手动看一眼。
+- **两边认的格式不一样。** macOS 的 sips 本机实测能读 png/jpg/webp/bmp（HEIC 没测）；
+  Windows 的 `System.Drawing` 走 GDI+，只认 BMP/GIF/JPEG/PNG/TIFF，WebP/HEIC 壁纸
+  会走降级：原文件照原样复制成 `background.jpg`（浏览器按内容嗅探，仍然能显示），
+  不吃缩放这层优化。
