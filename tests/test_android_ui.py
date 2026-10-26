@@ -204,7 +204,8 @@ def test_controller_maps_the_followed_list():
 def test_track_flattens_the_api_shape():
     from ncmkivy.controller import Controller
 
-    track = Controller._track({
+    controller = Controller.__new__(Controller)
+    track = controller._track({
         "id": 42,
         "name": "Song",
         "ar": [{"name": "A"}, {"name": "B"}],
@@ -218,6 +219,38 @@ def test_track_flattens_the_api_shape():
     assert track.album == "Album"
     assert track.duration == 1234
     assert track.vip is True
+
+
+def test_the_cover_goes_through_the_loopback_proxy():
+    """The CDN refuses direct image requests, so the proxy has to be used."""
+    from ncmkivy.controller import Controller
+
+    class _Media:
+        token = "tok"
+
+        def url_for_remote_cover(self, url, ext="jpg"):
+            return f"http://127.0.0.1:1234/m/{self.token}/cover?u={url}&ext={ext}"
+
+    controller = Controller.__new__(Controller)
+    controller.media = _Media()
+    track = controller._track({
+        "id": 42,
+        "name": "Song",
+        "al": {"name": "Album", "picUrl": "http://p1.music.126.net/x/y.jpg"},
+    }, 0)
+    assert track.cover_url.startswith("http://127.0.0.1:1234/m/tok/cover")
+    assert "p1.music.126.net" in track.cover_url
+
+
+def test_a_label_leaves_the_text_height_free():
+    """A text box with a height collapses the label into a sliver."""
+    from ncmkivy.widgets import ThemedLabel
+
+    label = ThemedLabel(text="请先登录账号")
+    label.size = (400, 30)
+    label._refresh()
+    assert label.text_size[0] == 400
+    assert label.text_size[1] is None
 
 
 # ---------------------------------------------------------------- app shell
