@@ -63,7 +63,8 @@ from src.core.metacache import get_meta_cache
 
 __all__ = ["NeteaseAPI", "get_api", "QUALITY_ORDER", "quality_fallbacks",
            "SEARCH_ENDPOINT", "USER_PLAYLIST_ENDPOINT", "LIKE_ENDPOINT",
-           "LIKE_LIST_ENDPOINT", "WEBLOG_ENDPOINT"]
+           "LIKE_LIST_ENDPOINT", "WEBLOG_ENDPOINT", "ARTIST_SUB_ENDPOINT",
+           "ARTIST_UNSUB_ENDPOINT", "ARTIST_SUBLIST_ENDPOINT"]
 
 #: Search / account endpoints (all verified live on 2026-10-01).
 SEARCH_ENDPOINT = "/api/cloudsearch/pc"
@@ -80,6 +81,23 @@ WEBLOG_ENDPOINT = "/api/feedback/weblog"
 #: Discovery endpoints (verified live 2026-10-01 onwards)
 ALBUM_ENDPOINT = "/api/v1/album"
 ARTIST_ENDPOINT = "/api/v1/artist"
+#: The artist's own album list.  Path-style: ``/api/artist/albums/<id>``.
+#: The flat ``/api/artist/album`` answers ``code 400 参数错误`` for every
+#: payload shape (verified live 2026-10-26).
+ARTIST_ALBUMS_ENDPOINT = "/api/artist/albums"
+#: Every song an artist released, paged.  The artist payload only carries
+#: the hot songs, so the full list needs its own route
+#: (``/api/v1/artist/songs``, verified live 2026-10-26).
+ARTIST_SONGS_ENDPOINT = "/api/v1/artist/songs"
+#: Follow / unfollow an artist, and the list of followed artists.
+#: Verified live 2026-10-26.  The two directions are **two routes**, one per
+#: direction, like the playlist subscribe/unsubscribe pair; the follow state
+#: of a single artist comes from the artist payload's ``followed`` flag.
+ARTIST_SUB_ENDPOINT = "/api/artist/sub"
+ARTIST_UNSUB_ENDPOINT = "/api/artist/unsub"
+ARTIST_SUBLIST_ENDPOINT = "/api/artist/sublist"
+#: Follow state + fan counter for one artist.
+ARTIST_FOLLOW_COUNT_ENDPOINT = "/api/artist/follow/count/get"
 RECOMMEND_PLAYLIST_ENDPOINT = "/api/v1/discovery/recommend/resource"
 PERSONAL_FM_ENDPOINT = "/api/v1/radio/get"
 NEW_SONGS_ENDPOINT = "/api/v1/discovery/new/songs"
@@ -158,6 +176,8 @@ WRITE_ROUTES: frozenset[str] = frozenset({
     LIKE_ENDPOINT,
     LIKE_RADIO_ENDPOINT,
     WEBLOG_ENDPOINT,
+    ARTIST_SUB_ENDPOINT,
+    ARTIST_UNSUB_ENDPOINT,
     PLAYLIST_CREATE_ENDPOINT,
     PLAYLIST_UPDATE_ENDPOINT,
     PLAYLIST_DELETE_ENDPOINT,
@@ -450,6 +470,13 @@ class NeteaseAPI:
         if path in ("/api/v6/playlist/detail", "/v3/playlist/detail"):
             pid = payload.get("id")
             return f"playlist:{pid}" if pid else ""
+        if path == ARTIST_SUBLIST_ENDPOINT:
+            return "artistfollows"
+        if path == ARTIST_FOLLOW_COUNT_ENDPOINT or path.startswith(f"{ARTIST_ENDPOINT}/"):
+            # The artist profile and the follow counter both carry the
+            # account's follow state, so a follow changes them.
+            artist_id = payload.get("id") or path.rsplit("/", 1)[-1]
+            return f"artist:{artist_id}"
         return ""
 
     def _cache_key(self, path: str, data: dict[str, Any] | None) -> str:
@@ -568,6 +595,20 @@ class NeteaseAPI:
         disk = get_meta_cache()
         removed += disk.discard_prefix("playlist", f"userplaylists:{uid}:" if uid
                                         else "userplaylists:")
+        return removed
+
+    def invalidate_artist_follow(self, artist_id: str = "") -> int:
+        """Forget everything the app knows about the followed artists.
+
+        A follow changes three answers: the artist's own profile (it
+        carries the ``followed`` flag), the follow counter, and the list of
+        followed artists.  The first two are dropped for this artist only;
+        the list is dropped entirely, because it is the list that changed.
+        """
+        artist_id = str(artist_id or "").strip()
+        removed = self.invalidate_scopes("artistfollows")
+        if artist_id:
+            removed += self.invalidate_scopes(f"artist:{artist_id}")
         return removed
 
     def _set_cached(self, cache_key: str, value: Any, path: str = "",
@@ -1032,16 +1073,154 @@ class NeteaseAPI:
         return album
 
     def get_artist_detail(self, artist_id: str) -> dict[str, Any] | None:
-        """Fetch artist detail including hot songs, albums, description."""
+        """Fetch artist detail including hot songs, albums, description.
+
+        The eapi route ``/api/v1/artist/<id>`` answers the profile and the
+        hot songs in one go -- the songs sit next to the profile under
+        ``hotSongs``, not inside it.  The albums come from their own route
+        (``/api/artist/albums/<id>``), because the flat
+        ``/api/artist/album`` answers ``code 400 参数错误``.
+        """
         artist_id = str(artist_id or "").strip()
         if not artist_id:
             return None
         result = self._eapi(f"{ARTIST_ENDPOINT}/{artist_id}", {"id": artist_id})
         artist = (result or {}).get("artist") or (result or {}).get("data")
+        hot_songs = (result or {}).get("hotSongs") or []
         if not artist:
             legacy = self._legacy(f"{ARTIST_ENDPOINT}/{artist_id}", {"id": artist_id})
             artist = (legacy or {}).get("artist") or (legacy or {}).get("data")
-        return artist
+        if not artist:
+            return None
+        # The songs and the albums belong to the artist page but not to the
+        # artist object, so they are folded in here.  The caller gets one
+        # dict instead of three round trips.
+        detail = dict(artist)
+        detail["hotSongs"] = hot_songs
+        detail["albums"] = self.get_artist_albums(artist_id)
+        return detail
+
+    def get_artist_albums(self, artist_id: str, limit: int = 30,
+                           offset: int = 0) -> list[dict[str, Any]]:
+        """The artist's own albums (``/api/artist/albums/<id>``)."""
+        artist_id = str(artist_id or "").strip()
+        if not artist_id:
+            return []
+        payload = {"limit": max(1, min(int(limit or 30), 100)),
+                   "offset": max(0, int(offset or 0)),
+                   "total": True}
+        result = self._eapi(f"{ARTIST_ALBUMS_ENDPOINT}/{artist_id}", payload)
+        albums = (result or {}).get("hotAlbums") or (result or {}).get("albums") or []
+        return [a for a in albums if isinstance(a, dict)]
+
+    def get_artist_songs(self, artist_id: str, limit: int = 50,
+                         offset: int = 0) -> dict[str, Any]:
+        """Every song an artist released, one page at a time.
+
+        The artist payload only carries the hot songs, so the full list
+        comes from its own route (``/api/v1/artist/songs``, verified live
+        2026-10-26).  The answer keeps ``total`` and ``more`` so a caller
+        can tell whether there is another page.
+        """
+        artist_id = str(artist_id or "").strip()
+        if not artist_id:
+            return {"songs": [], "total": 0, "more": False, "code": 400}
+        payload = {"id": artist_id,
+                   "limit": max(1, min(int(limit or 50), 100)),
+                   "offset": max(0, int(offset or 0)),
+                   "total": True}
+        result = self._eapi(ARTIST_SONGS_ENDPOINT, payload)
+        songs = (result or {}).get("songs")
+        if not isinstance(songs, list):
+            songs = []
+        return {
+            "songs": [s for s in songs if isinstance(s, dict)],
+            "total": int((result or {}).get("total") or 0),
+            "more": bool((result or {}).get("more")),
+            "code": (result or {}).get("code"),
+        }
+
+    def get_artist_follow_state(self, artist_id: str) -> dict[str, Any]:
+        """Whether the account follows this artist, plus the fan counter.
+
+        ``/api/artist/follow/count/get`` answers ``isFollow``/``follow`` and
+        the fan count; ``followDay``/``followDayCnt`` say for how long the
+        artist has been followed.  An artist that is not followed answers
+        ``followDayCnt`` 0.
+        """
+        artist_id = str(artist_id or "").strip()
+        if not artist_id:
+            return {"followed": False, "fans_count": 0, "follow_days": 0}
+        result = self._eapi(ARTIST_FOLLOW_COUNT_ENDPOINT,
+                            {"id": int(artist_id) if artist_id.isdigit() else artist_id})
+        data = (result or {}).get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        return {
+            "followed": bool(data.get("isFollow") or data.get("follow")),
+            "fans_count": int(data.get("fansCnt") or 0),
+            "follow_days": int(data.get("followDayCnt") or 0),
+        }
+
+    def set_artist_follow(self, artist_id: str, follow: bool = True) -> str:
+        """Follow / unfollow an artist.
+
+        Returns one of:
+
+        ``"ok"``
+            the server accepted the change
+        ``"rate_limited"``
+            the request came too fast (``code 405``); it succeeds when retried
+            after a pause
+        ``"not_logged_in"``
+            the session is gone (``code 301`` and friends)
+        ``"failed"``
+            anything else (network error, an unexpected code)
+        """
+        artist_id = str(artist_id or "").strip()
+        if not artist_id:
+            return "failed"
+        # The two directions are two routes, not a ``t`` field -- the same
+        # shape the playlist subscribe/unsubscribe pair uses.
+        path = ARTIST_SUB_ENDPOINT if follow else ARTIST_UNSUB_ENDPOINT
+        payload = {"artistId": int(artist_id) if artist_id.isdigit() else artist_id,
+                   "artistIds": f"[{artist_id}]"}
+        result = self._eapi(path, payload, use_cache=False)
+        code = (result or {}).get("code")
+        if code == 200:
+            # The follow state changed, so every cached answer that carries
+            # it -- the artist profile, the follow state, the followed list --
+            # is now wrong.
+            self.invalidate_artist_follow(artist_id)
+            return "ok"
+        if code == 405:
+            return "rate_limited"
+        if code in LOGIN_REQUIRED_CODES:
+            return "not_logged_in"
+        self._log(f"artist follow failed for {artist_id}: code={code}", "warning")
+        return "failed"
+
+    def get_followed_artists(self, limit: int = 25, offset: int = 0) -> dict[str, Any]:
+        """The artists the account follows.
+
+        ``/api/artist/sublist`` answers ``data`` (the artists), ``count``
+        (how many in total) and ``hasMore``.  Without a login the endpoint
+        answers ``code 301``, so the code comes back with the answer and
+        the caller can tell "not signed in" from "follows nobody".
+        """
+        payload = {"limit": max(1, min(int(limit or 25), 100)),
+                   "offset": max(0, int(offset or 0)),
+                   "total": True}
+        result = self._eapi(ARTIST_SUBLIST_ENDPOINT, payload)
+        artists = (result or {}).get("data")
+        if not isinstance(artists, list):
+            artists = []
+        return {
+            "artists": [a for a in artists if isinstance(a, dict)],
+            "count": int((result or {}).get("count") or 0),
+            "has_more": bool((result or {}).get("hasMore")),
+            "code": (result or {}).get("code"),
+        }
 
     def get_recommend_playlists(self, limit: int = 20) -> list[dict[str, Any]]:
         """Get daily recommended playlists (personalized, needs login)."""

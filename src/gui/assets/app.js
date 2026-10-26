@@ -57,6 +57,14 @@ const player = {
     lastSaveAt: 0,
     playlists: [],
     playlistOpen: null,
+    // The artists the account follows, kept in sync with the server so the
+    // follow button and the list cannot disagree.
+    followedArtists: [],
+    followedOffset: 0,
+    followedTotal: 0,
+    // The artist whose page is open, so a refresh re-reads *that* page
+    // instead of the list it was opened from.
+    artistOpen: null,
     searchKeyword: '',
     searchOffset: 0,
     searchTotal: 0,
@@ -1871,6 +1879,7 @@ async function selectSource(source) {
     player.sourceTab = source;
     player.playlistOpen = null;
     player.currentLocalPlaylist = null;
+    player.artistOpen = null;
     // Mirror the active state in both the old `.source-tab` row and the new
     // `.sidebar-item` list -- they share `data-source` but live in different
     // containers, so toggling one would leave the other stale.
@@ -1891,6 +1900,7 @@ async function selectSource(source) {
 
     if (source === 'playlists') await loadPlaylists();
     else if (source === 'liked') await loadLiked();
+    else if (source === 'followed_artists') await loadFollowedArtists();
     else if (source === 'recommend') await loadRecommendPlaylists();
     else if (source === 'personal_fm') await loadPersonalFM();
     else if (source === 'new_songs') await loadNewSongs();
@@ -2239,6 +2249,15 @@ async function refreshCurrentSource() {
     const source = player.sourceTab;
     if (source === 'liked') {
         await loadLiked(true);
+    } else if (source === 'followed_artists') {
+        // An open artist page is what the refresh button belongs to when it
+        // is showing; the list behind it is already up to date after a
+        // follow.  Re-reading the list would look like nothing happened.
+        if (player.artistOpen) {
+            await openArtistDetail(player.artistOpen);
+        } else {
+            await loadFollowedArtists();
+        }
     } else if (source === 'playlists') {
         if (player.playlistOpen) {
             await openPlaylist(player.playlistOpen, true);
@@ -2387,6 +2406,8 @@ async function openPlaylist(playlist, fresh) {
 
 function backToPlaylists() {
     player.playlistOpen = null;
+    player.currentLocalPlaylist = null;
+    player.artistOpen = null;
     document.getElementById('btn-list-back').hidden = true;
     // The tracks of the playlist we just left are still in player.visible
     // and still drawn inside #track-list; without clearing here the song
@@ -2396,6 +2417,13 @@ function backToPlaylists() {
     if (trackList) trackList.innerHTML = '';
     player.visible = [];
     player.visibleSource = null;
+    // A detail opened from a list that is not "My playlists" goes back to
+    // *that* list -- dropping the user into the playlist tab would leave
+    // the sidebar pointing at a tab the body is not showing.
+    if (player.sourceTab !== 'playlists' && player.sourceTab !== 'local_playlists') {
+        selectSource(player.sourceTab);
+        return;
+    }
     renderPlaylists(player.playlists);
     setListTitle(t('player.source_playlists'));
 }
@@ -2462,6 +2490,116 @@ async function loadLiked(fresh) {
         return;
     }
     playTracksInto(result.tracks, { kind: 'liked', name: t('player.source_liked') });
+}
+
+/* ------------------------------------------------------- followed artists */
+
+/** How many followed artists one page holds. */
+const FOLLOWED_PAGE = 25;
+
+async function loadFollowedArtists(more) {
+    setListTitle(t('player.source_followed_artists'));
+    const container = document.getElementById('playlist-list');
+    container.innerHTML = `<p class="empty">${t('common.loading')}</p>`;
+    // An open artist page lives in #track-list; reloading the list behind it
+    // must not wipe the page the user is reading.
+    if (!player.artistOpen) document.getElementById('track-list').innerHTML = '';
+    if (!more) {
+        player.followedArtists = [];
+        player.followedOffset = 0;
+        player.followedTotal = 0;
+    }
+    const result = await state.api.get_followed_artists(FOLLOWED_PAGE, player.followedOffset);
+    if (!result.success) {
+        container.innerHTML = '';
+        const empty = document.createElement('p');
+        empty.className = 'empty';
+        empty.textContent = t(result.error_key || 'player.login_required');
+        container.appendChild(empty);
+        // Nothing was appended, so there is nothing more to load either.
+        document.getElementById('btn-list-more').hidden = true;
+        return;
+    }
+    const artists = result.artists || [];
+    player.followedArtists = more
+        ? player.followedArtists.concat(artists)
+        : artists;
+    player.followedOffset += artists.length;
+    player.followedTotal = result.count || 0;
+    renderFollowedArtists(player.followedArtists);
+    document.getElementById('btn-list-more').hidden = !result.has_more;
+}
+
+function renderFollowedArtists(artists) {
+    renderArtistRows(artists, document.getElementById('playlist-list'));
+}
+
+/**
+ * Render artist rows into a container.
+ *
+ * Every row opens the artist page and carries a follow toggle, so the
+ * list and the page can never disagree about the follow state.
+ */
+function renderArtistRows(artists, container, emptyKey) {
+    container.innerHTML = '';
+    if (!artists.length) {
+        const empty = document.createElement('p');
+        empty.className = 'empty';
+        empty.textContent = t(emptyKey || 'player.followed_artists_empty');
+        container.appendChild(empty);
+        setListCount(0);
+        return;
+    }
+    const fragment = document.createDocumentFragment();
+    artists.forEach((artist) => {
+        const row = document.createElement('div');
+        row.className = 'playlist-row';
+        row.dataset.artistId = artist.id;
+        const cover = document.createElement('img');
+        cover.alt = '';
+        cover.loading = 'lazy';
+        cover.decoding = 'async';
+        if (artist.cover_url) setCoverImg(cover, artist.cover_url);
+        cover.onerror = () => cover.removeAttribute('src');
+        const meta = document.createElement('div');
+        meta.className = 'pl-meta';
+        const name = document.createElement('span');
+        name.className = 'pl-name';
+        name.textContent = artist.name;
+        const sub = document.createElement('span');
+        sub.className = 'pl-sub';
+        // The followed list does not carry a song count, so the line falls
+        // back to the album count alone rather than showing a wrong zero.
+        sub.textContent = artist.music_size
+            ? t('player.artist_meta', {
+                songs: artist.music_size,
+                albums: artist.album_size || 0,
+            })
+            : t('player.artist_albums_count', { count: artist.album_size || 0 });
+        meta.append(name, sub);
+
+        const actions = document.createElement('div');
+        actions.className = 'playlist-actions';
+        actions.style.display = 'none';
+        const followBtn = document.createElement('button');
+        followBtn.className = 'btn btn-icon btn-sm';
+        followBtn.type = 'button';
+        followBtn.dataset.followIcon = '1';
+        renderFollowButton(followBtn, !!artist.followed);
+        followBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleFollowArtist(artist, followBtn);
+        });
+        actions.appendChild(followBtn);
+
+        row.append(cover, meta, actions);
+        row.addEventListener('mouseenter', () => { actions.style.display = 'flex'; });
+        row.addEventListener('mouseleave', () => { actions.style.display = 'none'; });
+        row.addEventListener('click', () => openArtistDetail(artist));
+        fragment.appendChild(row);
+    });
+    container.appendChild(fragment);
+    setListCount(artists.length);
 }
 
 /** One screenful of local tracks; ``more`` appends the next page. */
@@ -3416,8 +3554,19 @@ function renderSearchResults() {
     const activeType = player.searchType || 'all';
     const results = player.searchResults || {};
     const tracks = results[activeType === 'all' ? 'songs' : activeType] || [];
-    
+
     setListTitle(t('player.search_result', { keyword: player.searchKeyword }));
+    if (activeType === 'artists') {
+        // An artist is not a track, so the results go into the side list as
+        // rows that open the artist page instead of into the track list.
+        renderArtistRows(results.artists || [], document.getElementById('playlist-list'),
+                         'player.search_no_artists');
+        player.visible = [];
+        player.visibleSource = null;
+        document.getElementById('track-list').innerHTML = '';
+        setListCount((results.artists || []).length);
+        return;
+    }
     playTracksInto(tracks, { kind: 'search', name: player.searchKeyword });
 }
 
@@ -3437,6 +3586,9 @@ async function openAlbumDetail(album) {
         showError(result, 'player.album_not_found');
         return;
     }
+    // The album page replaces the artist page it may have been opened from,
+    // so a refresh must not bring the artist back.
+    player.artistOpen = null;
     document.getElementById('playlist-list').innerHTML = '';
     document.getElementById('track-list').innerHTML = '';
     document.getElementById('btn-list-back').hidden = false;
@@ -3447,6 +3599,8 @@ async function openAlbumDetail(album) {
     trackList.innerHTML = '';
     const albumInfo = document.createElement('div');
     albumInfo.className = 'album-detail-header';
+    // renderTrackList() must not throw this away when it re-renders.
+    albumInfo.dataset.listHeader = '1';
     const albumCoverUrl = result.album.cover_url || '';
     albumInfo.innerHTML = `
         <img src="" alt="" class="album-detail-cover" data-cover-src="${albumCoverUrl}" onerror="this.style.display='none'">
@@ -3490,44 +3644,81 @@ async function openArtistDetail(artist) {
         showError(result, 'player.artist_not_found');
         return;
     }
+    player.artistOpen = { id: artist.id, name: result.artist.name || artist.name };
     document.getElementById('playlist-list').innerHTML = '';
     document.getElementById('track-list').innerHTML = '';
     document.getElementById('btn-list-back').hidden = false;
-    setListTitle(t('player.artist_detail'));
-    
+    setListTitle(result.artist.name || t('player.artist_detail'));
+
     const trackList = document.getElementById('track-list');
     trackList.innerHTML = '';
-    
-    // Artist header
+
+    // The header is built node by node: the artist name and the brief
+    // description come from the server, and a name containing "<" must not
+    // be able to break the page.
     const artistHeader = document.createElement('div');
     artistHeader.className = 'artist-detail-header';
-    const artistCoverUrl = result.artist.cover_url || '';
-    artistHeader.innerHTML = `
-        <img src="" alt="" class="artist-detail-cover" data-cover-src="${artistCoverUrl}" onerror="this.style.display='none'">
-        <div class="artist-detail-meta">
-            <h3>${result.artist.name}</h3>
-            <p class="muted">${result.artist.description || ''}</p>
-            <div class="artist-detail-actions">
-                <button class="btn btn-primary btn-sm" data-action="play-hot">${t('player.play_all')} ${t('player.hot_songs')}</button>
-                <button class="btn btn-secondary btn-sm" data-action="view-albums">${t('player.artist_albums')}</button>
-            </div>
-        </div>
-    `;
+    // renderTrackList() must not throw this away when it re-renders.
+    artistHeader.dataset.listHeader = '1';
+
+    const artistCover = document.createElement('img');
+    artistCover.className = 'artist-detail-cover';
+    artistCover.alt = '';
+
+    const meta = document.createElement('div');
+    meta.className = 'artist-detail-meta';
+    const nameEl = document.createElement('h3');
+    nameEl.textContent = result.artist.name || '';
+    meta.appendChild(nameEl);
+    if (result.artist.description) {
+        const description = document.createElement('p');
+        description.className = 'muted';
+        description.textContent = result.artist.description;
+        meta.appendChild(description);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'artist-detail-actions';
+    const playHotBtn = document.createElement('button');
+    playHotBtn.className = 'btn btn-primary btn-sm';
+    playHotBtn.type = 'button';
+    playHotBtn.textContent = `${t('player.play_all')} ${t('player.hot_songs')}`;
+    const albumsBtn = document.createElement('button');
+    albumsBtn.className = 'btn btn-secondary btn-sm';
+    albumsBtn.type = 'button';
+    albumsBtn.textContent = t('player.artist_albums');
+    const followBtn = document.createElement('button');
+    followBtn.className = 'btn btn-secondary btn-sm';
+    followBtn.type = 'button';
+    actions.append(playHotBtn, albumsBtn, followBtn);
+    meta.appendChild(actions);
+
+    artistHeader.append(artistCover, meta);
     trackList.appendChild(artistHeader);
 
-    artistHeader.querySelector('[data-action="play-hot"]').addEventListener('click', () => {
+    const artistCoverUrl = result.artist.cover_url || '';
+    playHotBtn.addEventListener('click', () => {
         playTracksInto(result.hot_songs, { kind: 'artist', id: artist.id, name: artist.name });
     });
-    artistHeader.querySelector('[data-action="view-albums"]').addEventListener('click', () => {
-        showArtistAlbums(result.albums);
+    // The albums belong under the header, not instead of it: replacing the
+    // page would take the follow button away with no way back.
+    albumsBtn.addEventListener('click', () => {
+        showArtistAlbums(result.albums, artistHeader);
     });
-    setCoverImg(artistHeader.querySelector('.artist-detail-cover'), artistCoverUrl);
-    
+    // The button works on an object with a ``followed`` flag, so the state
+    // the server reported is carried over into it.
+    const followTarget = { id: artist.id, followed: !!result.followed };
+    renderFollowButton(followBtn, followTarget.followed);
+    followBtn.addEventListener('click', () => toggleFollowArtist(followTarget, followBtn));
+    setCoverImg(artistCover, artistCoverUrl);
+
     // Hot songs
     if (result.hot_songs && result.hot_songs.length) {
         const section = document.createElement('div');
         section.className = 'artist-section';
-        section.innerHTML = `<h4>${t('player.hot_songs')}</h4>`;
+        const heading = document.createElement('h4');
+        heading.textContent = t('player.hot_songs');
+        section.appendChild(heading);
         const list = document.createElement('div');
         list.className = 'track-list';
         result.hot_songs.forEach((song, index) => {
@@ -3536,30 +3727,104 @@ async function openArtistDetail(artist) {
         section.appendChild(list);
         trackList.appendChild(section);
     }
-    
+
     playTracksInto(result.hot_songs || [], { kind: 'artist', id: artist.id, name: artist.name });
 }
 
-function showArtistAlbums(albums) {
-    const trackList = document.getElementById('track-list');
-    trackList.innerHTML = '';
-    setListTitle(t('player.artist_albums'));
-    
+/**
+ * Label the follow button for the current state.
+ *
+ * The two states have to be told apart at a glance, so the label says
+ * what the button will *do*, not what the state is.  The icon variant
+ * (a star in the list rows) shows the state as a filled star instead.
+ */
+function renderFollowButton(button, followed) {
+    if (!button) return;
+    button.classList.toggle('is-active', followed);
+    if (button.dataset.followIcon === '1') {
+        setIcon(button, 'star', { filled: followed });
+        button.title = followed ? t('player.artist_unfollow') : t('player.artist_follow');
+        return;
+    }
+    button.textContent = followed ? t('player.artist_unfollow') : t('player.artist_follow');
+}
+
+/** Follow or unfollow an artist and refresh what depends on it. */
+async function toggleFollowArtist(artist, button) {
+    const follow = !artist.followed;
+    if (button) button.disabled = true;
+    const result = await state.api.follow_artist(artist.id, follow);
+    if (button) button.disabled = false;
+    if (!result.success) {
+        showError(result, follow ? 'player.artist_follow_failed' : 'player.artist_unfollow_failed');
+        return;
+    }
+    artist.followed = result.followed;
+    if (button) renderFollowButton(button, result.followed);
+    showToast('success', result.followed
+        ? t('player.artist_followed')
+        : t('player.artist_unfollowed'));
+    // The followed list changed, so it has to be re-read -- but only when it
+    // is the list on screen.
+    if (player.sourceTab === 'followed_artists') {
+        await loadFollowedArtists();
+    }
+}
+
+/**
+ * Show the artist's albums under the header.
+ *
+ * The section is appended, not swapped in: the follow button and the hot
+ * songs stay on screen, and pressing the button twice does not stack two
+ * copies of the same list.
+ */
+function showArtistAlbums(albums, header) {
+    const anchor = header || document.getElementById('track-list');
+    const existing = anchor.parentElement
+        && anchor.parentElement.querySelector('.artist-section[data-section="albums"]');
+    if (existing) {
+        existing.remove();
+        return;
+    }
+    const section = document.createElement('div');
+    section.className = 'artist-section';
+    section.dataset.section = 'albums';
+    const heading = document.createElement('h4');
+    heading.textContent = t('player.artist_albums');
+    section.appendChild(heading);
+
+    if (!albums || !albums.length) {
+        const empty = document.createElement('p');
+        empty.className = 'empty';
+        empty.textContent = t('player.album_not_found');
+        section.appendChild(empty);
+        anchor.after(section);
+        return;
+    }
+
     albums.forEach((album) => {
         const row = document.createElement('div');
         row.className = 'album-row';
-        const rowCoverUrl = album.cover_url || '';
-        row.innerHTML = `
-            <img src="" alt="" class="album-row-cover" data-cover-src="${rowCoverUrl}" onerror="this.style.display='none'">
-            <div class="album-row-meta">
-                <span class="album-row-name">${album.name}</span>
-                <span class="muted album-row-date">${album.publish_time ? new Date(album.publish_time).getFullYear() : ''}</span>
-            </div>
-        `;
+        const cover = document.createElement('img');
+        cover.className = 'album-row-cover';
+        cover.alt = '';
+        const meta = document.createElement('div');
+        meta.className = 'album-row-meta';
+        const name = document.createElement('span');
+        name.className = 'album-row-name';
+        name.textContent = album.name;
+        const date = document.createElement('span');
+        date.className = 'muted album-row-date';
+        date.textContent = album.publish_time
+            ? String(new Date(album.publish_time).getFullYear())
+            : '';
+        meta.append(name, date);
+        row.append(cover, meta);
         row.addEventListener('click', () => openAlbumDetail(album));
-        setCoverImg(row.querySelector('.album-row-cover'), rowCoverUrl);
-        trackList.appendChild(row);
+        setCoverImg(cover, album.cover_url || '');
+        section.appendChild(row);
     });
+    anchor.after(section);
 }
 
 /* ----------------------------------------------------------- search suggestions */
@@ -3839,7 +4104,13 @@ function renderTrackList() {
     // to row 1.  Restore it once the new rows are in.
     const scroller = list.closest('.list-area') || list;
     const savedScroll = scroller.scrollTop;
+    // The album and artist pages put their header (cover, name, bio, action
+    // buttons) in this same container.  A plain ``innerHTML = ''`` threw it
+    // away on the very next render, which is how both detail pages shipped
+    // with no header at all.  A node marked as the header survives.
+    const keptHeader = list.querySelector(':scope > [data-list-header]');
     list.innerHTML = '';
+    if (keptHeader) list.appendChild(keptHeader);
     const playing = currentKey();
     // For large lists, mount only a window of rows around the viewport so a
     // 1000-track playlist costs ~30 DOM nodes instead of 1000.  Below the
@@ -5898,10 +6169,13 @@ async function crossfadeTo(newSrc, autoplay) {
 function preloadNextTrack() {
     if (!player.queue.length || player.index < 0) return;
 
-    const nextIndex = nextIndex(true);
-    if (nextIndex < 0 || nextIndex === player.index) return;
+    // The local must not be called ``nextIndex``: that is the function being
+    // called here, and a ``const`` of the same name shadows it for the whole
+    // block, so the call hits the temporal dead zone and throws.
+    const upcoming = nextIndex(true);
+    if (upcoming < 0 || upcoming === player.index) return;
 
-    const nextTrack = player.queue[nextIndex];
+    const nextTrack = player.queue[upcoming];
     if (!nextTrack || nextTrack.source !== 'online' || !nextTrack.id) return;
 
     const quality = state.settings?.playback?.online_quality || 'standard';
@@ -6368,6 +6642,7 @@ function bindStaticEvents() {
         if (player.sourceTab === 'local') loadLocal(true);
         else if (player.sourceTab === 'new_songs') loadNewSongs(true);
         else if (player.sourceTab === 'recommend_mv') loadRecommendMVs(true);
+        else if (player.sourceTab === 'followed_artists') loadFollowedArtists(true);
         else if (player.sourceTab === 'toplist') { /* top lists don't paginate */ }
         else doSearch(true);
     });

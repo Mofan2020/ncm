@@ -30,6 +30,7 @@ from src.auth import LoginStatus, get_login_manager
 from src.config import PLAY_MODES, default_download_dir, get_settings
 from src.core import backup as backup_core
 from src.core import get_api
+from src.core.api import LOGIN_REQUIRED_CODES
 from src.core.downloader import MAX_CONCURRENT, DownloadStats, DownloadTask, SongDownloader
 from src.core.library import get_library, track_key
 from src.core.localmusic import (
@@ -1499,11 +1500,60 @@ class GuiBridge:
         artist = self._safe("artist detail", self.api.get_artist_detail, artist_id)
         if not artist:
             return {"success": False, "error_key": "player.artist_not_found", "artist": None}
+        # The follow state lives on its own route, so it is a separate
+        # read.  Without a login the account follows nobody and the
+        # endpoint still answers.
+        follow = self._safe("artist follow state",
+                            self.api.get_artist_follow_state, artist_id) or {}
         return {
             "success": True,
             "artist": self._artist_payload(artist),
             "hot_songs": [self._track_payload(index, song) for index, song in enumerate(artist.get("hotSongs") or [])],
             "albums": [self._album_payload_mini(album) for album in (artist.get("albums") or [])],
+            "followed": bool(follow.get("followed")),
+            "fans_count": int(follow.get("fans_count") or 0),
+            "follow_days": int(follow.get("follow_days") or 0),
+        }
+
+    def follow_artist(self, artist_id: str, follow: bool = True) -> dict[str, Any]:
+        """Follow or unfollow an artist.
+
+        The two directions fail for different reasons, so they get
+        different messages: a refusal because the request came too fast is
+        not the user's fault, and a dead session is not either.
+        """
+        artist_id = str(artist_id or "").strip()
+        if not artist_id.isdigit():
+            return {"success": False, "error_key": "player.invalid_artist_id"}
+        status = self._safe("follow artist", self.api.set_artist_follow,
+                            artist_id, bool(follow))
+        if status == "ok":
+            return {"success": True, "followed": bool(follow)}
+        if status == "rate_limited":
+            return {"success": False, "error_key": "player.artist_follow_busy"}
+        if status == "not_logged_in":
+            return {"success": False, "error_key": "player.login_required"}
+        key = "player.artist_follow_failed" if follow else "player.artist_unfollow_failed"
+        return {"success": False, "error_key": key}
+
+    def get_followed_artists(self, limit: int = 25, offset: int = 0) -> dict[str, Any]:
+        """The artists the account follows."""
+        result = self._safe("followed artists", self.api.get_followed_artists,
+                            limit, offset)
+        if result is None:
+            return {"success": False, "error_key": "error.network", "artists": []}
+        code = result.get("code")
+        if code in LOGIN_REQUIRED_CODES:
+            return {"success": False, "error_key": "player.login_required", "artists": []}
+        return {
+            "success": True,
+            # Every artist in this list is followed by definition -- the
+            # sublist answer does not repeat a ``followed`` flag, so the row
+            # would offer to "follow" an artist the user already follows.
+            "artists": [{**self._artist_payload(artist), "followed": True}
+                        for artist in (result.get("artists") or [])],
+            "count": int(result.get("count") or 0),
+            "has_more": bool(result.get("has_more")),
         }
 
     @staticmethod
@@ -1518,6 +1568,9 @@ class GuiBridge:
             "music_size": artist.get("musicSize") or 0,
             "mv_size": artist.get("mvSize") or 0,
             "album_size": artist.get("albumSize") or 0,
+            # The server says whether the account already follows this
+            # artist, so the button starts in the right state.
+            "followed": bool(artist.get("followed")),
         }
 
     @staticmethod

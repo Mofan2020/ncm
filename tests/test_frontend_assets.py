@@ -341,3 +341,96 @@ def test_the_bridge_passes_the_fresh_flag_through():
     assert "def get_playlists(self, fresh: bool = False)" in bridge
     assert "def get_liked_tracks(self, fresh: bool = False)" in bridge
     assert re.search(r"get_liked_song_ids\(\s*user\.user_id,\s*\n?\s*use_cache=not fresh\)", bridge)
+
+
+# ---------------------------------------------------------------- followed artists
+CSS = (ASSETS / "style.css").read_text(encoding="utf-8")
+
+
+def test_the_followed_artists_source_is_in_the_sidebar():
+    """"Followed artists" has to be reachable, not only via a search."""
+    match = re.search(r'data-source="followed_artists"', HTML)
+    assert match, "no sidebar entry for the followed artists"
+    assert 'data-i18n="player.source_followed_artists"' in HTML
+
+
+def test_the_followed_artists_source_is_selected_and_paged():
+    assert re.search(r"source === 'followed_artists'\)\s*await loadFollowedArtists\(\)", JS)
+    assert re.search(r"loadFollowedArtists\(true\)", JS), "the list has to be pageable"
+    assert "FOLLOWED_PAGE" in JS
+
+
+def test_the_followed_list_is_read_from_the_bridge():
+    assert "state.api.get_followed_artists(" in JS
+    assert "def get_followed_artists(" in BRIDGE.read_text(encoding="utf-8")
+
+
+def test_an_artist_row_opens_the_artist_page():
+    """A search result artist is not a track; it opens the page."""
+    assert "function openArtistDetail(artist)" in JS
+    assert "state.api.get_artist_detail(" in JS
+    assert "def get_artist_detail(" in BRIDGE.read_text(encoding="utf-8")
+
+
+def test_the_artist_page_has_a_working_follow_button():
+    assert "state.api.follow_artist(" in JS
+    assert "def follow_artist(" in BRIDGE.read_text(encoding="utf-8")
+    # Both labels exist: a button that cannot say what it will do is a trap.
+    for lang in ("zh_cn", "en_us"):
+        flat = _flat_catalogue(lang)
+        assert flat.get("player.artist_follow"), f"{lang} misses player.artist_follow"
+        assert flat.get("player.artist_unfollow"), f"{lang} misses player.artist_unfollow"
+
+
+def test_a_follow_refreshes_the_list_it_came_from():
+    """The followed list is wrong the moment the follow changes."""
+    assert re.search(
+        r"if \(player\.sourceTab === 'followed_artists'\)\s*\{\s*await loadFollowedArtists\(\)",
+        JS,
+    )
+
+
+def test_the_artist_page_classes_have_styles():
+    """An unstyled artist page renders as a wall of text."""
+    for selector in (".artist-detail-header", ".artist-detail-cover",
+                     ".artist-detail-meta", ".artist-detail-actions",
+                     ".artist-section", ".album-row"):
+        assert selector + " " in CSS or selector + "{" in CSS or selector + "," in CSS, \
+            f"{selector} has no rule in style.css"
+
+
+def test_the_follow_state_is_told_apart_from_the_idle_state():
+    """A followed artist must look followed."""
+    assert ".artist-detail-actions .btn.is-active" in CSS
+
+
+# ------------------------------------------------------- detail-page headers
+def test_a_detail_header_survives_a_track_list_rerender():
+    """The album/artist header lives in the same container as the rows.
+
+    ``renderTrackList()`` clears that container before rebuilding the rows,
+    which used to take the header (cover, name, bio, follow button) with it
+    -- so both detail pages rendered as a bare list of song names.
+    """
+    assert "data-list-header" in JS, "no marker for a persistent header"
+    # The clear has to keep the marked node.
+    assert re.search(
+        r"const keptHeader = list\.querySelector\(':scope > \[data-list-header\]'\)",
+        JS,
+    ), "renderTrackList does not look for the header before clearing"
+    assert re.search(r"list\.innerHTML = '';\s*\n\s*if \(keptHeader\) list\.appendChild\(keptHeader\);", JS), \
+        "renderTrackList does not restore the header after clearing"
+
+
+def test_both_detail_pages_mark_their_header():
+    """A page that forgets the marker loses its header again."""
+    for klass in ("artist-detail-header", "album-detail-header"):
+        assert re.search(rf"className = '{klass}';\s*\n\s*//[^\n]*\n\s*\w+\.dataset\.listHeader = '1';", JS), \
+            f"{klass} is not marked as a persistent list header"
+
+
+def test_the_next_track_preload_does_not_shadow_the_function_it_calls():
+    """``const nextIndex = nextIndex(true)`` throws: the const shadows the
+    function for the whole block, so the call hits the temporal dead zone."""
+    assert not re.search(r"const nextIndex = nextIndex\(", JS), \
+        "the local shadows the function it calls"
