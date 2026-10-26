@@ -94,9 +94,26 @@ case "$MODE" in
         ;;
 esac
 
+# The downloads go through a local accelerator that drops connections now
+# and then ("Remote end closed connection without response").  The packages
+# that did finish are cached, so a retry picks up where it stopped.
 echo "== buildozer $TARGET =="
 cd "$HERE"
-"$BUILDOZER" $TARGET
+attempt=1
+max_attempts=3
+while :; do
+    echo "== buildozer $TARGET (attempt $attempt/$max_attempts) =="
+    if "$BUILDOZER" $TARGET; then
+        break
+    fi
+    if [ "$attempt" -ge "$max_attempts" ]; then
+        echo "buildozer failed $max_attempts times" >&2
+        exit 1
+    fi
+    attempt=$((attempt + 1))
+    echo "-- retrying in 30s --"
+    sleep 30
+done
 
 echo "== artifacts =="
 ls -la "$HERE"/bin/*.apk "$HERE"/bin/*.aab 2>/dev/null || echo "  (nothing in bin/)"
