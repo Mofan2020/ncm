@@ -326,6 +326,23 @@ def _emit_report(checks: list[tuple[str, bool, str]], report_path: str | None) -
         pass
 
 
+def _diagnostics_dir() -> Path:
+    """Where the startup report goes.
+
+    Not next to the executable: inside an app bundle that is inside the
+    bundle itself, and a file added there invalidates the code signature --
+    ``codesign --verify`` starts failing and macOS can refuse to start the
+    app.  The directory the settings live in is writable and outside the
+    bundle.
+    """
+    try:
+        from src.config import get_settings
+
+        return Path(get_settings().config_path).parent
+    except Exception:  # pragma: no cover - the settings are not readable yet
+        return Path.home()
+
+
 def _write_load_diagnostics(report_path: str | None, ui_url: str | None,
                             html_path: Path, error: str | None = None) -> None:
     """Write what the webview was actually asked to load, plus the real error.
@@ -333,14 +350,19 @@ def _write_load_diagnostics(report_path: str | None, ui_url: str | None,
     When the window shows an error page instead of the app, the only useful
     information is the URL the webview ended up on and WebView2's own error
     string.  Neither reaches a ``console=False`` build's stdout, so they are
-    written next to the executable where the user can open them.
+    written to a file the user can open.
     """
     import json
     import platform
     import traceback
 
     exe_dir = Path(sys.executable).resolve().parent if is_frozen() else Path.cwd()
-    target = Path(report_path) if report_path else exe_dir / "ncm-startup.log"
+    if report_path:
+        target = Path(report_path)
+    elif is_frozen():
+        target = _diagnostics_dir() / "ncm-startup.log"
+    else:
+        target = exe_dir / "ncm-startup.log"
 
     info: dict[str, object] = {
         "time": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
