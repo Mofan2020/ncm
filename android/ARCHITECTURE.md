@@ -142,11 +142,18 @@ Android 的下载目录与本地音乐目录受 scoped storage 限制：
 - `requirements = python3,kivy,requests,pyyaml,qrcode` （**不要 pillow**，见瘦身任务）
 - `android.api = 34`，`android.minapi = 24`
 - `android.archs = arm64-v8a`（单架构，体积最小）
-- `android.release_artifact = aab`
-- `android.add_manifest` 声明权限
-- `orientation = portrait` 之外还要允许 `landscape`（平板横屏）
+- `android.release_artifact = aab`，`android.debug_artifact = apk`
+- 权限在 `android.permissions` 里列表声明
+- `orientation = all`：平板横屏要能用，锁成 portrait 会把这一档丢
 
-预期 APK 体积 15–25MB（Kivy + Python 运行时 + 业务代码）。
+**打包要用 `./build_apk.sh`，不要直接跑 `buildozer android debug`。**
+`source.dir = .` 意味着只打包 `android/` 目录，而业务核心在仓库根的 `../src`。
+脚本会先把它 rsync 到 `android/src`（已 gitignore），再确认
+`src/core/api.py`、`src/version.py` 都在，然后才调 buildozer。
+漏了这一步，APK 首启就会死在 `import src.core`。
+
+体积：sdl2 之前的工具链包编译一次就缓存进 `~/.python-for-android/packages`，
+之后重打包只花几分钟。
 
 ## 7. 桌面端与 Android 端的差异（明确不做）
 

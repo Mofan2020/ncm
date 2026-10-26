@@ -37,3 +37,8 @@ ncm-self-test.txt
 
 # startup diagnostics written by the app
 ncm-startup.log
+
+# Staged by android/build_apk.sh: a copy of the shared core, not a source
+android/src/
+android/.buildozer/
+android/bin/
