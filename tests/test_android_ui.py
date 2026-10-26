@@ -323,3 +323,37 @@ def test_a_track_that_cannot_be_played_says_so():
     generic = NcmApp._play_error_message(stub, {"message": "network down"})
     assert generic != message
 
+
+
+def test_the_apk_version_follows_the_app_version():
+    """The APK's name and the manifest must not drift away from the app.
+
+    The spec carries its own version line, and it used to lag behind
+    ``src/version.py``: the file was called 3.5.1 while the app reported 3.5.4
+    and the manifest showed 3.5.1 to the system.
+    """
+    import re
+    from pathlib import Path
+
+    from src.version import __version__
+
+    spec = Path(__file__).resolve().parent.parent / "android" / "buildozer.spec"
+    text = spec.read_text(encoding="utf-8")
+    match = re.search(r"^version = (.+)$", text, re.MULTILINE)
+    assert match, "buildozer.spec has no version line"
+    assert match.group(1).strip().strip('"') == __version__
+
+
+def test_the_mini_player_stays_hidden_until_something_plays():
+    """A widget of zero height still draws its children.
+
+    The icon buttons have a fixed size, so the strip used to float above the
+    navigation bar with two stray buttons before anything had played.
+    """
+    from ncmkivy.widgets import MiniPlayer
+
+    player = MiniPlayer()
+    assert player.opacity == 0
+
+    player.show_track({"name": "Shots", "artists": "JAY PARK"}, playing=True)
+    assert player.opacity == 1

@@ -431,6 +431,11 @@ class MiniPlayer(BoxLayout):
         self._on_toggle = on_toggle
         self._on_next = on_next
 
+        # The strip takes no space until something plays, and a widget of zero
+        # height still draws its children: the icon buttons are a fixed size,
+        # so without this they float above the navigation bar on their own.
+        self.opacity = 0
+
         self.cover = CoverImage(size=dp(44), radius=dp(6))
         self.add_widget(self.cover)
 
@@ -462,6 +467,7 @@ class MiniPlayer(BoxLayout):
 
     def show_track(self, track: dict[str, Any], playing: bool = True) -> None:
         """Show a track and make the bar visible."""
+        self.opacity = 1
         self.title.text = str(track.get("name") or "")
         self.subtitle.text = str(track.get("artists") or "")
         url = str(track.get("cover_url") or "")

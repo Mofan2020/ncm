@@ -115,7 +115,21 @@ esac
 # The downloads go through a local accelerator that drops connections now
 # and then ("Remote end closed connection without response").  The packages
 # that did finish are cached, so a retry picks up where it stopped.
-echo "== buildozer $TARGET =="
+#
+# The version comes from src/version.py, not from the spec: the spec's copy
+# drifts (the APK was still called 3.5.1 while the app reported 3.5.4, and
+# the manifest's versionName is what the system shows).  buildozer takes the
+# app version from the spec and has no command line option for it --
+# "buildozer --version" prints buildozer's own version and exits.
+VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$HERE/../src/version.py")"
+if [ -z "$VERSION" ]; then
+    echo "cannot read the version from src/version.py" >&2
+    exit 1
+fi
+SPEC="$HERE/buildozer.spec"
+sed -E "s/^version = .*/version = $VERSION/" "$SPEC" > "$SPEC.tmp"
+mv "$SPEC.tmp" "$SPEC"
+echo "== buildozer $TARGET (version $VERSION) =="
 cd "$HERE"
 attempt=1
 max_attempts=3
@@ -134,4 +148,12 @@ while :; do
 done
 
 echo "== artifacts =="
+# buildozer can exit 0 without building anything (a mistyped flag prints its
+# version and stops), so the artifact has to be there before the build counts
+# as done.
+if ! ls "$HERE"/bin/*"$VERSION"*.apk >/dev/null 2>&1; then
+    echo "buildozer finished without producing an APK for version $VERSION" >&2
+    ls -la "$HERE"/bin/ >&2 || true
+    exit 1
+fi
 ls -la "$HERE"/bin/*.apk "$HERE"/bin/*.aab 2>/dev/null || echo "  (nothing in bin/)"
