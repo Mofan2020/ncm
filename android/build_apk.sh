@@ -52,6 +52,11 @@ export PATH="$(dirname "$BUILDOZER"):$PATH"
 # "User site-packages are not visible in this virtualenv" and the install
 # fails, so the environment has to be declared.
 export VIRTUAL_ENV="$(dirname "$BUILDOZER")"
+# A conda environment in the caller's shell is just as confusing: buildozer
+# then tries to install p4a's dependencies with ``conda install``, which
+# fails on this machine.  The venv above is the only environment this
+# build may use.
+unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_SHLVL CONDA_EXE CONDA_PYTHON_EXE
 
 # PyPI is unreachable from this network (a request to pypi.org/simple times
 # out), and the host-python build pip-installs a few pure-Python helpers into
@@ -59,13 +64,12 @@ export VIRTUAL_ENV="$(dirname "$BUILDOZER")"
 # script's environment -- no global pip config is touched.
 export PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 export PIP_DISABLE_PIP_VERSION_CHECK=1
-# p4a checks whether a wheel exists for the *Android* platform tag; nothing
-# on PyPI has one, so pip falls back to the sdist.  The ``android`` package's
-# own pyproject declares only setuptools while its setup.py imports Cython,
-# so the isolated build environment dies with "No module named 'Cython'".
-# The host python already has Cython 3.0.12, and skipping the isolation
-# makes pip use it.
-export PIP_BUILD_ISOLATION=0
+# Note: the build deliberately keeps pip's build isolation ON.  The one
+# recipe that cannot survive it (the ``android`` package, whose pyproject
+# declares only setuptools while its setup.py imports Cython) is handled in
+# p4a's PyProjectRecipe instead, which passes --no-isolation for that
+# recipe alone -- turning isolation off globally makes kivy fail with
+# unmet dependencies, because kivy pins exact cython/setuptools versions.
 
 echo "== staging the shared core into android/src =="
 rm -rf "$HERE/src"
