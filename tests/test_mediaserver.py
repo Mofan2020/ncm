@@ -341,3 +341,44 @@ def test_oversized_covers_are_not_cached(isolated_home, monkeypatch):
     # The image is still served from disk, it just does not stay in memory.
     assert server.cover_for(path)[0] == big
     assert server.stats()["cached_covers"] == 0
+
+
+def test_the_cover_candidates_include_the_other_hosts():
+    from src.core.mediaserver import _cover_url_candidates
+
+    candidates = _cover_url_candidates("https://p2.music.126.net/a/1.jpg")
+    assert candidates[0] == "https://p2.music.126.net/a/1.jpg"
+    assert "https://p1.music.126.net/a/1.jpg" in candidates
+    assert "https://p3.music.126.net/a/1.jpg" in candidates
+    # A URL that is not the picture CDN is left alone.
+    assert _cover_url_candidates("https://example.com/a.jpg") == [
+        "https://example.com/a.jpg"]
+
+
+def test_the_cover_fetch_falls_back_to_another_host():
+    """One picture host can be unreachable; the same path works elsewhere."""
+    import src.core.mediaserver as module
+
+    class _Response:
+        status_code = 200
+        content = b"\xff\xd8\xff\xe0" + b"0" * 32
+
+        def close(self) -> None:
+            return None
+
+    calls: list[str] = []
+
+    class _Session:
+        def get(self, url, **_kwargs):
+            calls.append(url)
+            if "p2.music.126.net" in url:
+                raise module.requests.exceptions.ReadTimeout("read timed out")
+            return _Response()
+
+    server = get_media_server()
+    server.session = _Session()
+
+    response = server.fetch_cover("https://p2.music.126.net/abc/1.jpg")
+    assert response.content
+    assert len(calls) == 2
+    assert "p1.music.126.net" in calls[1]

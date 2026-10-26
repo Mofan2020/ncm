@@ -306,7 +306,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_cover_bytes(data, mime, send_body)
             return
         try:
-            response = self.media.session.get(url, timeout=(10, 20))
+            response = self.media.fetch_cover(url)
         except requests.exceptions.RequestException as exc:
             log.debug("cover fetch failed for %s: %s", url, exc)
             self._error(502, "upstream error")
@@ -379,11 +379,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _proxy(self, url: str, send_body: bool, *, retry: str | None = None,
                quality: str = "standard", cache_song_id: str | None = None,
                cache_ext: str | None = None) -> None:
-        headers = {
-            "User-Agent": _UA,
-            "Referer": "https://music.163.com/",
-            "Accept": "*/*",
-        }
+        headers = dict(_CDN_HEADERS)
         range_header = self.headers.get("Range")
         if range_header:
             headers["Range"] = range_header
@@ -452,6 +448,36 @@ class _Handler(BaseHTTPRequestHandler):
 
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
        "(KHTML, like Gecko) Version/16.6 Safari/605.1.15")
+
+#: NetEase's CDN refuses requests that do not look like they come from the
+#: site: some covers answer 403 or 502 without a Referer.  Both the audio
+#: proxy and the cover proxy need these.
+_CDN_HEADERS = {
+    "User-Agent": _UA,
+    "Referer": "https://music.163.com/",
+    "Accept": "*/*",
+}
+
+#: NetEase serves the same picture from several hosts.
+_PICTURE_HOSTS = ("p1.music.126.net", "p2.music.126.net", "p3.music.126.net")
+
+
+def _cover_url_candidates(url: str) -> list[str]:
+    """The picture URL, followed by the same path on the other hosts.
+
+    One of the hosts can be unreachable from wherever the app runs, so a
+    fetch that fails is retried against the others.  A URL that does not
+    point at the picture CDN is left alone.
+    """
+    host = urlparse(url).hostname or ""
+    if host not in _PICTURE_HOSTS:
+        return [url]
+    candidates = [url]
+    for other in _PICTURE_HOSTS:
+        if other == host:
+            continue
+        candidates.append(url.replace(f"//{host}", f"//{other}", 1))
+    return candidates
 
 
 def _content_type_for(path: Path) -> str:
@@ -837,6 +863,29 @@ class MediaServer:
     def cached_cover(self, url: str, ext: str = "jpg") -> tuple[bytes, str] | None:
         """Return (bytes, mime) for a cached remote cover image, or ``None``."""
         return self._media_cache.open_cover(url, ext)
+
+    def fetch_cover(self, url: str) -> Any:
+        """Fetch a cover, trying the other picture hosts if this one fails.
+
+        NetEase serves the same path from p1, p2 and p3, and one of them can
+        be unreachable from wherever the app happens to run -- a read
+        timeout on p2 while p1 answers instantly is not rare.  The cache
+        key stays the original URL, so the fallback does not fragment it.
+        """
+        last: Exception | None = None
+        for candidate in _cover_url_candidates(url):
+            try:
+                response = self.session.get(
+                    candidate, headers=dict(_CDN_HEADERS), timeout=(10, 20))
+            except requests.exceptions.RequestException as exc:
+                last = exc
+                continue
+            if response.status_code == 200 and response.content:
+                return response
+            response.close()
+            last = requests.exceptions.HTTPError(
+                f"{candidate} answered {response.status_code}")
+        raise last if last else requests.exceptions.RequestException(url)
 
     def write_cover_cache(self, url: str, data: bytes,
                           mime: str = "") -> Path | None:
