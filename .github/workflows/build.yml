@@ -196,6 +196,12 @@ jobs:
             Copy-Item "dist\_resources" $cn -Recurse -Force
           }
           $exe = Join-Path $cn "NeteaseMusicDownloader.exe"
+          # The diagnostics file goes to the settings directory, never into
+          # the app folder: a file added to a signed bundle breaks the code
+          # signature.  Remove the previous run's file first so this step
+          # cannot pass on a stale report.
+          $log = Join-Path $env:APPDATA "NeteaseMusicDownloader\ncm-startup.log"
+          Remove-Item $log -ErrorAction SilentlyContinue
           $proc = Start-Process -FilePath $exe -ArgumentList "--self-test" `
             -WorkingDirectory $cn -PassThru
           if (-not $proc.WaitForExit(180000)) {
@@ -206,7 +212,6 @@ jobs:
             exit 1
           }
           # the diagnostics file must exist and name the http url
-          $log = Join-Path $cn "ncm-startup.log"
           if (-not (Test-Path $log)) { Write-Error "no ncm-startup.log was written"; exit 1 }
           $info = Get-Content $log -Raw | ConvertFrom-Json
           Write-Host "ui_url: $($info.ui_url)"
