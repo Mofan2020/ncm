@@ -11,6 +11,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# The Android build keeps its Kivy layer in ``android/ncmkivy``; the tests
+# for it import it by name.
+ANDROID = ROOT / "android"
+if ANDROID.is_dir() and str(ANDROID) not in sys.path:
+    sys.path.insert(0, str(ANDROID))
+
 
 def _install_webview_stub() -> None:
     """Give the tests a fake pywebview when no GUI backend is importable."""
