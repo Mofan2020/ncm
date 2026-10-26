@@ -43,11 +43,34 @@ if [ ! -x "$BUILDOZER" ]; then
     echo "buildozer not found at $BUILDOZER" >&2
     exit 1
 fi
+# p4a looks for the ``cython`` executable on PATH, not the Python module, so
+# the build venv's bin has to be on PATH -- otherwise it stops with
+# "Cython (cython) not found, please install it".
+export PATH="$(dirname "$BUILDOZER"):$PATH"
+# buildozer installs p4a's dependencies with ``pip install --user`` unless it
+# can see a virtualenv or conda environment.  A venv's own python says
+# "User site-packages are not visible in this virtualenv" and the install
+# fails, so the environment has to be declared.
+export VIRTUAL_ENV="$(dirname "$BUILDOZER")"
 
 echo "== staging the shared core into android/src =="
 rm -rf "$HERE/src"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' \
       "$ROOT/src/" "$HERE/src/"
+
+# The launcher icon: the desktop app already has a 1024px master, so copy it
+# instead of regenerating it (the generator needs Pillow, which is a
+# development dependency only).
+mkdir -p "$HERE/assets"
+if [ ! -f "$HERE/assets/icon.png" ]; then
+    if [ -f "$ROOT/src/gui/assets/icon.png" ]; then
+        cp "$ROOT/src/gui/assets/icon.png" "$HERE/assets/icon.png"
+        echo "   icon.png copied from src/gui/assets"
+    else
+        echo "no source icon at src/gui/assets/icon.png" >&2
+        exit 1
+    fi
+fi
 
 # Fail loudly here rather than in a crash log on someone's phone.
 echo "== checking the staged tree can import the core =="

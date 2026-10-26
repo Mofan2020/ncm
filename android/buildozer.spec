@@ -48,6 +48,11 @@ android.wakelock = True
 # is plain HTTP on 127.0.0.1, so cleartext has to stay allowed for it.
 android.allow_backup = True
 
+android.accept_sdk_license = True
+android.sdk_path = /Users/mofan/android-toolchain/sdk
+android.ndk_path = /Users/mofan/android-toolchain/sdk/ndk/26.1.10909125
+p4a.source_dir = /Users/mofan/android-toolchain/p4a-src
+
 [buildozer]
 
 log_level = 2
