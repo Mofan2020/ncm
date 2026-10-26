@@ -744,28 +744,20 @@ class MediaServer:
             stat = source.stat()
         except OSError:
             return None
-        try:
-            from PIL import Image
-        except ImportError:
-            return None
+        from src.core.imaging import downscale_to_jpeg
 
         target = source.with_name(f"{source.stem}.display.jpg")
         try:
             # Reuse the scaled copy only while it matches the original.
             if target.is_file() and target.stat().st_mtime >= stat.st_mtime:
                 return target
-            with Image.open(source) as image:
-                image = image.convert("RGB")
-                longest = max(image.size)
-                if longest > BACKGROUND_DISPLAY_EDGE:
-                    scale = BACKGROUND_DISPLAY_EDGE / longest
-                    image = image.resize(
-                        (max(1, round(image.width * scale)),
-                         max(1, round(image.height * scale))),
-                        Image.LANCZOS,
-                    )
-                image.save(target, "JPEG", quality=BACKGROUND_DISPLAY_QUALITY,
-                           optimize=True, progressive=True)
+            if not downscale_to_jpeg(
+                source,
+                target,
+                max_edge=BACKGROUND_DISPLAY_EDGE,
+                quality=BACKGROUND_DISPLAY_QUALITY,
+            ):
+                return None
             return target
         except Exception as exc:
             log.info("cannot scale the wallpaper: %s", exc)

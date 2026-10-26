@@ -935,11 +935,17 @@ class LoginManager:
 
     # ------------------------------------------------------------------ image
     def get_qrcode_image(self, qrcode_url: str, size: int = 256) -> bytes | None:
-        """Render ``qrcode_url`` as a PNG (used by the GUI)."""
-        try:
-            from io import BytesIO
+        """Render ``qrcode_url`` as a PNG (used by the GUI).
 
+        The QR code is a boolean matrix, so the PNG is written straight from
+        it (:mod:`src.core.png`) instead of pulling an imaging library into
+        the bundle.  Each module gets the same number of pixels -- an even
+        module size is what keeps a QR code readable.
+        """
+        try:
             import qrcode
+
+            from src.core.png import render_matrix
 
             qr = qrcode.QRCode(
                 version=None,
@@ -949,12 +955,9 @@ class LoginManager:
             )
             qr.add_data(qrcode_url)
             qr.make(fit=True)
-            image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-            if size:
-                image = image.resize((size, size))
-            buffer = BytesIO()
-            image.save(buffer, format="PNG")
-            return buffer.getvalue()
+            matrix = qr.get_matrix()
+            scale = max(1, round(size / len(matrix))) if size else qr.box_size
+            return render_matrix(matrix, scale)
         except Exception as exc:
             self.logger.warning("QR render failed: %s", exc)
             return None

@@ -3,7 +3,11 @@
 #   Windows -> pythonnet + WebView2 (Edge), macOS -> pyobjc + WKWebView
 # Deliberately no native crypto extension: AES-128-ECB is implemented in
 # src/core/aes.py, so the frozen builds link no OpenSSL of their own.
+# Deliberately no Pillow either: the login QR code is drawn by src/core/png.py
+# and the wallpaper is resized by the platform's own image tool
+# (src/core/imaging.py), which keeps ~16 MB out of the bundle.  Do not
+# reintroduce the "qrcode[pil]" extra -- it is what pulled Pillow in.
 pywebview>=6.0,<7.0
 requests>=2.31.0
 PyYAML>=6.0
-qrcode[pil]>=7.4.2
+qrcode>=7.4.2

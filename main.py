@@ -245,12 +245,44 @@ def _run_self_test(report_path: str | None = None) -> int:
     try:
         from qrcode import QRCode
 
+        from src.core.png import render_matrix
+
         code = QRCode(box_size=4, border=1)
         code.add_data("self-test")
         code.make(fit=True)
-        checks.append(("qrcode", True, "qr rendering"))
+        # Prove the real code path, not merely that the package imports: the
+        # QR code is drawn by src/core/png.py, which is what replaced Pillow.
+        png = render_matrix(code.get_matrix(), 4)
+        qr_ok = png.startswith(b"\x89PNG\r\n\x1a\n") and len(png) > 100
+        checks.append(("qrcode", qr_ok, f"{len(png)}B png, no imaging library"))
     except Exception as exc:  # pragma: no cover
         checks.append(("qrcode", False, f"{type(exc).__name__}: {exc}"))
+
+    # The wallpaper is resized by the platform's own tool.  Exercise the one
+    # this build will really call, so a Windows runner proves the PowerShell
+    # route and a macOS runner proves sips -- neither is covered by running
+    # the sources on the other OS.
+    try:
+        import tempfile
+
+        from src.core import imaging
+        from src.core.png import render_matrix as render_probe
+
+        if not imaging.has_backend():
+            checks.append(("image scaling", True, "no platform image tool - originals are kept"))
+        else:
+            with tempfile.TemporaryDirectory() as folder:
+                probe = Path(folder)
+                source = probe / "probe.png"
+                target = probe / "probe.jpg"
+                source.write_bytes(render_probe([[True, False], [False, True]], 32))
+                scaled = imaging.downscale_to_jpeg(
+                    source, target, max_edge=32, quality=80)
+                checks.append(("image scaling", scaled,
+                               f"{target.stat().st_size}B jpeg" if scaled
+                               else "the platform tool failed"))
+    except Exception as exc:  # pragma: no cover - depends on the platform
+        checks.append(("image scaling", False, f"{type(exc).__name__}: {exc}"))
 
     failed = [name for name, passed, _ in checks if not passed]
     _emit_report(checks, report_path)

@@ -454,31 +454,20 @@ class Settings:
         return target.name
 
     def _write_background(self, src: Path, target: Path) -> bool:
-        """Downscale ``src`` into ``target`` as a JPEG.  False if PIL is absent.
+        """Downscale ``src`` into ``target`` as a JPEG.  False if unavailable.
 
-        PIL is not a direct dependency (it comes in with ``qrcode[pil]``), so
-        the caller falls back to a plain copy when it is not importable.
+        The resizing is done by the platform's own image tool (see
+        :mod:`src.core.imaging`), so no imaging library ships with the app.
+        The caller falls back to a plain copy when it is not available.
         """
-        try:
-            from PIL import Image
-        except ImportError:
-            return False
-        try:
-            with Image.open(src) as image:
-                image = image.convert("RGB")
-                if max(image.size) > BACKGROUND_MAX_EDGE:
-                    scale = BACKGROUND_MAX_EDGE / max(image.size)
-                    image = image.resize(
-                        (max(1, round(image.width * scale)),
-                         max(1, round(image.height * scale))),
-                        Image.LANCZOS,
-                    )
-                image.save(target, "JPEG", quality=BACKGROUND_JPEG_QUALITY,
-                           optimize=True, progressive=True)
-            return True
-        except Exception as exc:
-            self.logger.info("cannot re-encode the background image: %s", exc)
-            return False
+        from src.core.imaging import downscale_to_jpeg
+
+        return downscale_to_jpeg(
+            src,
+            target,
+            max_edge=BACKGROUND_MAX_EDGE,
+            quality=BACKGROUND_JPEG_QUALITY,
+        )
 
     def _write_display_background(self, source: Path) -> None:
         """Build the display-sized copy of the wallpaper.

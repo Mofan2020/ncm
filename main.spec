@@ -89,10 +89,7 @@ else:
 hiddenimports = [
     "webview",
     "qrcode",
-    "qrcode.image.pil",
     "qrcode.image.base",
-    "PIL",
-    "PIL.Image",
     "yaml",
 ]
 if sys.platform == "win32":
@@ -116,6 +113,16 @@ a = Analysis(
         "cefpython3",
         "PyQt5", "PyQt6", "PySide2", "PySide6", "qtpy", "gi",
         "tkinter",
+        # Pillow is not a runtime dependency: the QR code is drawn by
+        # src/core/png.py and the wallpaper is resized by the platform's own
+        # tool (src/core/imaging.py).  qrcode still tries to import its Pillow
+        # drawers -- in a try/except ImportError -- so the package has to be
+        # excluded explicitly instead of merely being absent from the
+        # environment.  Pillow is also what dragged libcrypto/libssl in.
+        "PIL", "PIL.Image",
+        "qrcode.image.pil", "qrcode.image.styledpil",
+        "qrcode.image.styles.colormasks",
+        "qrcode.image.styles.moduledrawers.pil",
         # pywebview only imports cryptography inside its optional HTTPS-server
         # path (webview.start(ssl=True)), which this app never uses.  Leaving it
         # in dragged libssl/libcrypto into the bundle, and on the Intel macOS
