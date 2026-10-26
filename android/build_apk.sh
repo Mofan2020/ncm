@@ -131,6 +131,11 @@ sed -E "s/^version = .*/version = $VERSION/" "$SPEC" > "$SPEC.tmp"
 mv "$SPEC.tmp" "$SPEC"
 echo "== buildozer $TARGET (version $VERSION) =="
 cd "$HERE"
+# Start from an empty bin/.  A build made from an older tree leaves an APK
+# whose file name carries that older version, and it sits next to the real
+# one looking perfectly plausible.  Only the build that runs now may decide
+# what bin/ contains.
+rm -f "$HERE"/bin/*.apk "$HERE"/bin/*.aab
 attempt=1
 max_attempts=3
 while :; do
