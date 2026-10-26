@@ -82,10 +82,14 @@ class ThemedLabel(Label):
         """Re-apply the colour and the text box: the theme may have changed."""
         self.color = _color(self._color_name)
         # Kivy centres text unless ``text_size`` is set, and ``halign`` only
-        # takes effect inside that box.  Without this every row comes out
-        # centred and long titles never shorten.
-        if self.text_size != (self.width, self.height):
-            self.text_size = (self.width, self.height)
+        # takes effect inside that box.  The height stays unset on purpose:
+        # the texture is clipped to ``text_size``, so a box with a height
+        # makes the texture shorter, the label's minimum height follow it
+        # down, and in a container that shares its height with other
+        # widgets the label collapses into a sliver.  Width alone is enough
+        # for alignment and for ``shorten``.
+        if self.text_size[0] != self.width:
+            self.text_size = (self.width, None)
 
     def set_role(self, role: str) -> None:
         theme = _theme()
@@ -496,9 +500,20 @@ class EmptyState(BoxLayout):
                  on_action: Callable[[], None] | None = None, **kwargs: Any) -> None:
         super().__init__(orientation="vertical", padding=dp(24),
                          spacing=dp(12), **kwargs)
+        # Size to the content.  With the default size_hint the block takes a
+        # share of whatever the parent hands out, and next to widgets with a
+        # fixed height it gets squeezed until the message is a single line of
+        # pixels.
+        self.size_hint_y = None
+        self.bind(minimum_height=self.setter("height"))
         label = ThemedLabel(text=message, role="body_large",
                              color_name="on_surface_variant", halign="center")
-        label.bind(size=lambda inst, val: setattr(inst, "text_size", val))
+        label.size_hint_y = None
+        # ``minimum_height`` on a Label is an AliasProperty: it has no event
+        # to bind to, and binding it raises KeyError.  The texture height is
+        # what the label actually needs.
+        label.bind(
+            texture_size=lambda *_a: setattr(label, "height", label.texture_size[1]))
         self.add_widget(label)
         if action_text and on_action is not None:
             button = _TextButton(text=action_text, on_press=on_action)
