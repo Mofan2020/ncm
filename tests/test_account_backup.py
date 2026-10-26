@@ -100,6 +100,16 @@ class FakeAPI:
         self.added: list[tuple[str, list[str]]] = []
         #: 关注 / 取关的记录。
         self.followed: list[tuple[str, bool]] = []
+        #: 收藏的专辑、订阅的电台、收藏的 MV。
+        self.albums: list[dict] = []
+        self.djradios: list[dict] = []
+        self.mvs: list[dict] = []
+        #: 云端的听歌排行。
+        self.record: list[dict] = []
+        #: 收藏专辑 / 订阅电台 / 收藏 MV 的记录。
+        self.album_liked: list[tuple[str, bool]] = []
+        self.dj_subscribed: list[tuple[str, bool]] = []
+        self.mv_liked: list[tuple[str, bool]] = []
 
     def _call(self, name: str, *args):
         self.calls.append((name, args))
@@ -148,7 +158,44 @@ class FakeAPI:
             "code": 200,
         }
 
+    def get_liked_albums(self, uid, limit=50, offset=0):
+        self._call("albums")
+        window = self.albums[offset:offset + limit]
+        return {"albums": list(window), "count": len(self.albums),
+                "has_more": offset + limit < len(self.albums), "code": 200}
+
+    def get_subscribed_djradios(self, uid, limit=50, offset=0):
+        self._call("djradios")
+        window = self.djradios[offset:offset + limit]
+        return {"djradios": list(window), "count": len(self.djradios),
+                "has_more": offset + limit < len(self.djradios), "code": 200}
+
+    def get_subscribed_mvs(self, uid, limit=50, offset=0):
+        self._call("mvs")
+        window = self.mvs[offset:offset + limit]
+        return {"mvs": list(window), "count": len(self.mvs),
+                "has_more": offset + limit < len(self.mvs), "code": 200}
+
+    def get_play_record(self, uid, scope="all", limit=200):
+        self._call("record")
+        return [dict(item) for item in self.record[:limit]]
+
     # -- writes -----------------------------------------------------------
+    def set_album_like(self, album_id, like=True):
+        self._call("album_like", album_id)
+        self.album_liked.append((str(album_id), bool(like)))
+        return "ok"
+
+    def set_djradio_subscribe(self, djradio_id, subscribe=True):
+        self._call("djradio_sub", djradio_id)
+        self.dj_subscribed.append((str(djradio_id), bool(subscribe)))
+        return "ok"
+
+    def set_mv_like(self, mv_id, like=True):
+        self._call("mv_like", mv_id)
+        self.mv_liked.append((str(mv_id), bool(like)))
+        return "ok"
+
     def set_artist_follow(self, artist_id, follow=True):
         self._call("follow", artist_id)
         self.followed.append((str(artist_id), bool(follow)))
@@ -808,6 +855,96 @@ def test_the_local_play_count_keeps_the_bigger_number():
     assert local.play_counts["online:186016"] == 9
 
 
+def test_the_export_covers_the_whole_collection_surface():
+    """收藏面：专辑、电台、MV、听歌排行都要进备份。"""
+    api = FakeAPI()
+    api.albums = [{"id": 35377042, "name": "千恋"}]
+    api.djradios = [{"id": 123, "name": "电台"}]
+    api.mvs = [{"vid": "mv-1", "title": "MV 一"}]
+    api.record = [{"song_id": "186016", "name": "晴天", "play_count": 12}]
+
+    payload = make_export(api)
+
+    assert payload["liked_albums"] == [{"id": "35377042", "name": "千恋"}]
+    assert payload["subscribed_djradios"] == [{"id": "123", "name": "电台"}]
+    # MV 的 id 和名字分别叫 vid 和 title，导出时要认出来。
+    assert payload["liked_mvs"] == [{"id": "mv-1", "name": "MV 一"}]
+    assert payload["play_record"] == [{"song_id": "186016", "name": "晴天",
+                                       "play_count": 12}]
+    assert payload["sources"]["albums"] == SOURCE_CLOUD
+    assert payload["sources"]["record"] == SOURCE_CLOUD
+    # 新加的这几节一个都没读失败。
+    failed = {item["section"] for item in payload["errors"]}
+    assert not failed & {"albums", "djradios", "mvs", "record"}
+
+
+def test_a_failed_collection_read_leaves_only_that_section_empty():
+    """一节读失败，其它节照常导出，并且记下原因。"""
+    api = FakeAPI()
+    api.albums = [{"id": 1, "name": "a"}]
+    api.djradios = [{"id": 2, "name": "b"}]
+    api.fail_with["albums"] = FakeAPIError(500, "boom")
+
+    payload = make_export(api)
+
+    assert payload["liked_albums"] == []
+    assert payload["sources"]["albums"] == SOURCE_MISSING
+    assert payload["subscribed_djradios"] == [{"id": "2", "name": "b"}]
+    assert any(item["section"] == "albums" for item in payload["errors"])
+
+
+def test_the_plan_separates_the_saved_albums_from_the_missing_ones():
+    """已经收藏的不用再收藏一遍。"""
+    api = FakeAPI()
+    api.albums = [{"id": 1, "name": "已经有"}]
+    backup = make_backup()
+    backup["liked_albums"] = [{"id": "1", "name": "已经有"},
+                              {"id": "2", "name": "还没有"}]
+
+    plan = plan_import(api, backup, uid="42")
+
+    assert plan["albums"]["total"] == 2
+    assert [item["id"] for item in plan["albums"]["present"]] == ["1"]
+    assert [item["id"] for item in plan["albums"]["to_add"]] == ["2"]
+
+
+def test_the_import_saves_the_albums_radios_and_mvs():
+    """导入时把收藏的专辑、订阅的电台、收藏的 MV 都补上。"""
+    backup = make_backup()
+    backup["liked_albums"] = [{"id": "2", "name": "专辑"}]
+    backup["subscribed_djradios"] = [{"id": "3", "name": "电台"}]
+    backup["liked_mvs"] = [{"id": "mv-1", "name": "MV"}]
+    api = FakeAPI()
+
+    plan = plan_import(api, backup, uid="42")
+    result = apply_import(api, backup, plan, {}, sleep=lambda _s: None)
+
+    assert result["albums_liked"] == 1
+    assert result["djradios_subscribed"] == 1
+    assert result["mvs_liked"] == 1
+    assert api.album_liked == [("2", True)]
+    assert api.dj_subscribed == [("3", True)]
+    assert api.mv_liked == [("mv-1", True)]
+    assert result["failed"] == 0
+
+
+def test_the_listening_record_lands_in_the_local_counts():
+    """云端的播放次数写进本机记录，不向网易云报告。"""
+    backup = make_backup()
+    backup["play_record"] = [{"song_id": "186016", "name": "晴天",
+                              "play_count": 12}]
+    api = FakeAPI()
+    local = FakeLocalLibrary()
+
+    plan = plan_import(api, backup, uid="42")
+    result = apply_import(api, backup, plan, {}, sleep=lambda _s: None, local=local)
+
+    assert local.play_counts == {"online:186016": 12}
+    assert result["record_counts"] == 1
+    # 假 API 上没有能上报播放次数的方法，多出别的调用就说明走了网络。
+    assert "record" not in [name for name, _ in api.calls]
+
+
 def test_an_old_backup_without_the_new_sections_still_imports():
     """1 版的备份文件没有关注歌手和本机状态，导入照样跑得完。"""
     backup = make_backup(liked=["11"])
@@ -827,11 +964,15 @@ def test_an_old_backup_without_the_new_sections_still_imports():
 
 
 def test_a_backup_round_trip_carries_everything():
-    """导出再导入，关注的歌手和本机记录都还在。"""
+    """导出再导入，收藏面、本机记录都还在。"""
     api = FakeAPI(playlists=[make_playlist("7", "Mine", track_count=1)],
                   liked=["11"],
                   details={"7": {"id": 7, "trackIds": [{"id": 21}]}})
     api.artists = [{"id": 6452, "name": "周杰伦"}]
+    api.albums = [{"id": 35377042, "name": "千恋"}]
+    api.djradios = [{"id": 1227859651, "name": "愿逐月华照君明"}]
+    api.mvs = [{"vid": "14557498", "title": "恋ひ恋ふ縁"}]
+    api.record = [{"song_id": "30352891", "name": "牵丝戏", "play_count": 25}]
     local = {
         "play_counts": {"online:186016": 12},
         "favorites": [{"key": "online:186016"}],
@@ -848,5 +989,13 @@ def test_a_backup_round_trip_carries_everything():
 
     assert result["artists_followed"] == 1
     assert fresh.followed == [("6452", True)]
-    assert target.play_counts == {"online:186016": 12}
+    # 收藏面也要跟着备份文件一起过去。
+    assert result["albums_liked"] == 1
+    assert result["djradios_subscribed"] == 1
+    assert result["mvs_liked"] == 1
+    assert fresh.album_liked == [("35377042", True)]
+    assert fresh.dj_subscribed == [("1227859651", True)]
+    assert fresh.mv_liked == [("14557498", True)]
+    # 云端的播放次数写进本机记录，和本机原来的一起留着。
+    assert target.play_counts == {"online:186016": 12, "online:30352891": 25}
     assert target.favorites[0]["key"] == "online:186016"

@@ -98,6 +98,16 @@ ARTIST_UNSUB_ENDPOINT = "/api/artist/unsub"
 ARTIST_SUBLIST_ENDPOINT = "/api/artist/sublist"
 #: Follow state + fan counter for one artist.
 ARTIST_FOLLOW_COUNT_ENDPOINT = "/api/artist/follow/count/get"
+ALBUM_SUBLIST_ENDPOINT = "/api/album/sublist"
+ALBUM_SUB_ENDPOINT = "/api/album/sub"
+ALBUM_UNSUB_ENDPOINT = "/api/album/unsub"
+DJ_SUBLIST_ENDPOINT = "/api/djradio/get/subed"
+DJ_SUB_ENDPOINT = "/api/djradio/sub"
+DJ_UNSUB_ENDPOINT = "/api/djradio/unsub"
+MV_SUBLIST_ENDPOINT = "/api/cloudvideo/allvideo/sublist"
+MV_SUB_ENDPOINT = "/api/mv/sub"
+MV_UNSUB_ENDPOINT = "/api/mv/unsub"
+PLAY_RECORD_ENDPOINT = "/api/v1/play/record"
 RECOMMEND_PLAYLIST_ENDPOINT = "/api/v1/discovery/recommend/resource"
 PERSONAL_FM_ENDPOINT = "/api/v1/radio/get"
 NEW_SONGS_ENDPOINT = "/api/v1/discovery/new/songs"
@@ -1221,6 +1231,158 @@ class NeteaseAPI:
             "has_more": bool((result or {}).get("hasMore")),
             "code": (result or {}).get("code"),
         }
+
+    def get_liked_albums(self, uid: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """The albums the account has saved.
+
+        ``/api/album/sublist`` answers ``data`` (the albums), ``count`` and
+        ``hasMore``.  Verified live 2026-10-27.
+        """
+        payload = {"uid": int(uid) if uid.isdigit() else uid,
+                   "limit": max(1, min(int(limit or 50), 200)),
+                   "offset": max(0, int(offset or 0))}
+        result = self._eapi(ALBUM_SUBLIST_ENDPOINT, payload)
+        albums = (result or {}).get("data")
+        if not isinstance(albums, list):
+            albums = []
+        return {
+            "albums": [a for a in albums if isinstance(a, dict)],
+            "count": int((result or {}).get("count") or 0),
+            "has_more": bool((result or {}).get("hasMore")),
+            "code": (result or {}).get("code"),
+        }
+
+    def get_subscribed_djradios(self, uid: str, limit: int = 50,
+                                 offset: int = 0) -> dict[str, Any]:
+        """The radio programs the account has subscribed to.
+
+        ``/api/djradio/get/subed`` answers ``djRadios`` (the shows), ``count``
+        and ``hasMore``.  Verified live 2026-10-27.
+        """
+        payload = {"uid": int(uid) if uid.isdigit() else uid,
+                   "limit": max(1, min(int(limit or 50), 200)),
+                   "offset": max(0, int(offset or 0))}
+        result = self._eapi(DJ_SUBLIST_ENDPOINT, payload)
+        radios = (result or {}).get("djRadios")
+        if not isinstance(radios, list):
+            radios = []
+        return {
+            "djradios": [a for a in radios if isinstance(a, dict)],
+            "count": int((result or {}).get("count") or 0),
+            "has_more": bool((result or {}).get("hasMore")),
+            "code": (result or {}).get("code"),
+        }
+
+    def get_subscribed_mvs(self, uid: str, limit: int = 50,
+                           offset: int = 0) -> dict[str, Any]:
+        """The MVs the account has saved.
+
+        ``/api/cloudvideo/allvideo/sublist`` answers ``data`` (the videos),
+        ``count`` and ``hasMore``.  A video carries ``vid`` and ``title``
+        rather than ``id`` and ``name``.  Verified live 2026-10-27.
+        """
+        payload = {"uid": int(uid) if uid.isdigit() else uid,
+                   "limit": max(1, min(int(limit or 50), 200)),
+                   "offset": max(0, int(offset or 0))}
+        result = self._eapi(MV_SUBLIST_ENDPOINT, payload)
+        videos = (result or {}).get("data")
+        if not isinstance(videos, list):
+            videos = []
+        return {
+            "mvs": [a for a in videos if isinstance(a, dict)],
+            "count": int((result or {}).get("count") or 0),
+            "has_more": bool((result or {}).get("hasMore")),
+            "code": (result or {}).get("code"),
+        }
+
+    def get_play_record(self, uid: str, scope: str = "all",
+                        limit: int = 100) -> list[dict[str, Any]]:
+        """The account's listening history with the play counts.
+
+        ``/api/v1/play/record`` answers ``allData`` for ``type=0`` and
+        ``weekData`` for ``type=1``.  Every row carries ``playCount`` and the
+        song itself.  The endpoint takes no paging parameters and answers at
+        most the top 100 songs, so that is all there is.
+
+        Verified live 2026-10-27 against the real account: 100 rows, each
+        ``{"playCount": 25, "score": 100, "song": {...}}``.
+        """
+        uid = str(uid or "").strip()
+        if not uid:
+            return []
+        kind = 1 if str(scope or "all").lower() in ("week", "1") else 0
+        result = self._eapi(PLAY_RECORD_ENDPOINT,
+                            {"uid": int(uid) if uid.isdigit() else uid, "type": kind})
+        rows = (result or {}).get("weekData" if kind else "allData")
+        if not isinstance(rows, list):
+            return []
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            song = row.get("song")
+            if not isinstance(song, dict):
+                song = row
+            song_id = str(song.get("id") or "").strip()
+            if not song_id:
+                continue
+            raw_count = row.get("playCount")
+            try:
+                count = max(0, int(raw_count or 0))
+            except (TypeError, ValueError):
+                count = 0
+            records.append({"song_id": song_id,
+                            "name": str(song.get("name") or ""),
+                            "play_count": count})
+        return records[:max(1, min(int(limit or 100), 100))]
+
+    def set_album_like(self, album_id: str, like: bool = True) -> str:
+        """Save / unsave an album.
+
+        The answer vocabulary is the one :meth:`set_artist_follow` uses:
+        ``"ok"``, ``"rate_limited"``, ``"not_logged_in"`` or ``"failed"``.
+        """
+        album_id = str(album_id or "").strip()
+        if not album_id:
+            return "failed"
+        path = ALBUM_SUB_ENDPOINT if like else ALBUM_UNSUB_ENDPOINT
+        result = self._eapi(path, {"id": int(album_id) if album_id.isdigit() else album_id},
+                            use_cache=False)
+        return self._write_result(result, f"album like {album_id}")
+
+    def set_djradio_subscribe(self, djradio_id: str, subscribe: bool = True) -> str:
+        """Subscribe to / unsubscribe from a radio program."""
+        djradio_id = str(djradio_id or "").strip()
+        if not djradio_id:
+            return "failed"
+        path = DJ_SUB_ENDPOINT if subscribe else DJ_UNSUB_ENDPOINT
+        result = self._eapi(path, {"id": int(djradio_id) if djradio_id.isdigit()
+                                   else djradio_id},
+                            use_cache=False)
+        return self._write_result(result, f"djradio subscribe {djradio_id}")
+
+    def set_mv_like(self, mv_id: str, like: bool = True) -> str:
+        """Save / unsave an MV."""
+        mv_id = str(mv_id or "").strip()
+        if not mv_id:
+            return "failed"
+        path = MV_SUB_ENDPOINT if like else MV_UNSUB_ENDPOINT
+        result = self._eapi(path, {"mvId": int(mv_id) if mv_id.isdigit() else mv_id,
+                                   "mvIds": f'["{mv_id}"]'},
+                            use_cache=False)
+        return self._write_result(result, f"mv like {mv_id}")
+
+    def _write_result(self, result: Any, what: str) -> str:
+        """Map a write answer onto the vocabulary the callers expect."""
+        code = (result or {}).get("code")
+        if code == 200:
+            return "ok"
+        if code == 405:
+            return "rate_limited"
+        if code in LOGIN_REQUIRED_CODES:
+            return "not_logged_in"
+        self._log(f"{what} failed: code={code}", "warning")
+        return "failed"
 
     def get_recommend_playlists(self, limit: int = 20) -> list[dict[str, Any]]:
         """Get daily recommended playlists (personalized, needs login)."""

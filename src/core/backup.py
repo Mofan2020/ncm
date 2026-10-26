@@ -18,11 +18,17 @@
 
     {
       "format": "ncm-account-backup",
-      "version": 1,
+      "version": 3,
       "sources": {"account": "cloud", "favorites": "cloud", ...},
       "account": {...},
       "liked_song_ids": ["1", "2"],
-      "playlists": [{"id": "7", "name": "...", "song_ids": ["1"], ...}]
+      "playlists": [{"id": "7", "name": "...", "song_ids": ["1"], ...}],
+      "followed_artists": [{"id": "6452", "name": "..."}],
+      "liked_albums": [{"id": "35377042", "name": "..."}],
+      "subscribed_djradios": [{"id": "1227859651", "name": "..."}],
+      "liked_mvs": [{"id": "14557498", "name": "..."}],
+      "play_record": [{"song_id": "30352891", "name": "...", "play_count": 25}],
+      "local_state": {"play_counts": {...}, "favorites": [...], "recent": [...]}
     }
 
 模块不碰 GUI，也不直接发网络请求：数据从 :class:`NeteaseAPI` 的公开方法读，
@@ -62,7 +68,11 @@ BACKUP_FORMAT = "ncm-account-backup"
 #:
 #: 2 增加了 ``followed_artists``（关注的歌手）和 ``local_state``（播放次数、
 #: 本地收藏、最近播放）。1 版的文件照样能读：这些新字段读不到就当没有。
-BACKUP_VERSION = 2
+#:
+#: 3 补上了剩下的收藏面：``liked_albums``（收藏的专辑）、
+#: ``subscribed_djradios``（订阅的电台）、``liked_mvs``（收藏的 MV）和
+#: ``play_record``（云端的听歌排行，带播放次数）。2 版的文件照样能读。
+BACKUP_VERSION = 3
 
 #: 备份文件的后缀。
 BACKUP_SUFFIX = ".ncmbk"
@@ -105,6 +115,10 @@ PHASE_FAVORITES = "favorites"
 PHASE_PLAYLISTS = "playlists"
 PHASE_SONGS = "songs"
 PHASE_ARTISTS = "artists"
+PHASE_ALBUMS = "albums"
+PHASE_DJRADIOS = "djradios"
+PHASE_MVS = "mvs"
+PHASE_RECORD = "record"
 PHASE_LOCAL = "local"
 
 #: 导出时一页读多少个关注的歌手。
@@ -112,6 +126,12 @@ ARTIST_PAGE = 100
 
 #: 最多读多少页。5000 个关注已经比任何人真的关注的多得多。
 ARTIST_MAX_PAGES = 50
+
+#: 导出时一页读多少个收藏（专辑 / 电台 / MV）。
+SAVED_PAGE = 100
+
+#: 这些收藏最多翻多少页。
+SAVED_MAX_PAGES = 20
 
 
 class BackupError(Exception):
@@ -401,6 +421,61 @@ def export_account_data(
         sources[PHASE_ARTISTS] = SOURCE_CLOUD
     report(PHASE_ARTISTS, 1, 1)
 
+    # -- 收藏的专辑 / 订阅的电台 / 收藏的 MV --------------------------------
+    # 这三节接口形状一样：一个列表接口回答 data / djRadios，翻页到没有为止。
+    report(PHASE_ALBUMS, 0, 1)
+    albums, albums_error = _read_saved_collection(
+        lambda offset: api.get_liked_albums(uid, limit=SAVED_PAGE, offset=offset),
+        "albums", ("id",), ("name",))
+    if albums_error:
+        sources[PHASE_ALBUMS] = SOURCE_MISSING
+        errors.append({"section": PHASE_ALBUMS, "message": albums_error})
+    else:
+        sources[PHASE_ALBUMS] = SOURCE_CLOUD
+    report(PHASE_ALBUMS, 1, 1)
+
+    report(PHASE_DJRADIOS, 0, 1)
+    djradios, djradios_error = _read_saved_collection(
+        lambda offset: api.get_subscribed_djradios(uid, limit=SAVED_PAGE,
+                                                   offset=offset),
+        "djradios", ("id",), ("name",))
+    if djradios_error:
+        sources[PHASE_DJRADIOS] = SOURCE_MISSING
+        errors.append({"section": PHASE_DJRADIOS, "message": djradios_error})
+    else:
+        sources[PHASE_DJRADIOS] = SOURCE_CLOUD
+    report(PHASE_DJRADIOS, 1, 1)
+
+    report(PHASE_MVS, 0, 1)
+    mvs, mvs_error = _read_saved_collection(
+        lambda offset: api.get_subscribed_mvs(uid, limit=SAVED_PAGE, offset=offset),
+        "mvs", ("vid", "id"), ("title", "name"))
+    if mvs_error:
+        sources[PHASE_MVS] = SOURCE_MISSING
+        errors.append({"section": PHASE_MVS, "message": mvs_error})
+    else:
+        sources[PHASE_MVS] = SOURCE_CLOUD
+    report(PHASE_MVS, 1, 1)
+
+    # -- 云端的听歌排行（带播放次数）----------------------------------------
+    # 这是服务器那边记的播放次数，比本机的全。导入时只写进本机的计数，
+    # 不会向网易云报告——本地记录想怎么改就怎么改。
+    report(PHASE_RECORD, 0, 1)
+    record: list[dict[str, Any]] = []
+    record_error = ""
+    try:
+        raw_record = api.get_play_record(uid, scope="all")
+        record = [dict(item) for item in (raw_record or [])
+                  if isinstance(item, dict)]
+    except Exception as exc:
+        record_error = str(exc)
+    if record_error:
+        sources[PHASE_RECORD] = SOURCE_MISSING
+        errors.append({"section": PHASE_RECORD, "message": record_error})
+    else:
+        sources[PHASE_RECORD] = SOURCE_CLOUD
+    report(PHASE_RECORD, 1, 1)
+
     # -- 本机状态（播放次数 / 收藏 / 最近播放）--------------------------------
     # 云端没有对应的东西，所以它们的来源永远是本地；导入时也只写回本地，
     # 不会向网易云报告。
@@ -419,6 +494,10 @@ def export_account_data(
         "liked_song_ids": list(liked_ids),
         "playlists": entries,
         "followed_artists": artists,
+        "liked_albums": albums,
+        "subscribed_djradios": djradios,
+        "liked_mvs": mvs,
+        "play_record": record,
         "local_state": local_state,
         "errors": errors,
     }
@@ -505,6 +584,164 @@ def _read_followed_artists(api: Any, *, attempts: int, delay: float,
     if not artists and last:
         return [], last
     return artists, ""
+
+
+def _saved_entry(item: dict[str, Any], id_keys: Sequence[str],
+                 name_keys: Sequence[str]) -> dict[str, str] | None:
+    """一节收藏里的某一项：id 和名字。
+
+    专辑和电台用 ``id`` / ``name``，MV 用 ``vid`` / ``title``，所以字段名由
+    调用方给。
+    """
+    entry_id = ""
+    for key in id_keys:
+        raw = item.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            entry_id = text
+            break
+    if not entry_id:
+        return None
+    name = ""
+    for key in name_keys:
+        raw = item.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            name = text
+            break
+    return {"id": entry_id, "name": name or entry_id}
+
+
+def _read_saved_collection(fetch: Callable[[int], dict[str, Any]], items_key: str,
+                           id_keys: Sequence[str],
+                           name_keys: Sequence[str]) -> tuple[list[dict[str, str]], str]:
+    """读一节「收藏了的东西」：专辑、电台、MV 都是这个形状。
+
+    ``fetch`` 负责取一页，``items_key`` 是这一页里列表的字段名。读失败就把
+    已经读到的部分留着，并记下原因，不让整次导出失败。
+    """
+    entries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    offset = 0
+    for _ in range(SAVED_MAX_PAGES):
+        try:
+            page = fetch(offset)
+        except Exception as exc:
+            return entries, str(exc)
+        if not isinstance(page, dict):
+            return entries, "unexpected answer"
+        code = page.get("code")
+        if code is not None and str(code) != "200":
+            return entries, f"code {code}"
+        raw_items = page.get(items_key)
+        if not isinstance(raw_items, list):
+            raw_items = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            entry = _saved_entry(item, id_keys, name_keys)
+            if entry and entry["id"] not in seen:
+                seen.add(entry["id"])
+                entries.append(entry)
+        if not raw_items or not page.get("has_more"):
+            break
+        offset += len(raw_items)
+    return entries, ""
+
+
+def _backup_saved(payload: dict[str, Any], key: str) -> list[dict[str, str]]:
+    """备份文件里记着的一节收藏。"""
+    entries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in (payload.get(key) or []):
+        if not isinstance(item, dict):
+            continue
+        entry_id = str(item.get("id") or "").strip()
+        if not entry_id or entry_id in seen:
+            continue
+        seen.add(entry_id)
+        entries.append({"id": entry_id,
+                        "name": str(item.get("name") or entry_id)})
+    return entries
+
+
+def _saved_plan(api: Any, payload: dict[str, Any], key: str,
+                fetch: Callable[[int], dict[str, Any]], items_key: str,
+                id_keys: Sequence[str],
+                name_keys: Sequence[str]) -> dict[str, Any]:
+    """算一节收藏要补哪些、已经有哪些。
+
+    读不到当前状态就当一节都没有：多收藏一次已经收藏的东西没有坏处，
+    少收藏一个才是真的丢了。
+    """
+    backup = _backup_saved(payload, key)
+    current = {item["id"] for item in
+               _read_saved_collection(fetch, items_key, id_keys, name_keys)[0]}
+    return {
+        "total": len(backup),
+        "to_add": [item for item in backup if item["id"] not in current],
+        "present": [item for item in backup if item["id"] in current],
+    }
+
+
+def _payload_record(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """备份文件里记着的云端听歌排行。"""
+    rows: list[dict[str, Any]] = []
+    for item in (payload.get("play_record") or []):
+        if not isinstance(item, dict):
+            continue
+        song_id = str(item.get("song_id") or "").strip()
+        if not song_id:
+            continue
+        try:
+            count = max(0, int(item.get("play_count") or 0))
+        except (TypeError, ValueError):
+            continue
+        rows.append({"song_id": song_id,
+                     "name": str(item.get("name") or ""),
+                     "play_count": count})
+    return rows
+
+
+def _apply_saved(items: Any, action: Callable[[str], str], *, section: str,
+                 sleep: Callable[[float], None], batch_pause: float,
+                 errors: list[dict[str, str]]) -> tuple[int, int]:
+    """把一节收藏补上：返回（成功的个数，失败的个数）。
+
+    限流不算失败，隔几秒再试一次；会话没了就停下，后面的也补不上。
+    """
+    entries = [item for item in (items or []) if isinstance(item, dict)]
+    done = 0
+    failed = 0
+    for index, item in enumerate(entries):
+        entry_id = str(item.get("id") or "").strip()
+        if not entry_id:
+            continue
+        outcome = action(entry_id)
+        if outcome == "ok":
+            done += 1
+        elif outcome == "rate_limited":
+            sleep(BATCH_PAUSE)
+            outcome = action(entry_id)
+            if outcome == "ok":
+                done += 1
+            else:
+                failed += 1
+                errors.append({"section": section,
+                               "message": f"{entry_id}: {outcome}"})
+        else:
+            failed += 1
+            errors.append({"section": section,
+                           "message": f"{entry_id}: {outcome}"})
+            if outcome == "not_logged_in":
+                break
+        if index + 1 < len(entries):
+            sleep(batch_pause)
+    return done, failed
 
 
 def _read_cloud_profile(api: Any, uid: str) -> dict[str, Any] | None:
@@ -765,6 +1002,23 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
     artists_present = [item for item in backup_artists
                        if item["id"] in current_artists]
 
+    # -- 收藏的专辑 / 电台 / MV ---------------------------------------------
+    albums_plan = _saved_plan(api, payload, "liked_albums",
+                              lambda offset: api.get_liked_albums(
+                                  uid, limit=SAVED_PAGE, offset=offset),
+                              "albums", ("id",), ("name",))
+    djradios_plan = _saved_plan(api, payload, "subscribed_djradios",
+                                lambda offset: api.get_subscribed_djradios(
+                                    uid, limit=SAVED_PAGE, offset=offset),
+                                "djradios", ("id",), ("name",))
+    mvs_plan = _saved_plan(api, payload, "liked_mvs",
+                            lambda offset: api.get_subscribed_mvs(
+                                uid, limit=SAVED_PAGE, offset=offset),
+                            "mvs", ("vid", "id"), ("title", "name"))
+
+    # -- 云端的听歌排行（播放次数只写本地）------------------------------------
+    record = _payload_record(payload)
+
     # -- 本机状态（播放次数 / 收藏 / 最近播放）--------------------------------
     local_state = _payload_local_state(payload)
 
@@ -789,6 +1043,14 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
             "artists_total": len(backup_artists),
             "artists_to_follow": len(artists_to_follow),
             "artists_present": len(artists_present),
+            "albums_total": albums_plan["total"],
+            "albums_to_add": len(albums_plan["to_add"]),
+            "albums_present": len(albums_plan["present"]),
+            "djradios_total": djradios_plan["total"],
+            "djradios_to_add": len(djradios_plan["to_add"]),
+            "mvs_total": mvs_plan["total"],
+            "mvs_to_add": len(mvs_plan["to_add"]),
+            "record_songs": len(record),
             "local_play_counts": len(local_state["play_counts"]),
             "local_favorites": len(local_state["favorites"]),
             "local_recent": len(local_state["recent"]),
@@ -798,6 +1060,10 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
         "conflicts": conflicts,
         "artists": {"to_follow": artists_to_follow,
                     "already_followed": artists_present},
+        "albums": albums_plan,
+        "djradios": djradios_plan,
+        "mvs": mvs_plan,
+        "record": record,
         "local_state": local_state,
         "warnings": ([{"section": "playlists", "message": playlists_error}]
                      if playlists_error else [])
@@ -900,6 +1166,10 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
             "playlists_merged": 0,
             "playlists_skipped": 0,
             "artists_followed": 0,
+            "albums_liked": 0,
+            "djradios_subscribed": 0,
+            "mvs_liked": 0,
+            "record_counts": 0,
             "tracks_added": 0,
             "failed": 0,
             "skipped_detail": [],
@@ -1046,8 +1316,34 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
             sleep(batch_pause)
     report(PHASE_ARTISTS, len(to_follow), len(to_follow))
 
+    # -- 收藏的专辑 / 电台 / MV ---------------------------------------------
+    albums_to_add = (plan.get("albums") or {}).get("to_add") or []
+    report(PHASE_ALBUMS, 0, len(albums_to_add))
+    albums_liked, albums_failed = _apply_saved(
+        albums_to_add, lambda album_id: api.set_album_like(album_id, True),
+        section=PHASE_ALBUMS, sleep=sleep, batch_pause=batch_pause, errors=errors)
+    failed += albums_failed
+    report(PHASE_ALBUMS, len(albums_to_add), len(albums_to_add))
+
+    djradios_to_add = (plan.get("djradios") or {}).get("to_add") or []
+    report(PHASE_DJRADIOS, 0, len(djradios_to_add))
+    djradios_subscribed, djradios_failed = _apply_saved(
+        djradios_to_add, lambda dj_id: api.set_djradio_subscribe(dj_id, True),
+        section=PHASE_DJRADIOS, sleep=sleep, batch_pause=batch_pause, errors=errors)
+    failed += djradios_failed
+    report(PHASE_DJRADIOS, len(djradios_to_add), len(djradios_to_add))
+
+    mvs_to_add = (plan.get("mvs") or {}).get("to_add") or []
+    report(PHASE_MVS, 0, len(mvs_to_add))
+    mvs_liked, mvs_failed = _apply_saved(
+        mvs_to_add, lambda mv_id: api.set_mv_like(mv_id, True),
+        section=PHASE_MVS, sleep=sleep, batch_pause=batch_pause, errors=errors)
+    failed += mvs_failed
+    report(PHASE_MVS, len(mvs_to_add), len(mvs_to_add))
+
     # -- 本机状态（只写本地，不向网易云报告）---------------------------------
     local_restored = {"play_counts": 0, "favorites": 0, "recent": 0}
+    record_counts = 0
     if local is not None:
         state = plan.get("local_state") or {}
         try:
@@ -1059,6 +1355,27 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
                 local.merge_recent(state.get("recent") or []))
         except Exception as exc:
             errors.append({"section": PHASE_LOCAL, "message": str(exc)})
+
+        # 云端的听歌排行也是播放次数，但只写进本机记录——网易云那边不动。
+        counts: dict[str, int] = {}
+        for item in (plan.get("record") or []):
+            if not isinstance(item, dict):
+                continue
+            song_id = str(item.get("song_id") or "").strip()
+            try:
+                count = int(item.get("play_count") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not song_id or count <= 0:
+                continue
+            # 本机计数器的键是 online:<歌曲 id>（见 core/library.py 的 track_key）。
+            counts[f"online:{song_id}"] = count
+        if counts:
+            try:
+                record_counts = int(local.merge_play_counts(counts))
+                local_restored["play_counts"] += record_counts
+            except Exception as exc:
+                errors.append({"section": PHASE_RECORD, "message": str(exc)})
     report(PHASE_LOCAL, 1, 1)
 
     return {
@@ -1069,6 +1386,10 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
         "playlists_merged": playlists_merged,
         "playlists_skipped": playlists_skipped,
         "artists_followed": artists_followed,
+        "albums_liked": albums_liked,
+        "djradios_subscribed": djradios_subscribed,
+        "mvs_liked": mvs_liked,
+        "record_counts": record_counts,
         "tracks_added": tracks_added,
         "failed": failed,
         "skipped_detail": skipped_detail,

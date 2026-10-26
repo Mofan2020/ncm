@@ -1102,6 +1102,9 @@ async function exportAccountBackup() {
             songs: result.songs || 0,
             favorites: result.favorites || 0,
             artists: result.artists || 0,
+            albums: result.albums || 0,
+            djradios: result.djradios || 0,
+            mvs: result.mvs || 0,
             local: localRecordCount(result),
             sources: parts,
         }));
@@ -1172,6 +1175,9 @@ function renderBackupConflicts(plan) {
             conflicts: stats.conflicts || 0,
             skipped: stats.skipped || 0,
             artists: stats.artists_to_follow || 0,
+            albums: stats.albums_to_add || 0,
+            djradios: stats.djradios_to_add || 0,
+            mvs: stats.mvs_to_add || 0,
             local: (stats.local_play_counts || 0) + (stats.local_favorites || 0)
                 + (stats.local_recent || 0),
         });
@@ -1256,6 +1262,9 @@ async function applyBackupConflicts() {
             merged: result.playlists_merged || 0,
             skipped: result.playlists_skipped || 0,
             artists: result.artists_followed || 0,
+            albums: result.albums_liked || 0,
+            djradios: result.djradios_subscribed || 0,
+            mvs: result.mvs_liked || 0,
             local: localRecordCount(result.local_restored || {}),
             failed: result.failed || 0,
         }));
