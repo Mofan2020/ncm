@@ -53,6 +53,20 @@ export PATH="$(dirname "$BUILDOZER"):$PATH"
 # fails, so the environment has to be declared.
 export VIRTUAL_ENV="$(dirname "$BUILDOZER")"
 
+# PyPI is unreachable from this network (a request to pypi.org/simple times
+# out), and the host-python build pip-installs a few pure-Python helpers into
+# it.  A mirror is reachable, so point pip at one.  This is scoped to this
+# script's environment -- no global pip config is touched.
+export PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+# p4a checks whether a wheel exists for the *Android* platform tag; nothing
+# on PyPI has one, so pip falls back to the sdist.  The ``android`` package's
+# own pyproject declares only setuptools while its setup.py imports Cython,
+# so the isolated build environment dies with "No module named 'Cython'".
+# The host python already has Cython 3.0.12, and skipping the isolation
+# makes pip use it.
+export PIP_BUILD_ISOLATION=0
+
 echo "== staging the shared core into android/src =="
 rm -rf "$HERE/src"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' \
