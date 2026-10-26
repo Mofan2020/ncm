@@ -1321,26 +1321,45 @@ class NeteaseAPI:
             suggestions = (legacy or {}).get("result", {}).get("suggests")
         return [s for s in (suggestions or []) if isinstance(s, str)]
 
-    def search_multi(self, keyword: str, limit: int = 30, offset: int = 0) -> dict[str, Any]:
-        """Search multiple types: songs, playlists, artists, albums, mvs, users, lyrics."""
+    #: ``cloudsearch`` type numbers.  There is no combined mode on this
+    #: route: ``type=1000`` returns playlists only and ``type=1018`` comes
+    #: back empty, so a multi-kind search has to ask for each kind.
+    SEARCH_TYPES: dict[str, int] = {
+        "songs": 1,
+        "albums": 10,
+        "artists": 100,
+        "playlists": 1000,
+        "mvs": 1004,
+        "users": 1002,
+        "lyrics": 1006,
+    }
+
+    def search_multi(self, keyword: str, limit: int = 30, offset: int = 0,
+                     kinds: Sequence[str] | None = None) -> dict[str, Any]:
+        """Search several kinds at once and merge the results.
+
+        Each kind is its own ``cloudsearch`` call.  Passing one type id for
+        "everything" does not work -- see ``SEARCH_TYPES``.
+        """
         keyword = str(keyword or "").strip()
+        merged: dict[str, Any] = {name: [] for name in self.SEARCH_TYPES}
         if not keyword:
-            return {"songs": [], "playlists": [], "artists": [], "albums": [], "mvs": [], "users": [], "lyrics": []}
+            return merged
 
-        payload = {"s": keyword, "type": 1000, "limit": limit, "offset": offset, "total": "true"}
-        # type=1000 means "all types"
-        result = self._eapi(SEARCH_MULTI_ENDPOINT, payload)
-        res = (result or {}).get("result") or {}
-
-        return {
-            "songs": [song for song in (res.get("songs") or []) if isinstance(song, dict)],
-            "playlists": [p for p in (res.get("playlists") or []) if isinstance(p, dict)],
-            "artists": [a for a in (res.get("artists") or []) if isinstance(a, dict)],
-            "albums": [a for a in (res.get("albums") or []) if isinstance(a, dict)],
-            "mvs": [m for m in (res.get("mvs") or []) if isinstance(m, dict)],
-            "users": [u for u in (res.get("userprofiles") or []) if isinstance(u, dict)],
-            "lyrics": [lyric for lyric in (res.get("lyrics") or []) if isinstance(lyric, dict)],
-        }
+        wanted = tuple(kinds) if kinds else ("songs", "artists", "albums", "playlists")
+        for name in wanted:
+            type_id = self.SEARCH_TYPES.get(name)
+            if type_id is None:
+                continue
+            payload = {"s": keyword, "type": type_id, "limit": limit,
+                       "offset": offset, "total": "true"}
+            result = self._eapi(SEARCH_MULTI_ENDPOINT, payload) or {}
+            res = result.get("result") or {}
+            # Users come back under a different key than the type name.
+            key = "userprofiles" if name == "users" else name
+            items = res.get(key) or []
+            merged[name] = [item for item in items if isinstance(item, dict)]
+        return merged
 
     # ----------------------------------------------------------- account music
     def get_user_playlists(self, uid: str, limit: int = 100,

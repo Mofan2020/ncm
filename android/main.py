@@ -151,12 +151,37 @@ def _self_test(report_path: str | None = None) -> int:
     return 0
 
 
+def _prepare_kivy_home() -> None:
+    """Give Kivy and the core somewhere writable to keep their state.
+
+    On Android ``HOME`` points at ``/data``, which the app process cannot
+    write, so Kivy logs "cannot create config dir" and keeps everything in
+    memory.  ``ANDROID_PRIVATE`` is the app's own files directory and is the
+    right place for both.
+    """
+    private = os.environ.get("ANDROID_PRIVATE")
+    if not private:
+        return
+    if not os.environ.get("KIVY_HOME"):
+        kivy_home = Path(private) / ".kivy"
+        try:
+            kivy_home.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        else:
+            os.environ["KIVY_HOME"] = str(kivy_home)
+    os.environ.setdefault("HOME", private)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     _configure_logging(args.debug)
 
     if args.self_test:
         return _self_test(args.report or None)
+
+    # Must happen before Kivy is imported anywhere.
+    _prepare_kivy_home()
 
     from ncmkivy.app import NcmApp
 

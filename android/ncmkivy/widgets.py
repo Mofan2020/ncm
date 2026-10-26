@@ -13,6 +13,7 @@ need a rebuild.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -24,6 +25,8 @@ from kivy.uix.image import AsyncImage
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
+
+log = logging.getLogger("ncm.kivy.widgets")
 
 __all__ = [
     "ThemedLabel",
@@ -76,8 +79,13 @@ class ThemedLabel(Label):
         self.bind(size=self._refresh, texture_size=self._refresh)
 
     def _refresh(self, *_args: Any) -> None:
-        """Re-apply the colour: the theme may have changed."""
+        """Re-apply the colour and the text box: the theme may have changed."""
         self.color = _color(self._color_name)
+        # Kivy centres text unless ``text_size`` is set, and ``halign`` only
+        # takes effect inside that box.  Without this every row comes out
+        # centred and long titles never shorten.
+        if self.text_size != (self.width, self.height):
+            self.text_size = (self.width, self.height)
 
     def set_role(self, role: str) -> None:
         theme = _theme()
@@ -127,6 +135,11 @@ class IconButton(ButtonBehavior, Widget):
         "heart": "heart",
         "heart_outline": "heart_outline",
         "download": "arrow_down",
+        # ``SECTIONS`` in app.py names the glyph directly, so the kind names
+        # have to resolve too -- without these two the bottom bar falls back
+        # to the "dots" placeholder for the library and download tabs.
+        "arrow_down": "arrow_down",
+        "stack": "stack",
         "more": "dots",
         "back": "chevron_left",
         "list": "list",
@@ -153,6 +166,13 @@ class IconButton(ButtonBehavior, Widget):
         self._color_name = color_name
         self._glyph_color = _color(color_name)
         self._draw()
+        # ``_draw`` can only paint where the widget is *now*, and at
+        # construction it sits at (0, 0) with no size.  Redraw whenever the
+        # layout moves or resizes it, otherwise the glyph is invisible.
+        self.bind(pos=self._on_geometry, size=self._on_geometry)
+
+    def _on_geometry(self, *_args: Any) -> None:
+        self._draw()
 
     def _draw(self) -> None:
         self.canvas.clear()
@@ -162,12 +182,16 @@ class IconButton(ButtonBehavior, Widget):
             Color(*_rgba(self._glyph_color))
             self._paint(self._glyph_color)
 
-    def _paint(self, rgb: tuple[float, float, float]) -> None:
+    def _paint(self, glyph_color: str) -> None:
         """Draw the glyph.
 
         Everything is expressed as a fraction of the button size so the icon
-        scales with the touch target.
+        scales with the touch target.  ``glyph_color`` arrives as a hex
+        string: it is converted once here because every shape branch below
+        hands the value straight to ``Color``, and a hex string given to
+        ``Color`` that way draws nothing at all -- no error, no glyph.
         """
+        rgb = _rgba(glyph_color)
         size = min(self.width, self.height)
         cx, cy = self.center_x, self.center_y
         kind = self.ICONS.get(self.icon, "dots")
@@ -217,15 +241,13 @@ class IconButton(ButtonBehavior, Widget):
                             cx + r * 1.3, cy - r * 0.2,
                             cx, cy - r * 1.9))
         elif kind == "magnifier":
-            from kivy.graphics import Ellipse, Line, Rectangle
+            from kivy.graphics import Ellipse, Line
             Color(*rgb)
-            r = size * 0.14
-            Ellipse(pos=(cx - r * 1.2 - r, cy - r * 1.2 + r * 0.4),
-                    size=(r * 2, r * 2))
-            Line(points=[cx - r * 0.4, cy + r * 0.1,
-                         cx - r * 0.1, cy - r * 0.2], width=1.6)
-            Rectangle(pos=(cx - size * 0.3, cy + size * 0.22),
-                      size=(size * 0.6, size * 0.04))
+            r = size * 0.15
+            # Circle to the upper left, handle running out to the lower right.
+            Ellipse(pos=(cx - r * 1.7, cy - r * 0.3), size=(r * 2, r * 2))
+            Line(points=[cx, cy, cx + r * 1.3, cy - r * 1.3],
+                 width=dp(2.2), cap="round")
         elif kind == "arrow_down":
             from kivy.graphics import Line, Triangle
             Color(*rgb)
@@ -351,6 +373,22 @@ class CoverImage(AsyncImage):
         self.canvas.before.add(RoundedRectangle(
             pos=self.pos, size=self.size, radius=[self._radius]))
         self.bind(pos=self._sync, size=self._sync)
+        # Cover URLs come back from the API as ``http://``.  Android is
+        # strict about cleartext traffic and the loader silently falls back
+        # to the "missing image" texture, so every cover shows as a broken
+        # glyph.  The same hosts serve https, so upgrade on the way in.
+        self.bind(source=self._upgrade_source)
+        self.bind(on_error=self._log_load_error)
+
+    def _log_load_error(self, *_args: Any) -> None:
+        log.warning("cover failed to load: %s", self.source)
+
+    def _upgrade_source(self, *_args: Any) -> None:
+        source = self.source or ""
+        if source.startswith("http://"):
+            secure = "https://" + source[len("http://"):]
+            if secure != self.source:
+                self.source = secure
 
     def _sync(self, *_args: Any) -> None:
         for item in self.canvas.before.children:

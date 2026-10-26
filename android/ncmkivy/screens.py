@@ -170,13 +170,28 @@ class SearchScreen(_Screen):
 
         self.results = BoxLayout(orientation="vertical")
         self.body.add_widget(self.results)
-        self.show_empty(_t(self.app, "player.search_hint", "输入关键词后按回车开始搜索"))
+        self._show_hint(_t(self.app, "player.search_hint", "输入关键词后按回车开始搜索"))
+
+    def _show_hint(self, message: str) -> None:
+        """Put a message in the results area.
+
+        ``show_empty`` clears the whole body, which also holds the search
+        box -- calling it from here would delete the input the user is about
+        to type into.
+        """
+        self.results.clear_widgets()
+        self.results.add_widget(EmptyState(message=message))
 
     def _run(self, *_args: Any) -> None:
         keyword = self.input.text.strip()
         if not keyword:
             return
-        self.show_loading(_t(self.app, "player.search", "搜索"))
+        # Close the keyboard: it resizes the window, which slides the header
+        # under the results and leaves the first row sitting on top of the
+        # search box.
+        self.input.focus = False
+        self.results.clear_widgets()
+        self.results.add_widget(LoadingView(message=_t(self.app, "player.search", "搜索")))
         threading.Thread(target=self._search, args=(keyword,), daemon=True).start()
 
     def _search(self, keyword: str) -> None:
@@ -188,7 +203,7 @@ class SearchScreen(_Screen):
             # ``exc`` is deleted when the except block ends, so the message
             # is bound to a plain name before the callback runs.
             message = str(exc)
-            Clock.schedule_once(lambda *_a: self.show_error(message), 0)
+            Clock.schedule_once(lambda *_a: self._show_hint(message), 0)
             return
         Clock.schedule_once(lambda *_a: self._render(payload), 0)
 
@@ -199,7 +214,7 @@ class SearchScreen(_Screen):
         albums = payload.get("albums") or []
 
         if not songs and not artists and not albums:
-            self.show_empty(_t(self.app, "player.search_empty", "没有搜索内容"))
+            self._show_hint(_t(self.app, "player.search_empty", "没有搜索内容"))
             return
 
         if artists:
@@ -249,7 +264,9 @@ class LibraryScreen(_Screen):
         self.body.add_widget(self.tabs)
         self.content = BoxLayout(orientation="vertical")
         self.body.add_widget(self.content)
-        self.show_loading()
+        # Loading goes into the content area: show_loading() clears the whole
+        # body, which would take the tab row down with it.
+        self.content.add_widget(LoadingView())
 
         threading.Thread(target=self._load, daemon=True).start()
 
@@ -406,7 +423,9 @@ class ArtistScreen(_Screen):
         self.follow_button = None
         self.song_list = TrackList([], on_play=self._play)
         self.body.add_widget(self.song_list)
-        self.show_loading()
+        # No show_loading() here: it clears the body, and the body already
+        # holds the header and the song list this screen renders into.
+        # Clearing would leave both detached from the window.
 
         threading.Thread(target=self._load, daemon=True).start()
 
@@ -536,7 +555,9 @@ class FollowedArtistsScreen(_Screen):
     def _build(self) -> None:
         self.list_box = BoxLayout(orientation="vertical")
         self.body.add_widget(self.list_box)
-        self.show_loading()
+        # Into the list box, not the body: show_loading() clears the body and
+        # would detach the list this screen renders into.
+        self.list_box.add_widget(LoadingView())
         threading.Thread(target=self._load, daemon=True).start()
 
     def _load(self) -> None:
@@ -591,7 +612,8 @@ class PlaylistScreen(_Screen):
     def _build(self) -> None:
         self.list = TrackList([], on_play=self._play)
         self.body.add_widget(self.list)
-        self.show_loading()
+        # show_loading() clears the body, which would detach this list.
+        self.list.add_widget(LoadingView())
         threading.Thread(target=self._load, daemon=True).start()
 
     def _load(self) -> None:

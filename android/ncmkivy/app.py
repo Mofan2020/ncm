@@ -17,6 +17,7 @@ Three navigation shapes:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from kivy.app import App
@@ -24,6 +25,7 @@ from kivy.core.window import Window
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.widget import Widget
+from kivy.utils import get_color_from_hex
 
 from ncmkivy.controller import Controller
 from ncmkivy.player import Player
@@ -32,6 +34,32 @@ from ncmkivy.theme import Theme
 log = logging.getLogger("ncm.kivy.app")
 
 __all__ = ["NcmApp"]
+
+
+def _install_cjk_font() -> None:
+    """Point Kivy's default font at one that actually has Chinese glyphs.
+
+    Kivy ships Roboto, which covers Latin only: every Chinese label comes out
+    as a row of empty boxes.  Android itself carries a full CJK font, so
+    registering the system one costs nothing in APK size.
+    """
+    from kivy.core.text import LabelBase
+
+    for path in (
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/system/fonts/NotoSansCJKsc-Regular.otf",
+        "/system/fonts/NotoSansSC-Regular.otf",
+        "/system/fonts/NotoSansSC-Regular.ttf",
+        "/system/fonts/DroidSansFallback.ttf",
+    ):
+        try:
+            if Path(path).is_file():
+                LabelBase.register(name="Roboto", fn_regular=path)
+                log.info("font: using %s", path)
+                return
+        except OSError:
+            continue
+    log.warning("no CJK font on this device; labels will render as boxes")
 
 
 class NcmApp(App):
@@ -57,7 +85,13 @@ class NcmApp(App):
 
     # ------------------------------------------------------------- lifecycle
     def build(self) -> Widget:
+        _install_cjk_font()
         self.theme.apply(self)
+        # Kivy clears the window to opaque black, and widgets here only carry
+        # their *foreground* colours -- nothing paints a background.  With the
+        # light palette that means dark text on black, which looks like the app
+        # never drew anything at all.  Paint the theme background first.
+        Window.clearcolor = get_color_from_hex(self.theme.color("background"))
         root = BoxLayout(orientation="vertical")
         self.root_widget = root
 
@@ -83,6 +117,9 @@ class NcmApp(App):
         self.controller.start()
         self.player.on_completed = self._on_track_finished
         self.player.on_error = self._on_play_error
+        # Nothing else ever calls go() at startup, so without this the content
+        # area stays empty and the app looks like a blank page.
+        self.go(self._current_section)
 
     def on_stop(self) -> None:
         self.controller.stop()
@@ -141,10 +178,11 @@ class NcmApp(App):
             width = Window.width
         if density is None:
             density = getattr(Metrics, "density", 1.0) or 1.0
-        changed = self.theme.update_size(width, density)
-        if not changed:
-            return False
+        self.theme.update_size(width, density)
         size_class = self.theme.size_class
+        # The bars have to be sized on the first call too.  Returning early
+        # when the bucket happens to match the default leaves both navigation
+        # bars at their constructor size, which is zero.
         if self._nav_rail is not None:
             self._nav_rail.width = dp(80) if size_class.name == "expanded" else 0
             self._nav_rail.opacity = 1 if size_class.name == "expanded" else 0
@@ -185,6 +223,10 @@ class NcmApp(App):
 
         for key, icon, _label in self.SECTIONS:
             button = IconButton(icon=icon)
+            # IconButton is fixed-size by default, which leaves five buttons
+            # bunched against the left edge.  A bottom bar wants them spread
+            # evenly across the width.
+            button.size_hint_x = 1
             button.bind(on_release=lambda *_a, k=key: self.go(k))
             bar.add_widget(button)
         return bar

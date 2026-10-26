@@ -1,8 +1,8 @@
 [app]
 
 # The Android bundle id follows the project rule: com.skyc8266.<project>.
-package.domain = "com.skyc8266"
-package.name = "neteasemusic"
+package.domain = com.skyc8266
+package.name = neteasemusic
 
 title = NetEase Music
 source.dir = .
