@@ -63,11 +63,11 @@ rsync -a --exclude '__pycache__' --exclude '*.pyc' \
 # development dependency only).
 mkdir -p "$HERE/assets"
 if [ ! -f "$HERE/assets/icon.png" ]; then
-    if [ -f "$ROOT/src/gui/assets/icon.png" ]; then
-        cp "$ROOT/src/gui/assets/icon.png" "$HERE/assets/icon.png"
-        echo "   icon.png copied from src/gui/assets"
+    if [ -f "$ROOT/assets/icon.png" ]; then
+        cp "$ROOT/assets/icon.png" "$HERE/assets/icon.png"
+        echo "   icon.png copied from assets/"
     else
-        echo "no source icon at src/gui/assets/icon.png" >&2
+        echo "no source icon at assets/icon.png" >&2
         exit 1
     fi
 fi
