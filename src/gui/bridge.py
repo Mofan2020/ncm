@@ -405,6 +405,7 @@ class GuiBridge:
                 account=self._backup_account_payload(user),
                 cloud_profile=self._backup_cloud_profile,
                 cache=get_meta_cache(),
+                local=self.library.exportable_state(),
                 progress=self._on_backup_progress,
             )
         except Exception as exc:
@@ -417,14 +418,19 @@ class GuiBridge:
             self.logger.warning("cannot write the backup file: %s", exc)
             return {"success": False, "error_key": "backup.write_failed",
                     "message": str(exc)}
+        local_state = payload.get("local_state") or {}
         return {
             "success": True,
             "path": str(path),
             "sources": payload.get("sources", {}),
             "playlists": len(payload.get("playlists") or []),
             "songs": sum(len(item.get("song_ids") or [])
-                         for item in payload.get("playlists") or []),
+                         for item in (payload.get("playlists") or [])),
             "favorites": len(payload.get("liked_song_ids") or []),
+            "artists": len(payload.get("followed_artists") or []),
+            "local_play_counts": len(local_state.get("play_counts") or {}),
+            "local_favorites": len(local_state.get("favorites") or []),
+            "local_recent": len(local_state.get("recent") or []),
             "errors": payload.get("errors", []),
         }
 
@@ -478,6 +484,7 @@ class GuiBridge:
             result = backup_core.apply_import(
                 self.api, payload, plan, decisions,
                 progress=self._on_backup_progress,
+                local=self.library,
             )
         except Exception as exc:
             self.logger.warning("account backup import failed: %s", exc)
@@ -495,9 +502,11 @@ class GuiBridge:
             "playlists_created": result.get("playlists_created", 0),
             "playlists_merged": result.get("playlists_merged", 0),
             "playlists_skipped": result.get("playlists_skipped", 0),
+            "artists_followed": result.get("artists_followed", 0),
             "tracks_added": result.get("tracks_added", 0),
             "failed": result.get("failed", 0),
             "skipped_detail": result.get("skipped_detail", []),
+            "local_restored": result.get("local_restored", {}),
             "errors": result.get("errors", []),
         }
 
@@ -769,6 +778,13 @@ class GuiBridge:
             "name": song.get("name") or "Unknown",
             "artists": ", ".join(a.get("name", "Unknown") for a in artists if isinstance(a, dict))
             or "Unknown",
+            # The ids as well as the names: the now-playing panel turns each
+            # name into a link to that artist's page, which needs an id.
+            "artist_list": [
+                {"id": str(a.get("id") or ""), "name": str(a.get("name") or "Unknown")}
+                for a in artists
+                if isinstance(a, dict) and a.get("id") and a.get("name")
+            ],
             "album": album.get("name") or "",
             "cover_url": album.get("picUrl") or song.get("cover_url") or "",
             "duration": song.get("dt") or song.get("duration") or 0,
@@ -975,8 +991,8 @@ class GuiBridge:
         """Whitelist the fields a queue entry may carry (the queue is persisted)."""
         if not isinstance(track, dict):
             return {}
-        allowed = ("key", "source", "id", "path", "name", "artists", "album",
-                   "cover_url", "duration", "vip", "ext", "size", "has_lyrics")
+        allowed = ("key", "source", "id", "path", "name", "artists", "artist_list",
+                   "album", "cover_url", "duration", "vip", "ext", "size", "has_lyrics")
         return {name: track[name] for name in allowed if name in track}
 
     # -- local <-> online matching --------------------------------------------

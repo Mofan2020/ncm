@@ -587,6 +587,27 @@ input[type="range"]::-webkit-slider-thumb {
 .np-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .np-meta h2 { font-size: clamp(16px, 1.4vw + 10px, 22px); overflow-wrap: anywhere; }
 .np-meta p { margin: 0; font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }
+
+/* An artist name that opens that artist's page.  A button rather than an
+   anchor: it should not look like a web link in the middle of the panel,
+   and it has to be reachable with the keyboard. */
+.artist-link {
+    display: inline;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: color .15s ease;
+}
+.artist-link:hover { color: var(--accent); text-decoration: underline; }
+.artist-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+}
 .np-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 
 /* --------------------------------------------------------------- lyrics */

@@ -86,6 +86,8 @@ class FakeAPI:
         self.liked = liked if liked is not None else []
         self.tracks = tracks or {}
         self.details = details or {}
+        #: 账号关注的歌手。
+        self.artists: list[dict] = []
         #: 每个方法失败几次之后才成功。
         self.fail_times: dict[str, int] = {}
         #: 每个方法一直失败时抛的错误。
@@ -96,6 +98,8 @@ class FakeAPI:
         self.liked_calls: list[str] = []
         self.created: list[str] = []
         self.added: list[tuple[str, list[str]]] = []
+        #: 关注 / 取关的记录。
+        self.followed: list[tuple[str, bool]] = []
 
     def _call(self, name: str, *args):
         self.calls.append((name, args))
@@ -134,7 +138,22 @@ class FakeAPI:
         self._call("detail")
         return {"profile": {"userId": user_id, "level": 8}}
 
+    def get_followed_artists(self, limit=25, offset=0):
+        self._call("artists")
+        window = self.artists[offset:offset + limit]
+        return {
+            "artists": list(window),
+            "count": len(self.artists),
+            "has_more": offset + limit < len(self.artists),
+            "code": 200,
+        }
+
     # -- writes -----------------------------------------------------------
+    def set_artist_follow(self, artist_id, follow=True):
+        self._call("follow", artist_id)
+        self.followed.append((str(artist_id), bool(follow)))
+        return "ok"
+
     def set_song_like(self, song_id, like=True):
         self._call("like", song_id)
         self.liked_calls.append(str(song_id))
@@ -594,3 +613,240 @@ def test_import_reports_what_it_did():
     assert result["playlists_skipped"] == 1
     assert result["failed"] == 0
     assert result["skipped_detail"][0]["name"] == "Foreign"
+
+
+# ------------------------------------------------ 关注的歌手与本机状态
+
+class FakeLocalLibrary:
+    """假的本机库：记下合并进来的东西。
+
+    形状跟 :class:`~src.core.library.Library` 一样，只有备份要用到的三个
+    合并方法。
+    """
+
+    def __init__(self, play_counts=None, favorites=None, recent=None) -> None:
+        self.play_counts = dict(play_counts or {})
+        self.favorites = [dict(item) for item in (favorites or [])]
+        self.recent = [dict(item) for item in (recent or [])]
+
+    def merge_play_counts(self, counts):
+        changed = 0
+        for key, value in (counts or {}).items():
+            if int(value) > int(self.play_counts.get(key, 0)):
+                self.play_counts[key] = int(value)
+                changed += 1
+        return changed
+
+    def merge_favorites(self, entries):
+        have = {item["key"] for item in self.favorites}
+        added = 0
+        for entry in entries or []:
+            if not entry.get("key") or entry["key"] in have:
+                continue
+            have.add(entry["key"])
+            self.favorites.append(dict(entry))
+            added += 1
+        return added
+
+    def merge_recent(self, entries):
+        have = {item["key"] for item in self.recent}
+        added = 0
+        for entry in entries or []:
+            if not entry.get("key") or entry["key"] in have:
+                continue
+            have.add(entry["key"])
+            self.recent.append(dict(entry))
+            added += 1
+        return added
+
+
+def test_export_records_every_artist_the_account_follows():
+    """关注的歌手全部写进备份，一页不够就接着翻。"""
+    api = FakeAPI(playlists=[make_playlist("7", "Mine", track_count=1)],
+                  liked=["11"],
+                  details={"7": {"id": 7, "trackIds": [{"id": 21}]}})
+    api.artists = [{"id": 6452, "name": "周杰伦"},
+                   {"id": 12172529, "name": "封茗囧菌"}]
+
+    payload = make_export(api)
+
+    assert payload["followed_artists"] == [
+        {"id": "6452", "name": "周杰伦"},
+        {"id": "12172529", "name": "封茗囧菌"},
+    ]
+    assert payload["sources"]["artists"] == SOURCE_CLOUD
+
+
+def test_export_reads_the_artist_list_until_there_is_no_more():
+    """超过一页时接着翻，翻完为止。"""
+    api = FakeAPI(playlists=[make_playlist("7", "Mine", track_count=1)],
+                  liked=["11"],
+                  details={"7": {"id": 7, "trackIds": [{"id": 21}]}})
+    api.artists = [{"id": index, "name": f"artist{index}"} for index in range(150)]
+
+    payload = make_export(api)
+
+    assert len(payload["followed_artists"]) == 150
+    assert payload["followed_artists"][-1]["name"] == "artist149"
+    # 150 个要翻两页。
+    artist_calls = [call for call in api.calls if call[0] == "artists"]
+    assert len(artist_calls) == 2
+
+
+def test_export_records_the_local_state():
+    """播放次数、本地收藏、最近播放都写进备份。"""
+    api = FakeAPI(playlists=[make_playlist("7", "Mine", track_count=1)],
+                  liked=["11"],
+                  details={"7": {"id": 7, "trackIds": [{"id": 21}]}})
+    local = {
+        "play_counts": {"online:186016": 12},
+        "favorites": [{"key": "online:186016", "meta": {"name": "晴天"}, "added": 1.0}],
+        "recent": [{"key": "online:186016", "meta": {"name": "晴天"}, "played": 2.0}],
+    }
+
+    payload = make_export(api, local=local)
+
+    assert payload["local_state"]["play_counts"] == {"online:186016": 12}
+    assert payload["local_state"]["favorites"][0]["key"] == "online:186016"
+    assert payload["local_state"]["recent"][0]["key"] == "online:186016"
+    assert payload["sources"]["local"] == SOURCE_CACHE
+
+
+def test_export_survives_a_failing_artist_section():
+    """关注的歌手读不出来时，导出照样完成，只是这一节标成缺失。"""
+    api = FakeAPI(playlists=[make_playlist("7", "Mine", track_count=1)],
+                  liked=["11"],
+                  details={"7": {"id": 7, "trackIds": [{"id": 21}]}})
+    api.fail_with["artists"] = FakeAPIError(500, "boom")
+
+    payload = make_export(api)
+
+    assert payload["followed_artists"] == []
+    assert payload["sources"]["artists"] == SOURCE_MISSING
+    assert payload["liked_song_ids"] == ["11"]
+    assert any(item["section"] == "artists" for item in payload["errors"])
+
+
+def test_the_plan_separates_new_artists_from_the_followed_ones():
+    """已经关注的不用再关注一次。"""
+    backup = make_backup()
+    backup["followed_artists"] = [{"id": "6452", "name": "周杰伦"},
+                                  {"id": "12172529", "name": "封茗囧菌"}]
+    api = FakeAPI()
+    api.artists = [{"id": 6452, "name": "周杰伦"}]
+
+    plan = plan_import(api, backup, uid="42")
+
+    assert [item["id"] for item in plan["artists"]["to_follow"]] == ["12172529"]
+    assert [item["id"] for item in plan["artists"]["already_followed"]] == ["6452"]
+    assert plan["summary"]["artists_to_follow"] == 1
+    assert plan["summary"]["artists_present"] == 1
+
+
+def test_the_import_follows_the_artists():
+    """导入时把备份里关注过的歌手关注上。"""
+    backup = make_backup()
+    backup["followed_artists"] = [{"id": "6452", "name": "周杰伦"},
+                                  {"id": "12172529", "name": "封茗囧菌"}]
+    api = FakeAPI()
+
+    plan = plan_import(api, backup, uid="42")
+    result = apply_import(api, backup, plan, {}, sleep=lambda _s: None)
+
+    assert result["artists_followed"] == 2
+    assert api.followed == [("6452", True), ("12172529", True)]
+    assert result["failed"] == 0
+
+
+def test_the_import_restores_the_local_state():
+    """播放次数、本地收藏、最近播放写回本机。"""
+    backup = make_backup()
+    backup["local_state"] = {
+        "play_counts": {"online:186016": 12},
+        "favorites": [{"key": "online:186016", "meta": {"name": "晴天"}}],
+        "recent": [{"key": "online:186016", "meta": {"name": "晴天"}}],
+    }
+    api = FakeAPI()
+    local = FakeLocalLibrary()
+
+    plan = plan_import(api, backup, uid="42")
+    result = apply_import(api, backup, plan, {}, sleep=lambda _s: None, local=local)
+
+    assert result["local_restored"] == {"play_counts": 1, "favorites": 1, "recent": 1}
+    assert local.play_counts == {"online:186016": 12}
+    assert local.favorites[0]["key"] == "online:186016"
+    assert local.recent[0]["key"] == "online:186016"
+
+
+def test_the_import_never_reports_the_play_counts_to_the_server():
+    """播放次数只改本地记录，不向网易云报告。"""
+    backup = make_backup()
+    backup["local_state"] = {"play_counts": {"online:186016": 12},
+                             "favorites": [], "recent": []}
+    api = FakeAPI()
+    local = FakeLocalLibrary()
+
+    plan = plan_import(api, backup, uid="42")
+    apply_import(api, backup, plan, {}, sleep=lambda _s: None, local=local)
+
+    # 假 API 上根本没有能上报播放次数的方法，所以只要没有多出别的调用就
+    # 说明这一节没有走网络。
+    assert not any("count" in name for name, _ in api.calls)
+
+
+def test_the_local_play_count_keeps_the_bigger_number():
+    """本机已经更大的次数不会被备份里的旧数字改小。"""
+    backup = make_backup()
+    backup["local_state"] = {"play_counts": {"online:186016": 3},
+                             "favorites": [], "recent": []}
+    api = FakeAPI()
+    local = FakeLocalLibrary(play_counts={"online:186016": 9})
+
+    plan = plan_import(api, backup, uid="42")
+    apply_import(api, backup, plan, {}, sleep=lambda _s: None, local=local)
+
+    assert local.play_counts["online:186016"] == 9
+
+
+def test_an_old_backup_without_the_new_sections_still_imports():
+    """1 版的备份文件没有关注歌手和本机状态，导入照样跑得完。"""
+    backup = make_backup(liked=["11"])
+    backup["version"] = 1
+    assert "followed_artists" not in backup
+    assert "local_state" not in backup
+    api = FakeAPI()
+
+    plan = plan_import(api, backup, uid="42")
+    result = apply_import(api, backup, plan, {}, sleep=lambda _s: None,
+                          local=FakeLocalLibrary())
+
+    assert result["ok"] is True
+    assert result["artists_followed"] == 0
+    assert result["local_restored"] == {"play_counts": 0, "favorites": 0, "recent": 0}
+    assert plan["artists"]["to_follow"] == []
+
+
+def test_a_backup_round_trip_carries_everything():
+    """导出再导入，关注的歌手和本机记录都还在。"""
+    api = FakeAPI(playlists=[make_playlist("7", "Mine", track_count=1)],
+                  liked=["11"],
+                  details={"7": {"id": 7, "trackIds": [{"id": 21}]}})
+    api.artists = [{"id": 6452, "name": "周杰伦"}]
+    local = {
+        "play_counts": {"online:186016": 12},
+        "favorites": [{"key": "online:186016"}],
+        "recent": [{"key": "online:186016"}],
+    }
+
+    payload = make_export(api, local=local)
+
+    fresh = FakeAPI()
+    target = FakeLocalLibrary()
+    plan = plan_import(fresh, payload, uid="99")
+    result = apply_import(fresh, payload, plan, {}, sleep=lambda _s: None,
+                          local=target)
+
+    assert result["artists_followed"] == 1
+    assert fresh.followed == [("6452", True)]
+    assert target.play_counts == {"online:186016": 12}
+    assert target.favorites[0]["key"] == "online:186016"

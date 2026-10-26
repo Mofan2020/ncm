@@ -13,9 +13,15 @@ if str(ROOT) not in sys.path:
 
 # The Android build keeps its Kivy layer in ``android/ncmkivy``; the tests
 # for it import it by name.
+#
+# It goes at the *end* of the path on purpose.  ``android/build_apk.sh``
+# stages the shared core into ``android/src`` so that buildozer packages it,
+# and ``android/`` on the path ahead of the repository root would make
+# ``import src.core`` resolve to that staged copy instead of the real source
+# -- the tests would then check a snapshot of the code rather than the code.
 ANDROID = ROOT / "android"
 if ANDROID.is_dir() and str(ANDROID) not in sys.path:
-    sys.path.insert(0, str(ANDROID))
+    sys.path.append(str(ANDROID))
 
 
 def _install_webview_stub() -> None:

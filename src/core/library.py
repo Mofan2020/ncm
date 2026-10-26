@@ -27,6 +27,7 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -246,6 +247,83 @@ class Library:
             self._data["play_counts"] = {}
             self._data["recent"] = []
         self.save(force=True)
+
+    # ------------------------------------------------------- restoring a backup
+    def merge_play_counts(self, counts: dict[str, Any]) -> int:
+        """Merge restored play counts into the local counters.
+
+        The larger number wins.  A count that already went up on this machine
+        is newer than the one in the backup file, and restoring onto an empty
+        library simply takes the backup's value.
+
+        This only touches the local file -- NetEase has no counterpart for a
+        play count, so nothing is reported to the server.
+        """
+        with self._lock:
+            current = self._data["play_counts"]
+            changed = 0
+            for raw_key, raw_value in (counts or {}).items():
+                key = str(raw_key or "").strip()
+                if not key:
+                    continue
+                try:
+                    value = max(0, int(raw_value))
+                except (TypeError, ValueError):
+                    continue
+                if value > int(current.get(key, 0)):
+                    current[key] = value
+                    changed += 1
+            self._trim_play_counts()
+        if changed:
+            self.save(force=True)
+        return changed
+
+    def merge_favorites(self, entries: Sequence[dict[str, Any]]) -> int:
+        """Add the favourites from a backup that are not here yet."""
+        with self._lock:
+            have = {item["key"] for item in self._data["favorites"]}
+            added = 0
+            for entry in entries or []:
+                cleaned = self._clean_entry(entry)
+                if not cleaned or cleaned["key"] in have:
+                    continue
+                have.add(cleaned["key"])
+                self._data["favorites"].append(cleaned)
+                added += 1
+            self._data["favorites"] = self._data["favorites"][:MAX_FAVORITES]
+        if added:
+            self.save(force=True)
+        return added
+
+    def merge_recent(self, entries: Sequence[dict[str, Any]]) -> int:
+        """Add the recently played entries from a backup that are missing here.
+
+        The list is newest-first and the restored entries are older, so they
+        go to the end and the tail is cut.
+        """
+        with self._lock:
+            have = {item["key"] for item in self._data["recent"]}
+            added = 0
+            for entry in entries or []:
+                cleaned = self._clean_entry(entry)
+                if not cleaned or cleaned["key"] in have:
+                    continue
+                have.add(cleaned["key"])
+                self._data["recent"].append(cleaned)
+                added += 1
+            self._data["recent"] = self._data["recent"][:MAX_RECENT]
+        if added:
+            self.save(force=True)
+        return added
+
+    def exportable_state(self) -> dict[str, Any]:
+        """The parts of the library that belong in an account backup."""
+        with self._lock:
+            return {
+                "play_counts": dict(self._data["play_counts"]),
+                "favorites": [dict(item) for item in self._data["favorites"]],
+                "recent": [dict(item) for item in self._data["recent"]],
+            }
 
     # -------------------------------------------------------------- favourites
     def favorite_keys(self) -> list[str]:

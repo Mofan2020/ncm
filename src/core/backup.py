@@ -59,7 +59,10 @@ __all__ = [
 BACKUP_FORMAT = "ncm-account-backup"
 
 #: 备份格式的版本号。读文件时版本比这个新就拒绝（老版本读不了新格式）。
-BACKUP_VERSION = 1
+#:
+#: 2 增加了 ``followed_artists``（关注的歌手）和 ``local_state``（播放次数、
+#: 本地收藏、最近播放）。1 版的文件照样能读：这些新字段读不到就当没有。
+BACKUP_VERSION = 2
 
 #: 备份文件的后缀。
 BACKUP_SUFFIX = ".ncmbk"
@@ -101,6 +104,14 @@ PHASE_ACCOUNT = "account"
 PHASE_FAVORITES = "favorites"
 PHASE_PLAYLISTS = "playlists"
 PHASE_SONGS = "songs"
+PHASE_ARTISTS = "artists"
+PHASE_LOCAL = "local"
+
+#: 导出时一页读多少个关注的歌手。
+ARTIST_PAGE = 100
+
+#: 最多读多少页。5000 个关注已经比任何人真的关注的多得多。
+ARTIST_MAX_PAGES = 50
 
 
 class BackupError(Exception):
@@ -249,6 +260,7 @@ def export_account_data(
     account: dict[str, Any] | None = None,
     cloud_profile: Callable[[], dict[str, Any] | None] | None = None,
     cache: Any = None,
+    local: dict[str, Any] | None = None,
     progress: Callable[[str, int, int], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     attempts: int = DEFAULT_ATTEMPTS,
@@ -260,11 +272,12 @@ def export_account_data(
 
     ``api`` 是 :class:`~src.core.api.NeteaseAPI`（或任何长得一样的假对象），
     ``cache`` 是 :meth:`~src.core.metacache.get_meta_cache` 给的东西——云端读
-    不到的时候从它那里兜底。
+    不到的时候从它那里兜底。``local`` 是本机的 :meth:`Library.exportable_state`
+    给的播放次数 / 收藏 / 最近播放。
 
     返回的就是要写进文件的那个字典：``format``、``version``、``sources``
-    （每一节的来源）、``account``、``liked_song_ids``、``playlists`` 和
-    ``errors``（读失败的说明）。
+    （每一节的来源）、``account``、``liked_song_ids``、``playlists``、
+    ``followed_artists``、``local_state`` 和 ``errors``（读失败的说明）。
     """
     uid = str(uid or "").strip()
     account = dict(account or {})
@@ -377,6 +390,25 @@ def export_account_data(
             sleep(playlist_pause)
     report(PHASE_SONGS, total, total)
 
+    # -- 关注的歌手 ---------------------------------------------------------
+    report(PHASE_ARTISTS, 0, 1)
+    artists, artists_error = _read_followed_artists(api, attempts=attempts,
+                                                     delay=retry_delay, sleep=sleep)
+    if artists_error:
+        sources[PHASE_ARTISTS] = SOURCE_MISSING
+        errors.append({"section": PHASE_ARTISTS, "message": artists_error})
+    else:
+        sources[PHASE_ARTISTS] = SOURCE_CLOUD
+    report(PHASE_ARTISTS, 1, 1)
+
+    # -- 本机状态（播放次数 / 收藏 / 最近播放）--------------------------------
+    # 云端没有对应的东西，所以它们的来源永远是本地；导入时也只写回本地，
+    # 不会向网易云报告。
+    report(PHASE_LOCAL, 0, 1)
+    local_state = _local_state(local)
+    sources[PHASE_LOCAL] = SOURCE_CACHE if local_state else SOURCE_MISSING
+    report(PHASE_LOCAL, 1, 1)
+
     return {
         "format": BACKUP_FORMAT,
         "version": BACKUP_VERSION,
@@ -386,8 +418,93 @@ def export_account_data(
         "account": account_section,
         "liked_song_ids": list(liked_ids),
         "playlists": entries,
+        "followed_artists": artists,
+        "local_state": local_state,
         "errors": errors,
     }
+
+
+def _local_state(local: Any) -> dict[str, Any]:
+    """整理本机那部分状态：播放次数、收藏、最近播放。
+
+    这三样只存在于 ``library.json``，网易云没有对应的接口——导入时写回本地，
+    不向服务器报告任何东西。
+    """
+    if not isinstance(local, dict):
+        return {}
+    counts: dict[str, int] = {}
+    raw_counts = local.get("play_counts")
+    if isinstance(raw_counts, dict):
+        for raw_key, raw_value in raw_counts.items():
+            key = str(raw_key or "").strip()
+            if not key:
+                continue
+            try:
+                counts[key] = max(0, int(raw_value))
+            except (TypeError, ValueError):
+                continue
+    favorites = [dict(item) for item in (local.get("favorites") or [])
+                  if isinstance(item, dict) and item.get("key")]
+    recent = [dict(item) for item in (local.get("recent") or [])
+              if isinstance(item, dict) and item.get("key")]
+    if not counts and not favorites and not recent:
+        return {}
+    return {
+        "play_counts": counts,
+        "favorites": favorites,
+        "recent": recent,
+    }
+
+
+def _read_followed_artists(api: Any, *, attempts: int, delay: float,
+                            sleep: Callable[[float], None]) -> tuple[list[dict[str, Any]], str]:
+    """读出账号关注的全部歌手。
+
+    接口是分页的，所以一直问到它说没有下一页为止。读失败就把这一节留空并
+    记下原因，不让整次导出失败。
+    """
+    artists: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    offset = 0
+    last = ""
+    for _ in range(ARTIST_MAX_PAGES):
+        page, error = _retry(
+            f"followed artists @{offset}",
+            # The offset is bound here: without it the lambda would read the
+            # loop variable when it runs, not when it is created.
+            lambda offset=offset: api.get_followed_artists(
+                limit=ARTIST_PAGE, offset=offset) or None,
+            attempts=attempts, delay=delay, sleep=sleep,
+        )
+        if page is None:
+            last = error
+            break
+        code = page.get("code")
+        if code in (301, 401):
+            last = "not signed in"
+            break
+        for artist in (page.get("artists") or []):
+            if not isinstance(artist, dict):
+                continue
+            # ``or ""`` would drop a real id of 0, so the None check comes
+            # first.
+            raw_id = artist.get("id")
+            artist_id = str(raw_id).strip() if raw_id is not None else ""
+            if not artist_id or artist_id in seen:
+                continue
+            seen.add(artist_id)
+            artists.append({
+                "id": artist_id,
+                "name": str(artist.get("name") or "Unknown"),
+            })
+        if not page.get("has_more"):
+            return artists, ""
+        offset += ARTIST_PAGE
+    else:
+        last = "too many pages"
+    if not artists and last:
+        return [], last
+    return artists, ""
 
 
 def _read_cloud_profile(api: Any, uid: str) -> dict[str, Any] | None:
@@ -639,6 +756,18 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
     to_add = [song_id for song_id in backup_liked if song_id not in liked_set]
     already = [song_id for song_id in backup_liked if song_id in liked_set]
 
+    # -- 关注的歌手 ---------------------------------------------------------
+    backup_artists = _backup_artists(payload)
+    current_artists = _current_artist_ids(api, attempts=attempts,
+                                          delay=retry_delay, sleep=sleep)
+    artists_to_follow = [item for item in backup_artists
+                         if item["id"] not in current_artists]
+    artists_present = [item for item in backup_artists
+                       if item["id"] in current_artists]
+
+    # -- 本机状态（播放次数 / 收藏 / 最近播放）--------------------------------
+    local_state = _payload_local_state(payload)
+
     return {
         "ok": True,
         "source": {
@@ -657,14 +786,81 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
             "conflicts": len(conflicts),
             "skipped": sum(1 for item in plan_playlists
                            if item["action"] == "skip"),
+            "artists_total": len(backup_artists),
+            "artists_to_follow": len(artists_to_follow),
+            "artists_present": len(artists_present),
+            "local_play_counts": len(local_state["play_counts"]),
+            "local_favorites": len(local_state["favorites"]),
+            "local_recent": len(local_state["recent"]),
         },
         "favorites": {"to_add": to_add, "present": already},
         "playlists": plan_playlists,
         "conflicts": conflicts,
+        "artists": {"to_follow": artists_to_follow,
+                    "already_followed": artists_present},
+        "local_state": local_state,
         "warnings": ([{"section": "playlists", "message": playlists_error}]
                      if playlists_error else [])
         + ([{"section": "favorites", "message": liked_error}]
            if liked_error else []),
+    }
+
+
+def _backup_artists(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """备份文件里记着的关注歌手。"""
+    artists: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in (payload.get("followed_artists") or []):
+        if not isinstance(item, dict):
+            continue
+        raw_id = item.get("id")
+        artist_id = str(raw_id).strip() if raw_id is not None else ""
+        if not artist_id or artist_id in seen:
+            continue
+        seen.add(artist_id)
+        artists.append({"id": artist_id,
+                        "name": str(item.get("name") or "Unknown")})
+    return artists
+
+
+def _current_artist_ids(api: Any, *, attempts: int, delay: float,
+                         sleep: Callable[[float], None]) -> set[str]:
+    """当前账号已经关注的歌手 id。
+
+    读不到就当作一个都没关注：多关注一次已经关注的人没有坏处，少关注一个
+    才是真的丢了。
+    """
+    artists, error = _read_followed_artists(api, attempts=attempts,
+                                             delay=delay, sleep=sleep)
+    if error and not artists:
+        return set()
+    return {item["id"] for item in artists}
+
+
+def _payload_local_state(payload: dict[str, Any]) -> dict[str, Any]:
+    """备份文件里记着的本机状态。"""
+    raw = payload.get("local_state")
+    if not isinstance(raw, dict):
+        return {"play_counts": {}, "favorites": [], "recent": []}
+    counts = raw.get("play_counts")
+    clean_counts: dict[str, int] = {}
+    if isinstance(counts, dict):
+        for raw_key, raw_value in counts.items():
+            key = str(raw_key or "").strip()
+            if not key:
+                continue
+            try:
+                clean_counts[key] = max(0, int(raw_value))
+            except (TypeError, ValueError):
+                continue
+    favorites = [dict(item) for item in (raw.get("favorites") or [])
+                  if isinstance(item, dict) and item.get("key")]
+    recent = [dict(item) for item in (raw.get("recent") or [])
+              if isinstance(item, dict) and item.get("key")]
+    return {
+        "play_counts": clean_counts,
+        "favorites": favorites,
+        "recent": recent,
     }
 
 
@@ -674,14 +870,19 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
                  sleep: Callable[[float], None] = time.sleep,
                  favorite_batch: int = FAVOURITE_BATCH,
                  track_batch: int = TRACK_BATCH,
-                 batch_pause: float = BATCH_PAUSE) -> dict[str, Any]:
+                 batch_pause: float = BATCH_PAUSE,
+                 local: Any = None) -> dict[str, Any]:
     """按用户的决定把备份并进当前账号。
 
     ``decisions`` 的形状是 ``{"playlists": {歌单 id: {"action": ..., "name": ...}}}``，
     ``action`` 取 ``skip`` / ``merge`` / ``rename``。**每个冲突都必须有决定**，
     没决定就不写任何东西——闷头改账号是最糟的结果。
 
-    返回一份结果：加了多少歌、建了几个歌单、跳过多少、失败多少。
+    ``local`` 是本机的 :class:`~src.core.library.Library`。播放次数、本地收藏
+    和最近播放写回它，**不会向网易云报告**——这些数据云端没有对应的东西。
+
+    返回一份结果：加了多少歌、关注了多少歌手、建了几个歌单、跳过多少、
+    失败多少。
     """
     raw_decisions = (decisions or {}).get("playlists")
     choices: dict[str, Any] = raw_decisions if isinstance(raw_decisions, dict) else {}
@@ -698,9 +899,11 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
             "playlists_created": 0,
             "playlists_merged": 0,
             "playlists_skipped": 0,
+            "artists_followed": 0,
             "tracks_added": 0,
             "failed": 0,
             "skipped_detail": [],
+            "local_restored": {"play_counts": 0, "favorites": 0, "recent": 0},
             "errors": [{"section": "conflicts",
                         "message": "decisions missing: " + ", ".join(missing)}],
         }
@@ -811,6 +1014,53 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
                            "message": f"{len(pending) - added} songs not added"})
     report(PHASE_PLAYLISTS, len(plan_playlists), len(plan_playlists))
 
+    # -- 关注的歌手 ---------------------------------------------------------
+    artists_followed = 0
+    to_follow = [item for item in ((plan.get("artists") or {}).get("to_follow") or [])
+                 if isinstance(item, dict) and item.get("id")]
+    report(PHASE_ARTISTS, 0, len(to_follow))
+    for index, artist in enumerate(to_follow):
+        report(PHASE_ARTISTS, index, len(to_follow))
+        artist_id = str(artist.get("id"))
+        outcome = _follow_artist(api, artist_id)
+        if outcome == "ok":
+            artists_followed += 1
+        elif outcome == "rate_limited":
+            # 限流不是失败，隔几秒再试一次。
+            sleep(BATCH_PAUSE)
+            outcome = _follow_artist(api, artist_id)
+            if outcome == "ok":
+                artists_followed += 1
+            else:
+                failed += 1
+                errors.append({"section": PHASE_ARTISTS,
+                               "message": f"{artist_id}: {outcome}"})
+        else:
+            failed += 1
+            errors.append({"section": PHASE_ARTISTS,
+                           "message": f"{artist_id}: {outcome}"})
+            if outcome == "not_logged_in":
+                # 会话没了，后面的也关注不上，别再空转。
+                break
+        if index + 1 < len(to_follow):
+            sleep(batch_pause)
+    report(PHASE_ARTISTS, len(to_follow), len(to_follow))
+
+    # -- 本机状态（只写本地，不向网易云报告）---------------------------------
+    local_restored = {"play_counts": 0, "favorites": 0, "recent": 0}
+    if local is not None:
+        state = plan.get("local_state") or {}
+        try:
+            local_restored["play_counts"] = int(
+                local.merge_play_counts(state.get("play_counts") or {}))
+            local_restored["favorites"] = int(
+                local.merge_favorites(state.get("favorites") or []))
+            local_restored["recent"] = int(
+                local.merge_recent(state.get("recent") or []))
+        except Exception as exc:
+            errors.append({"section": PHASE_LOCAL, "message": str(exc)})
+    report(PHASE_LOCAL, 1, 1)
+
     return {
         "ok": True,
         "songs_liked": songs_liked,
@@ -818,11 +1068,23 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
         "playlists_created": playlists_created,
         "playlists_merged": playlists_merged,
         "playlists_skipped": playlists_skipped,
+        "artists_followed": artists_followed,
         "tracks_added": tracks_added,
         "failed": failed,
         "skipped_detail": skipped_detail,
+        "local_restored": local_restored,
         "errors": errors,
     }
+
+
+def _follow_artist(api: Any, artist_id: str) -> str:
+    """关注一个歌手，返回状态串。"""
+    if not artist_id:
+        return "failed"
+    try:
+        return str(api.set_artist_follow(artist_id, True))
+    except Exception as exc:
+        return f"failed: {exc}"
 
 
 def _like(api: Any, song_id: str) -> str:

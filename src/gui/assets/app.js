@@ -1014,6 +1014,25 @@ const backup = {
     summary: null,
 };
 
+/**
+ * How many local-only records a backup carries.
+ *
+ * Play counts, the local favourites and the recently played list only ever
+ * live on this machine, so they are counted together as "local records".
+ * The export result and the import result spell the three apart; this
+ * sums them for the one-line summary.
+ */
+function localRecordCount(source) {
+    const data = source || {};
+    if (data.local_restored) {
+        const restored = data.local_restored;
+        return (restored.play_counts || 0) + (restored.favorites || 0)
+            + (restored.recent || 0);
+    }
+    return (data.local_play_counts || 0) + (data.local_favorites || 0)
+        + (data.local_recent || 0);
+}
+
 /** Human name of a backup progress phase. */
 function backupPhaseText(phase) {
     const key = 'backup.phase_' + phase;
@@ -1074,7 +1093,7 @@ async function exportAccountBackup() {
             return;
         }
         const sources = result.sources || {};
-        const parts = ['account', 'favorites', 'playlists']
+        const parts = ['account', 'favorites', 'playlists', 'artists', 'local']
             .map((key) => `${backupSourceText(sources[key])}`)
             .join(' · ');
         setBackupStatus(t('backup.export_done', {
@@ -1082,6 +1101,8 @@ async function exportAccountBackup() {
             playlists: result.playlists || 0,
             songs: result.songs || 0,
             favorites: result.favorites || 0,
+            artists: result.artists || 0,
+            local: localRecordCount(result),
             sources: parts,
         }));
         setBackupProgress(0, 0);
@@ -1150,6 +1171,9 @@ function renderBackupConflicts(plan) {
             playlists: stats.playlists_to_create || 0,
             conflicts: stats.conflicts || 0,
             skipped: stats.skipped || 0,
+            artists: stats.artists_to_follow || 0,
+            local: (stats.local_play_counts || 0) + (stats.local_favorites || 0)
+                + (stats.local_recent || 0),
         });
     }
     (plan.skipped || []).forEach((item) => {
@@ -1231,6 +1255,8 @@ async function applyBackupConflicts() {
             playlists: result.playlists_created || 0,
             merged: result.playlists_merged || 0,
             skipped: result.playlists_skipped || 0,
+            artists: result.artists_followed || 0,
+            local: localRecordCount(result.local_restored || {}),
             failed: result.failed || 0,
         }));
         setBackupProgress(0, 0);
@@ -2112,7 +2138,7 @@ function renderNowPlayingMobile() {
     }
 
     titleEl.textContent = track.name || '-';
-    artistEl.textContent = track.artists || '';
+    renderArtistLinks(artistEl, track);
     if (kindEl) kindEl.textContent = t('player.badge_' + (resolved.kind || track.source || 'online'));
     if (qualityEl) qualityEl.textContent = levelText(resolved.quality || resolved.level);
     if (sourceEl) {
@@ -3619,7 +3645,7 @@ async function openAlbumDetail(album) {
     
     // Add click handlers for album actions
     albumInfo.querySelector('[data-action="play-all"]').addEventListener('click', () => {
-        playTracksInto(result.tracks, { kind: 'album', id: album.id, name: album.name });
+        playAllInto(result.tracks, { kind: 'album', id: album.id, name: album.name });
     });
     albumInfo.querySelector('[data-action="add-queue"]').addEventListener('click', () => {
         addTracksToQueue(result.tracks);
@@ -3698,7 +3724,7 @@ async function openArtistDetail(artist) {
 
     const artistCoverUrl = result.artist.cover_url || '';
     playHotBtn.addEventListener('click', () => {
-        playTracksInto(result.hot_songs, { kind: 'artist', id: artist.id, name: artist.name });
+        playAllInto(result.hot_songs, { kind: 'artist', id: artist.id, name: artist.name });
     });
     // The albums belong under the header, not instead of it: replacing the
     // page would take the follow button away with no way back.
@@ -4071,6 +4097,21 @@ function playTracksInto(tracks, source) {
     if (scroller) scroller._virtualSource = source;
     renderTrackList();
     setListCount(tracks.length);
+}
+
+/**
+ * Put a list on screen and start playing it from the top.
+ *
+ * ``playTracksInto`` only replaces the *visible* list -- it does not touch
+ * the playback queue, so a button labelled "play all" that only called it
+ * silently did nothing.  The queue is set by ``startQueue``, which also
+ * starts playback.
+ */
+async function playAllInto(tracks, source) {
+    playTracksInto(tracks, source);
+    if (player.visible && player.visible.length) {
+        await startQueue(player.visible, 0, source);
+    }
 }
 
 /** Whether two source descriptors point at the same list. */
@@ -5363,6 +5404,40 @@ function updateLyricHighlight(force) {
     pushLyricsToDesktop();
 }
 
+/**
+ * Fill an element with the track's artist names, each one opening that
+ * artist's page.
+ *
+ * The ids arrive from the bridge as ``artist_list``.  A track without them --
+ * a local file, a queue entry written by an older version -- falls back to
+ * plain text, so the panel never shows an empty artist line.
+ */
+function renderArtistLinks(el, track) {
+    if (!el) return;
+    el.textContent = '';
+    const list = (track && track.artist_list) || [];
+    const usable = list.filter(item => item && item.id && item.name);
+    if (!usable.length) {
+        el.textContent = (track && track.artists) || '';
+        return;
+    }
+    usable.forEach((item, index) => {
+        if (index) el.appendChild(document.createTextNode(', '));
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'artist-link';
+        button.textContent = item.name;
+        button.title = t('player.artist_detail');
+        button.addEventListener('click', (event) => {
+            // The now-playing panel is inside clickable rows; without this
+            // the click would also start the track again.
+            event.stopPropagation();
+            openArtistDetail({ id: item.id, name: item.name });
+        });
+        el.appendChild(button);
+    });
+}
+
 /* ------------------------------------------------------------- now playing */
 
 function renderNowPlaying() {
@@ -5393,7 +5468,7 @@ function renderNowPlaying() {
     }
 
     if (title) title.textContent = track.name || '-';
-    if (artist) artist.textContent = track.artists || '';
+    renderArtistLinks(artist, track);
     if (album) album.textContent = track.album || '';
     if (kind) {
         kind.textContent = t('player.badge_' + (resolved.kind || track.source || 'online'));
@@ -5418,7 +5493,7 @@ function renderNowPlaying() {
         }
     });
     if (barTitle) barTitle.textContent = track.name || '-';
-    if (barArtist) barArtist.textContent = track.artists || '';
+    if (barArtist) renderArtistLinks(barArtist, track);
     updateFavoriteButton();
     renderNowPlayingMobile();
 }
