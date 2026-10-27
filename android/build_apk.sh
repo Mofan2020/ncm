@@ -153,6 +153,13 @@ sed -E "s/^version = .*/version = $VERSION/" "$SPEC" > "$SPEC.tmp"
 mv "$SPEC.tmp" "$SPEC"
 echo "== buildozer $TARGET (version $VERSION) =="
 cd "$HERE"
+# The toolchain lives outside the repository, and a rebuilt one comes back
+# unpatched: the android recipe then dies with "No module named 'Cython'".
+# Applying the patch is idempotent, so it happens on every build.
+if [ -f "$HERE/tools/patch_p4a.py" ]; then
+    "$(dirname "$BUILDOZER")/python" "$HERE/tools/patch_p4a.py" \
+        --buildozer "$BUILDOZER" || exit 1
+fi
 # Start from an empty bin/.  A build made from an older tree leaves an APK
 # whose file name carries that older version, and it sits next to the real
 # one looking perfectly plausible.  Only the build that runs now may decide
@@ -191,4 +198,5 @@ elif ! ls "$HERE"/bin/*"$VERSION"*.apk >/dev/null 2>&1; then
     ls -la "$HERE"/bin/ >&2 || true
     exit 1
 fi
-ls -la "$HERE"/bin/*.apk "$HERE"/bin/*.aab 2>/dev/null || echo "  (nothing in bin/)"
+ls -la "$HERE"/bin/*.apk 2>/dev/null || echo "  (no apk in bin/)"
+ls -la "$HERE"/bin/*.aab 2>/dev/null || true
