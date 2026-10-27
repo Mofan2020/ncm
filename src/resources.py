@@ -11,6 +11,7 @@ macOS included -- keeps the plain ``_MEIPASS`` / source-tree lookup.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 import sys
@@ -23,8 +24,10 @@ __all__ = [
     "is_frozen",
     "extracted_resources_dir",
     "ensure_resources",
+    "resource_archive_digest",
     "RESOURCES_DIRNAME",
     "RESOURCES_ARCHIVE",
+    "RESOURCES_STAMP",
 ]
 
 log = logging.getLogger("ncm")
@@ -33,6 +36,10 @@ log = logging.getLogger("ncm")
 RESOURCES_DIRNAME = "_resources"
 #: Zip inside the PyInstaller archive holding the GUI/i18n assets.
 RESOURCES_ARCHIVE = "ncm-resources.zip"
+#: Stamp file inside the extraction directory: it holds the digest of the
+#: archive the directory was unpacked from, so the next launch can tell
+#: whether the files still belong to the executable that is running.
+RESOURCES_STAMP = ".ncm-resources.digest"
 
 #: Files that must exist once the archive has been unpacked.
 _REQUIRED = (
@@ -63,6 +70,30 @@ def _is_complete(target: Path) -> bool:
     return all((target / name).is_file() for name in _REQUIRED)
 
 
+def resource_archive_digest(archive: Path) -> str:
+    """Digest of the resource archive bundled with the running executable.
+
+    The digest is the judge of "do the unpacked files still belong to this
+    executable", so it has to be derived from the bytes themselves: a version
+    number would have to be maintained by hand, and the same executable
+    rebuilt from the same sources would then look like an update.
+    """
+    digest = hashlib.sha256()
+    with archive.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _stamp_matches(target: Path, digest: str) -> bool:
+    """Whether the unpacked files came from the archive with this digest."""
+    stamp = target / RESOURCES_STAMP
+    try:
+        return stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == digest
+    except OSError:
+        return False
+
+
 def ensure_resources() -> Path | None:
     """Unpack the bundled asset archive next to the executable (Windows only).
 
@@ -71,25 +102,34 @@ def ensure_resources() -> Path | None:
     swapped in at the end, so a crash can never leave a half-populated
     ``_resources`` behind to fail the next launch.
 
+    The unpacked files are compared against the archive of the *running*
+    executable, not merely checked for existence: replacing the executable
+    with a newer build leaves the old files on disk, and an interface that
+    runs new code against old assets is worse than a stale interface.  A
+    directory without a matching digest stamp -- every installation made
+    before this check existed -- is unpacked again.
+
     Never fatal: if the archive is missing or unusable we fall back to the
     onefile directory so the caller still gets a usable path.
     """
     target = extracted_resources_dir()
     if target is None:
         return None
-    if _is_complete(target):
-        return target
+    if not is_frozen():
+        return None
 
     # The archive always lives in the onefile dir.  Never look for it inside the
     # extraction dir: once _resources exists, bundle_root() points there, so
     # searching it would find nothing and a partial extraction could never be
     # repaired.
-    if not is_frozen():
-        return None
     archive = Path(getattr(sys, "_MEIPASS", "")) / RESOURCES_ARCHIVE
     if not archive.is_file():
         log.warning("resource archive %s is missing; using the bundle directory", archive)
         return None
+
+    digest = resource_archive_digest(archive)
+    if _is_complete(target) and _stamp_matches(target, digest):
+        return target
 
     staging = target.with_name(RESOURCES_DIRNAME + ".new")
     try:
@@ -107,6 +147,10 @@ def ensure_resources() -> Path | None:
 
         if not _is_complete(staging):
             raise ValueError("resource archive is incomplete after extraction")
+
+        # The stamp travels with the files, so it always describes what is
+        # actually in the directory.
+        (staging / RESOURCES_STAMP).write_text(digest + "\n", encoding="utf-8")
 
         # A previous run's directory can still be held open by WebView2, so
         # removing it is best-effort: never block startup on a locked file.

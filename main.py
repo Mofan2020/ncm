@@ -30,6 +30,9 @@ __all__ = ["main"]
 
 MIN_SIZE = (780, 560)
 DEFAULT_SIZE = (1080, 720)
+#: Below this the interface cannot be worked with at all.  It is the floor
+#: the window size falls back to when the screen itself is tiny.
+FLOOR_SIZE = (360, 300)
 
 
 def _configure_logging(debug: bool) -> None:
@@ -57,23 +60,65 @@ def _configure_logging(debug: bool) -> None:
         root.addHandler(stream)
 
 
-def _initial_geometry(width: int, height: int) -> tuple[int, int, int | None, int | None]:
-    """Clamp the stored window size to the current screen and centre it."""
+def _primary_screen() -> tuple[int, int, int, int] | None:
+    """The primary screen's size and origin, in window units.
+
+    pywebview reports the screen in the same units it uses for the window --
+    on Windows the process is per-monitor DPI aware, so both are logical
+    pixels -- which is what makes comparing the two meaningful.
+    """
     try:
         import webview  # imported lazily so --version works without a GUI
 
         screen = (webview.screens or [None])[0]
-        if screen is not None:
-            max_width = int(screen.width * 0.92)
-            max_height = int(screen.height * 0.92)
-            width = max(MIN_SIZE[0], min(int(width), max_width))
-            height = max(MIN_SIZE[1], min(int(height), max_height))
-            x = int(getattr(screen, "x", 0) or 0) + max(0, (screen.width - width) // 2)
-            y = int(getattr(screen, "y", 0) or 0) + max(0, (screen.height - height) // 3)
-            return width, height, x, y
+        if screen is None:
+            return None
+        return (int(screen.width), int(screen.height),
+                int(getattr(screen, "x", 0) or 0), int(getattr(screen, "y", 0) or 0))
     except Exception as exc:  # pragma: no cover - headless / exotic backends
         logging.getLogger("ncm").debug("cannot query screens: %s", exc)
-    return width, height, None, None
+        return None
+
+
+def _fit_to_screen(width: int, height: int, screen: tuple[int, int]) -> tuple[int, int]:
+    """Clamp a window size to what the screen can actually show.
+
+    The screen wins over MIN_SIZE.  A window that does not fit is cut off by
+    the screen, and the parts hanging over the edge cannot be reached, so on
+    a small or high-DPI display the window has to end up *smaller* than the
+    preference rather than bigger.
+    """
+    screen_w, screen_h = screen
+    max_w = max(FLOOR_SIZE[0], int(screen_w * 0.92))
+    # Less than the full height: the window frame and the taskbar both eat
+    # into the area the interface can use.
+    max_h = max(FLOOR_SIZE[1], int(screen_h * 0.86))
+    return (max(FLOOR_SIZE[0], min(int(width), max_w)),
+            max(FLOOR_SIZE[1], min(int(height), max_h)))
+
+
+def _window_min_size(screen: tuple[int, int, int, int] | None) -> tuple[int, int]:
+    """The smallest window worth showing, limited by what the screen allows."""
+    min_w, min_h = MIN_SIZE
+    if screen is not None:
+        min_w = min(min_w, max(FLOOR_SIZE[0], int(screen[0] * 0.92)))
+        min_h = min(min_h, max(FLOOR_SIZE[1], int(screen[1] * 0.86)))
+    return (min_w, min_h)
+
+
+def _initial_geometry(width: int, height: int,
+                      screen: tuple[int, int, int, int] | None = None
+                      ) -> tuple[int, int, int | None, int | None]:
+    """Clamp the stored window size to the current screen and centre it."""
+    if screen is None:
+        screen = _primary_screen()
+    if screen is None:
+        return width, height, None, None
+    screen_w, screen_h, screen_x, screen_y = screen
+    width, height = _fit_to_screen(width, height, (screen_w, screen_h))
+    x = screen_x + max(0, (screen_w - width) // 2)
+    y = screen_y + max(0, (screen_h - height) // 3)
+    return width, height, x, y
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -478,9 +523,11 @@ def main(argv: list[str] | None = None) -> int:
     bridge = GuiBridge()
     # Inject webview module for desktop lyrics window creation
     bridge._webview_module = webview
+    screen = _primary_screen()
     width, height, x, y = _initial_geometry(
         settings.ui.window_width or DEFAULT_SIZE[0],
         settings.ui.window_height or DEFAULT_SIZE[1],
+        screen=screen,
     )
 
     # The player streams through a loopback HTTP server (see src/core/mediaserver):
@@ -531,7 +578,7 @@ def main(argv: list[str] | None = None) -> int:
         height=height,
         x=x,
         y=y,
-        min_size=MIN_SIZE,
+        min_size=_window_min_size(screen),
         resizable=True,
         text_select=True,
         background_color=window_background_color(theme_mode),

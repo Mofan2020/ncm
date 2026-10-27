@@ -434,3 +434,37 @@ def test_the_next_track_preload_does_not_shadow_the_function_it_calls():
     function for the whole block, so the call hits the temporal dead zone."""
     assert not re.search(r"const nextIndex = nextIndex\(", JS), \
         "the local shadows the function it calls"
+
+
+# ------------------------------------------------------- the layout at small sizes
+
+def _media_blocks(css: str) -> list[tuple[str, str]]:
+    """Every ``@media`` block as (condition, body)."""
+    blocks: list[tuple[str, str]] = []
+    for match in re.finditer(r"@media([^{]+)\{", css):
+        start = match.end()
+        depth = 1
+        index = start
+        while depth and index < len(css):
+            if css[index] == "{":
+                depth += 1
+            elif css[index] == "}":
+                depth -= 1
+            index += 1
+        blocks.append((match.group(1).strip(), css[start:index - 1]))
+    return blocks
+
+
+def test_only_the_phone_layout_folds_the_two_columns():
+    """A narrow window must not move the source list on top of the content.
+
+    The two-column layout used to fold into one column below 1024px, which
+    put the sidebar above the content: the opposite of what a short screen
+    needs, and the reason the interface looked broken on small displays.
+    """
+    css = (ASSETS / "style.css").read_text(encoding="utf-8")
+    for condition, body in _media_blocks(css):
+        if ".layout { grid-template-columns: minmax(0, 1fr);" in body:
+            assert "720px" in condition, (
+                f"the two-column layout is folded in {condition!r}; "
+                "only the phone layout may do that")

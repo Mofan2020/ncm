@@ -178,6 +178,7 @@ body.no-wallpaper #wallpaper-veil { display: none; }
 }
 
 .app-header {
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: clamp(10px, 2vw, 26px);
@@ -222,13 +223,14 @@ body.no-wallpaper #wallpaper-veil { display: none; }
 }
 
 /* --------------------------------------------------------------- views */
-.app-main { min-height: 0; overflow: hidden; display: flex; }
-.view { display: none; flex: 1; min-height: 0; overflow: hidden; }
+.app-main { min-height: 0; min-width: 0; overflow: hidden; display: flex; }
+.view { display: none; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .view.is-active { display: flex; }
 
 /* ------------------------------------------------------- download view */
 .layout {
     display: grid;
+    min-width: 0;
     grid-template-columns: minmax(0, 1fr) clamp(280px, 26vw, 360px);
     gap: clamp(12px, 1.4vw, 18px);
     padding: clamp(12px, 1.4vw, 18px);
@@ -440,6 +442,7 @@ input[type="range"]::-webkit-slider-thumb {
 /* ==================================================================== */
 .player-layout {
     display: grid;
+    min-width: 0;
     grid-template-columns: clamp(300px, 30vw, 400px) minmax(0, 1fr);
     gap: clamp(12px, 1.4vw, 18px);
     padding: clamp(12px, 1.4vw, 18px);
@@ -1059,13 +1062,29 @@ input[type="range"]::-webkit-slider-thumb {
 ::-webkit-scrollbar-thumb:hover { background: var(--text-3); background-clip: content-box; }
 
 /* --------------------------------------------------- responsive tweaks */
-@media (max-width: 1024px), (max-height: 640px) {
+/* The two-column desktop layout keeps both columns all the way down to the
+   mobile tier.  Folding them into a single column in the middle sizes moves
+   the source list on top of the content, which spends the one thing a short
+   screen has least of: height.  The columns fit on their own down to about
+   600px (280 + 320), so nothing needs folding before the phone layout
+   takes over. */
+@media (max-width: 720px) {
     .layout { grid-template-columns: minmax(0, 1fr); grid-auto-rows: min-content; overflow-y: auto; }
     .column-main, .column-side { overflow: visible; }
+}
+/* A short window does not change the shape of the layout, only how much of
+   each column is worth showing. */
+@media (max-height: 640px) {
     .side-card .queue { max-height: 36vh; }
-    .player-layout { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
     .player-side { max-height: 46vh; }
     .lyrics { padding: var(--lyrics-pad, 8px) 14px; }
+}
+/* The header must never be wider than the window: its buttons sit on the
+   right, and a header that overflows puts them out of reach. */
+@media (max-width: 560px) {
+    .header-actions { flex-shrink: 1; min-width: 0; }
+    #btn-login { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .top-tabs { flex: 0 1 auto; min-width: 0; }
 }
 @media (max-width: 900px) {
     .brand .subtitle { display: none; }

@@ -7,6 +7,7 @@ must keep resolving exactly as before -- these tests pin both halves.
 """
 from __future__ import annotations
 
+import hashlib
 import sys
 import zipfile
 from pathlib import Path
@@ -19,8 +20,12 @@ ROOT = Path(__file__).resolve().parent.parent
 ASSET_DIRS = ("src/gui/assets", "src/i18n")
 
 
-def _build_archive(tmp_path: Path, meipass: Path) -> Path:
-    """Create the same archive main.spec's win32 branch builds."""
+def _build_archive(tmp_path: Path, meipass: Path, marker: str = "") -> Path:
+    """Create the same archive main.spec's win32 branch builds.
+
+    The marker rides along so two builds of the same app can be told apart --
+    which is the whole point of the digest check.
+    """
     staging = tmp_path / "stage"
     for entry in ASSET_DIRS:
         for f in sorted((ROOT / entry).rglob("*")):
@@ -29,6 +34,8 @@ def _build_archive(tmp_path: Path, meipass: Path) -> Path:
             target = staging / f.relative_to(ROOT)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(f.read_bytes())
+    if marker:
+        (staging / "marker.txt").write_text(marker, encoding="utf-8")
     archive = meipass / R.RESOURCES_ARCHIVE
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in sorted(staging.rglob("*")):
@@ -174,3 +181,63 @@ def test_frozen_macos_keeps_the_old_meipass_lookup(monkeypatch, tmp_path):
     assert R.extracted_resources_dir() is None
     assert R.ensure_resources() is None
     assert R.bundle_root() == meipass
+
+
+# ------------------------------------- the files must belong to the executable
+
+def test_an_install_without_a_stamp_is_unpacked_again(frozen_windows, tmp_path):
+    """Every installation made before this check existed carries no stamp."""
+    exe_dir, mepass = frozen_windows
+    _build_archive(tmp_path, mepass)
+    target = exe_dir / R.RESOURCES_DIRNAME
+    for name in R._REQUIRED:
+        path = target / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("left over from the old build", encoding="utf-8")
+
+    assert R.ensure_resources() == target
+    assert (target / "src/gui/assets/index.html").read_text(encoding="utf-8") != \
+        "left over from the old build"
+
+
+def test_stale_files_are_replaced_when_the_archive_changed(frozen_windows, tmp_path):
+    """A new executable brings a new archive; the old files must not stay."""
+    exe_dir, mepass = frozen_windows
+    _build_archive(tmp_path, mepass, marker="old")
+    out = R.ensure_resources()
+    assert out is not None
+    assert (out / "marker.txt").read_text(encoding="utf-8") == "old"
+
+    _build_archive(tmp_path, mepass, marker="new")
+    assert R.ensure_resources() == out
+    assert (out / "marker.txt").read_text(encoding="utf-8") == "new"
+
+
+def test_a_file_the_new_build_dropped_is_removed(frozen_windows, tmp_path):
+    """The old directory is replaced, not merged into."""
+    exe_dir, mepass = frozen_windows
+    _build_archive(tmp_path, mepass, marker="old")
+    out = R.ensure_resources()
+    assert out is not None
+    leftover = out / "src/gui/assets/dropped-by-the-new-build.css"
+    leftover.write_text("old", encoding="utf-8")
+
+    _build_archive(tmp_path, mepass, marker="new")
+    R.ensure_resources()
+    assert not leftover.exists()
+
+
+def test_the_stamp_holds_the_digest_of_the_archive(frozen_windows, tmp_path):
+    exe_dir, mepass = frozen_windows
+    archive = _build_archive(tmp_path, mepass)
+    out = R.ensure_resources()
+    assert out is not None
+    stamp = out / R.RESOURCES_STAMP
+    assert stamp.is_file()
+    assert stamp.read_text(encoding="utf-8").strip() == R.resource_archive_digest(archive)
+
+
+def test_the_digest_is_the_content_of_the_archive(tmp_path):
+    archive = tmp_path / "resources.zip"
+    archive.write_bytes(b"payload")
+    assert R.resource_archive_digest(archive) == hashlib.sha256(b"payload").hexdigest()
