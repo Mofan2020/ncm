@@ -42,3 +42,7 @@ ncm-startup.log
 android/src/
 android/.buildozer/
 android/bin/
+
+# Android release signing (the keystore and its passwords stay on this machine)
+android/keystore/
+android/keystore.properties

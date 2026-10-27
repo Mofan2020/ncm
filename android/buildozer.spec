@@ -31,7 +31,7 @@ android.ndk_api = 24
 android.archs = arm64-v8a
 
 # Release builds are bundles; debug builds are plain APKs.
-android.release_artifact = aab
+android.release_artifact = apk
 android.debug_artifact = apk
 
 # The loopback media server and the NetEase API both need the network.

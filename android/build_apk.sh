@@ -112,6 +112,28 @@ case "$MODE" in
         ;;
 esac
 
+# A release build is signed with the key described in android/keystore.properties.
+# That file is not in the repository -- the passwords must not be committed --
+# so a release build without it stops here instead of producing an unsigned
+# package.  p4a takes the signing material from the environment.
+if [ "$TARGET" = "android release" ]; then
+    PROPS="$HERE/keystore.properties"
+    if [ ! -f "$PROPS" ]; then
+        echo "no $PROPS: cannot sign a release build" >&2
+        exit 1
+    fi
+    _prop() { sed -n "s/^$1=//p" "$PROPS"; }
+    export P4A_RELEASE_KEYSTORE="$(_prop store.file)"
+    export P4A_RELEASE_KEYSTORE_PASSWD="$(_prop store.password)"
+    export P4A_RELEASE_KEYALIAS="$(_prop key.alias)"
+    export P4A_RELEASE_KEYALIAS_PASSWD="$(_prop key.password)"
+    if [ ! -f "$P4A_RELEASE_KEYSTORE" ]; then
+        echo "the keystore $P4A_RELEASE_KEYSTORE does not exist" >&2
+        exit 1
+    fi
+    echo "== signing with $(basename "$P4A_RELEASE_KEYSTORE") (alias $P4A_RELEASE_KEYALIAS) =="
+fi
+
 # The downloads go through a local accelerator that drops connections now
 # and then ("Remote end closed connection without response").  The packages
 # that did finish are cached, so a retry picks up where it stopped.
@@ -156,7 +178,15 @@ echo "== artifacts =="
 # buildozer can exit 0 without building anything (a mistyped flag prints its
 # version and stops), so the artifact has to be there before the build counts
 # as done.
-if ! ls "$HERE"/bin/*"$VERSION"*.apk >/dev/null 2>&1; then
+if [ "$TARGET" = "android release" ]; then
+    # The release package is named after the artifact type, not necessarily
+    # after the version, so any package in bin/ counts here.
+    if ! ls "$HERE"/bin/*.apk >/dev/null 2>&1; then
+        echo "buildozer finished without producing an APK" >&2
+        ls -la "$HERE"/bin/ >&2 || true
+        exit 1
+    fi
+elif ! ls "$HERE"/bin/*"$VERSION"*.apk >/dev/null 2>&1; then
     echo "buildozer finished without producing an APK for version $VERSION" >&2
     ls -la "$HERE"/bin/ >&2 || true
     exit 1
