@@ -28,6 +28,7 @@ from kivy.uix.widget import Widget
 from kivy.utils import get_color_from_hex
 
 from ncmkivy.controller import Controller
+from ncmkivy.permissions import ALREADY_GRANTED, request_audio_permission
 from ncmkivy.player import Player
 from ncmkivy.theme import Theme
 
@@ -124,8 +125,31 @@ class NcmApp(App):
         Window.bind(size=self._on_window_resize)
         return root
 
+    def _on_audio_permission(self, result: str) -> None:
+        """Re-read the local library once the permission dialog is answered.
+
+        The answer arrives on the Java thread, and Kivy state may only be
+        touched from its own, so the reload hops back through the clock.
+        """
+        if result != ALREADY_GRANTED:
+            return
+
+        from kivy.clock import Clock
+
+        Clock.schedule_once(lambda _dt: self._reload_local_library(), 0)
+
+    def _reload_local_library(self) -> None:
+        try:
+            self.controller.local_music.refresh()
+        except Exception as exc:  # pragma: no cover - Android only
+            log.info("could not reload the local library: %s", exc)
+
     def on_start(self) -> None:
         self.controller.start()
+        # A declared permission is not a granted one: without the runtime
+        # grant, MediaStore answers with nothing but this app's own files and
+        # the local page looks empty.  Ask once at startup.
+        request_audio_permission(self._on_audio_permission)
         self.player.on_completed = self._on_track_finished
         self.player.on_error = self._on_play_error
         self.player.on_state_changed = self._on_player_state

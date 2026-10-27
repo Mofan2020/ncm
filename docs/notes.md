@@ -2184,3 +2184,23 @@ Android 版「本地音乐」一直是空的，原因不是权限也不是分区
 
 对比度是规格那边用 Python 逐对算过的（`#C4302B` 白字 5.52、`#201A19` 压
 `#FFF8F7` 16.37 这类），我这边没有重新算，只按值填进去、跑测试和布局检查。
+
+## 35. 声明了权限不等于拿到了权限（2026-10-27）
+
+最后一块：`READ_MEDIA_AUDIO` 在 `buildozer.spec` 的 permissions 里声明了，
+APK 的 AndroidManifest 也确实带着它，但代码里没有任何地方在运行时申请。
+Android 6 以后声明和授予是两回事 —— 没授予时 MediaStore 只返回应用自己
+创建的文件，手机里塞满歌，本地音乐页还是空的。
+
+`android/ncmkivy/permissions.py`：
+
+- `audio_permission()` 按 `Build.VERSION.SDK_INT` 选。33（Android 13）起
+  `READ_EXTERNAL_STORAGE` 不再覆盖音频，改名 `READ_MEDIA_AUDIO`；拿旧名字
+  去申请在 13+ 上是白申请。
+- `request_audio_permission(callback)` 先 `check_permission`，已经给了就直接
+  回调；否则 `request_permissions` 并等结果。回调在 Java 线程上来，所以
+  `app.py` 里用 `Clock.schedule_once` 跳回 Kivy 线程再刷新媒体库。
+- 非 Android 环境三个函数都是 no-op，桌面跑测试不会因为缺 jnius 炸。
+
+`tests/test_android_media.py` 三顶：两档 SDK 各自对应正确的权限名、非 Android
+申请返回 UNAVAILABLE、非 Android 检查恒 False。

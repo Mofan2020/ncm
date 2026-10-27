@@ -160,3 +160,34 @@ def test_a_single_track_can_be_found_by_its_path():
 
 def test_the_desktop_is_not_android():
     assert is_android() is False
+
+
+def test_the_permission_follows_the_android_version():
+    """Android 13 renamed the audio permission; asking for the old name there
+    grants nothing, and the library stays empty."""
+    from ncmkivy import permissions
+
+    asked: list[str] = []
+    for sdk, expected in ((28, "android.permission.READ_EXTERNAL_STORAGE"),
+                          (32, "android.permission.READ_EXTERNAL_STORAGE"),
+                          (33, "android.permission.READ_MEDIA_AUDIO"),
+                          (34, "android.permission.READ_MEDIA_AUDIO")):
+        permissions._sdk_int = lambda sdk=sdk: sdk  # type: ignore[assignment]
+        asked.append(permissions.audio_permission())
+        assert asked[-1] == expected, f"SDK {sdk}"
+    assert len(set(asked)) == 2, "the two API bands must not collapse"
+
+
+def test_asking_for_the_permission_off_android_does_not_raise():
+    from ncmkivy import permissions
+
+    seen: list[str] = []
+    result = permissions.request_audio_permission(seen.append)
+    assert result == permissions.UNAVAILABLE
+    assert seen == [permissions.UNAVAILABLE]
+
+
+def test_the_permission_check_is_false_off_android():
+    from ncmkivy import permissions
+
+    assert permissions.check_audio_permission() is False
