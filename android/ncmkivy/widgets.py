@@ -17,7 +17,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from kivy.graphics import Color, RoundedRectangle
+from kivy.graphics import Color, Line, Rectangle, RoundedRectangle
 from kivy.metrics import dp
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
@@ -32,10 +32,13 @@ __all__ = [
     "ThemedLabel",
     "IconButton",
     "CoverImage",
+    "SurfaceCard",
+    "NavItem",
     "TrackRow",
     "TrackList",
     "MiniPlayer",
     "EmptyState",
+    "AppButton",
     "SectionHeader",
     "LoadingView",
 ]
@@ -98,6 +101,11 @@ class ThemedLabel(Label):
             self.font_size = getattr(theme, role)()
             self._role = role
 
+    def set_color_name(self, color_name: str) -> None:
+        """Switch the colour role, e.g. when a row becomes the active one."""
+        self._color_name = color_name
+        self.color = _color(color_name)
+
 
 def _role_size(role: str) -> float:
     """Fallback sizes for the case where the theme is not up yet."""
@@ -127,6 +135,9 @@ class IconButton(ButtonBehavior, Widget):
     _color_name = "on_surface"
     _glyph_color = (1.0, 1.0, 1.0, 1.0)
     icon = "more"
+    variant = "plain"
+    glyph_scale = 1.0
+    _pressed = False
 
     #: The glyphs this button knows how to draw.
     ICONS = {
@@ -157,7 +168,8 @@ class IconButton(ButtonBehavior, Widget):
     }
 
     def __init__(self, icon: str = "more", size: float | None = None,
-                 color_name: str = "on_surface", **kwargs: Any) -> None:
+                 color_name: str = "on_surface", variant: str = "plain",
+                 glyph_scale: float = 1.0, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         theme = _theme()
         target = size if size is not None else (
@@ -170,6 +182,9 @@ class IconButton(ButtonBehavior, Widget):
         # size callback fires while the widget is still being built.
         self._color_name = color_name
         self._glyph_color = _color(color_name)
+        self.variant = variant
+        self.glyph_scale = glyph_scale
+        self._pressed = False
         self._draw()
         # ``_draw`` can only paint where the widget is *now*, and at
         # construction it sits at (0, 0) with no size.  Redraw whenever the
@@ -184,6 +199,20 @@ class IconButton(ButtonBehavior, Widget):
         with self.canvas:
             Color(1, 1, 1, 0)
             self._glyph_color = _color(self._color_name)
+            if self.variant in ("tonal", "filled"):
+                from kivy.graphics import Ellipse
+
+                base = "secondary_container" if self.variant == "tonal" else "primary"
+                Color(*_rgba(_color(base)))
+                Ellipse(pos=self.pos, size=self.size)
+            if self._pressed:
+                # Material 3's state layer: eight percent of the label colour
+                # over whatever is underneath, so the press is visible on
+                # every background.
+                from kivy.graphics import Ellipse
+
+                Color(*_rgba(_color(self._color_name), 0.12))
+                Ellipse(pos=self.pos, size=self.size)
             Color(*_rgba(self._glyph_color))
             self._paint(self._glyph_color)
 
@@ -197,7 +226,7 @@ class IconButton(ButtonBehavior, Widget):
         ``Color`` that way draws nothing at all -- no error, no glyph.
         """
         rgb = _rgba(glyph_color)
-        size = min(self.width, self.height)
+        size = min(self.width, self.height) * self.glyph_scale
         cx, cy = self.center_x, self.center_y
         kind = self.ICONS.get(self.icon, "dots")
 
@@ -334,28 +363,46 @@ class IconButton(ButtonBehavior, Widget):
         if not self.collide_point(*touch.pos):
             return False
         self._pressed = True
+        self._draw()
         return super().on_touch_down(touch)
 
     def on_touch_up(self, touch: Any) -> None:
         self._pressed = False
+        self._draw()
         super().on_touch_up(touch)
 
     def on_size(self, *_args: Any) -> None:
         self._draw()
 
+    def set_color_name(self, color_name: str) -> None:
+        """Switch the colour role of the glyph."""
+        self._color_name = color_name
+        self._draw()
 
-def _rgba(color: str) -> tuple[float, float, float, float]:
-    """``"#RRGGBB"`` -> an RGBA tuple."""
+    def set_variant(self, variant: str) -> None:
+        """Switch the background treatment: plain, tonal or filled."""
+        self.variant = variant
+        self._draw()
+
+
+def _rgba(color: str, alpha: float | None = None) -> tuple[float, float, float, float]:
+    """``"#RRGGBB"`` or ``"#RRGGBBAA"`` -> an RGBA tuple.
+
+    The eight digit form carries the alpha of a translucent surface, which is
+    what the glass panels are made of.  ``alpha`` overrides it, which is how
+    the press state layer gets its eight percent.
+    """
     value = color.lstrip("#")
-    if len(value) == 3:
+    if len(value) in (3, 4):
         value = "".join(ch * 2 for ch in value)
     try:
         red = int(value[0:2], 16) / 255.0
         green = int(value[2:4], 16) / 255.0
         blue = int(value[4:6], 16) / 255.0
+        stored = int(value[6:8], 16) / 255.0 if len(value) >= 8 else 1.0
     except (ValueError, IndexError):
         return 1.0, 1.0, 1.0, 1.0
-    return red, green, blue, 1.0
+    return (red, green, blue, stored if alpha is None else alpha)
 
 
 class CoverImage(AsyncImage):
@@ -509,6 +556,11 @@ class TrackRow(TappableRow):
         self.track = track
         self._on_play = on_play
         self._on_action = on_action
+        self._pressed = False
+
+        # A press state and a hairline between the rows: without them a list
+        # is a wall of text with nothing to catch the eye.
+        self.bind(pos=self._sync_row, size=self._sync_row)
 
         if show_cover:
             cover = CoverImage(size=dp(48))
@@ -540,6 +592,27 @@ class TrackRow(TappableRow):
         if self._on_play:
             self._on_play(self.track)
 
+    def on_touch_down(self, touch: Any) -> bool:
+        if not self.collide_point(*touch.pos):
+            return False
+        self._pressed = True
+        self._sync_row()
+        return super().on_touch_down(touch)
+
+    def on_touch_up(self, touch: Any) -> None:
+        self._pressed = False
+        self._sync_row()
+        super().on_touch_up(touch)
+
+    def _sync_row(self, *_args: Any) -> None:
+        self.canvas.before.clear()
+        with self.canvas.before:
+            if self._pressed:
+                Color(*_rgba(_color("on_surface"), 0.08))
+                Rectangle(pos=self.pos, size=self.size)
+            Color(*_rgba(_color("outline_variant")))
+            Line(points=[self.x, self.y, self.x + self.width, self.y], width=dp(1))
+
 
 class TrackList(ScrollView):
     """A vertical list of :class:`TrackRow` widgets.
@@ -566,21 +639,135 @@ class TrackList(ScrollView):
         for track in tracks:
             self._box.add_widget(TrackRow(track, on_play=on_play))
 
+    def show_loading(self, message: str = "") -> None:
+        """Put a placeholder in the list while the data arrives.
+
+        A ScrollView takes exactly one child, so the placeholder has to go
+        into the box the rows live in -- adding it to the scroll view itself
+        raises.
+        """
+        self._box.clear_widgets()
+        self._box.add_widget(LoadingView(message=message))
+
+
+class SurfaceCard(BoxLayout):
+    """A rounded panel that sits on the page.
+
+    A card is a tonal surface with a hairline edge.  Text straight on the
+    background is what makes an interface look like a wireframe, and on a
+    phone the panels are what separate one kind of content from another.
+    """
+
+    def __init__(self, level: str = "surface_container",
+                 radius: float | None = None,
+                 padding: tuple[float, float, float, float] = (dp(16), dp(12),
+                                                              dp(16), dp(12)),
+                 **kwargs: Any) -> None:
+        super().__init__(orientation="vertical", padding=padding, **kwargs)
+        self.level = level
+        self._radius = radius if radius is not None else dp(16)
+        self.bind(pos=self._sync, size=self._sync)
+        self._sync()
+
+    def _sync(self, *_args: Any) -> None:
+        # The colour of a shape is a separate instruction in Kivy, so the
+        # card is painted again instead of being recoloured in place.
+        self.canvas.before.clear()
+        with self.canvas.before:
+            Color(*_rgba(_color(self.level)))
+            RoundedRectangle(pos=self.pos, size=self.size, radius=[self._radius])
+            Color(*_rgba(_color("outline_variant")))
+            Line(rounded_rectangle=(self.x, self.y, self.width, self.height,
+                                    self._radius), width=dp(1))
+
+
+class NavItem(ButtonBehavior, BoxLayout):
+    """One entry of the bottom navigation.
+
+    Material 3 puts a pill behind the active icon and keeps a label under
+    every entry.  Without the pill the bar is a row of glyphs with no hint
+    of where you are; without the labels it is a row of glyphs full stop.
+    """
+
+    def __init__(self, icon: str, label: str = "",
+                 on_press: Callable[[], None] | None = None,
+                 **kwargs: Any) -> None:
+        super().__init__(orientation="vertical", size_hint_x=1, spacing=dp(2),
+                         padding=(0, dp(4), 0, dp(2)), **kwargs)
+        self.icon_name = icon
+        self.active = False
+        self._on_press = on_press
+
+        self.icon = IconButton(icon=icon, size=dp(40),
+                               color_name="on_surface_variant")
+        self.add_widget(self.icon)
+
+        self.label = ThemedLabel(text=label, role="label_small",
+                                 color_name="on_surface_variant", halign="center")
+        self.label.size_hint_y = None
+        _fit_height(self.label)
+        self.add_widget(self.label)
+
+        self.icon.bind(pos=self._sync, size=self._sync)
+        self.bind(pos=self._sync, size=self._sync)
+        self._sync()
+
+    def set_active(self, active: bool) -> None:
+        """Move the indicator and recolour the entry."""
+        self.active = active
+        self.icon.set_color_name("on_primary_container" if active
+                                 else "on_surface_variant")
+        self.label.set_color_name("on_surface" if active else "on_surface_variant")
+        self._sync()
+
+    def _sync(self, *_args: Any) -> None:
+        self.canvas.before.clear()
+        if not self.active:
+            return
+        width, height = dp(64), dp(32)
+        with self.canvas.before:
+            Color(*_rgba(_color("secondary_container")))
+            RoundedRectangle(pos=(self.icon.center_x - width / 2,
+                                  self.icon.center_y - height / 2),
+                             size=(width, height), radius=[dp(16)])
+
+    def on_release(self, *_args: Any) -> None:
+        if self._on_press is not None:
+            self._on_press()
+
 
 class EmptyState(BoxLayout):
-    """The "nothing here yet" placeholder."""
+    """The "nothing here yet" placeholder.
+
+    An icon on a tinted disc, a title, a line of explanation and one button.
+    A single grey line in the middle of an empty page is what an unfinished
+    screen looks like.
+    """
 
     def __init__(self, message: str = "", action_text: str = "",
-                 on_action: Callable[[], None] | None = None, **kwargs: Any) -> None:
+                 on_action: Callable[[], None] | None = None,
+                 title: str = "", icon: str = "music", **kwargs: Any) -> None:
         super().__init__(orientation="vertical", padding=dp(24),
-                         spacing=dp(12), **kwargs)
+                         spacing=dp(10), **kwargs)
         # Size to the content.  With the default size_hint the block takes a
         # share of whatever the parent hands out, and next to widgets with a
         # fixed height it gets squeezed until the message is a single line of
         # pixels.
         self.size_hint_y = None
         self.bind(minimum_height=self.setter("height"))
-        label = ThemedLabel(text=message, role="body_large",
+
+        self.disc = IconButton(icon=icon, size=dp(64), variant="tonal",
+                               glyph_scale=0.42, color_name="on_secondary_container")
+        self.add_widget(self.disc)
+
+        if title:
+            heading = ThemedLabel(text=title, role="title_medium",
+                                  color_name="on_surface", halign="center")
+            heading.size_hint_y = None
+            _fit_height(heading)
+            self.add_widget(heading)
+
+        label = ThemedLabel(text=message, role="body_medium",
                              color_name="on_surface_variant", halign="center")
         label.size_hint_y = None
         # ``minimum_height`` on a Label is an AliasProperty: it has no event
@@ -588,41 +775,90 @@ class EmptyState(BoxLayout):
         # what the label actually needs.
         _fit_height(label)
         self.add_widget(label)
+
         if action_text and on_action is not None:
-            button = _TextButton(text=action_text, on_press=on_action)
+            button = AppButton(text=action_text, on_press=on_action)
             self.add_widget(button)
 
 
-class _TextButton(ButtonBehavior, Label):
-    """A filled button."""
+class AppButton(ButtonBehavior, Label):
+    """A button with the Material 3 variants.
 
-    def __init__(self, text: str = "", on_press: Any = None, **kwargs: Any) -> None:
+    ``filled`` is the loud one, ``tonal`` the quiet one, ``outlined`` and
+    ``text`` the borderless pair.  The width is still guessed from the
+    character count, but the height and the radius are fixed, so two labels
+    of different length no longer come out in different shapes.
+    """
+
+    VARIANTS = ("filled", "tonal", "outlined", "text")
+
+    def __init__(self, text: str = "", on_press: Any = None,
+                 variant: str = "filled", **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.text = text
+        self.variant = variant if variant in self.VARIANTS else "filled"
         self.size_hint = (None, None)
         self.height = dp(40)
         self.width = max(dp(96), len(text) * dp(9) + dp(32))
         self.font_size = dp(14)
-        self.color = _color("on_primary")
+        self._pressed = False
         self.bind(on_release=lambda *_a: on_press() if on_press else None)
-        with self.canvas.before:
-            Color(*_rgba(_color("primary")))
-            self._rect = RoundedRectangle(pos=self.pos, size=self.size,
-                                          radius=[dp(20)])
         self.bind(pos=self._sync, size=self._sync)
+        self._sync()
+
+    def on_touch_down(self, touch: Any) -> bool:
+        if not self.collide_point(*touch.pos):
+            return False
+        self._pressed = True
+        self._sync()
+        return super().on_touch_down(touch)
+
+    def on_touch_up(self, touch: Any) -> None:
+        self._pressed = False
+        self._sync()
+        super().on_touch_up(touch)
 
     def _sync(self, *_args: Any) -> None:
-        self._rect.pos = self.pos
-        self._rect.size = self.size
+        self.canvas.before.clear()
+        if self.variant == "filled":
+            fill, text, overlay, edge = "primary", "on_primary", "on_primary", None
+        elif self.variant == "tonal":
+            fill, text, overlay, edge = ("secondary_container",
+                                         "on_secondary_container",
+                                         "on_secondary_container", None)
+        elif self.variant == "outlined":
+            fill, text, overlay, edge = None, "primary", "on_surface", "outline"
+        else:
+            fill, text, overlay, edge = None, "primary", "on_surface", None
+        with self.canvas.before:
+            if fill:
+                Color(*_rgba(_color(fill)))
+                RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(20)])
+            if edge:
+                Color(*_rgba(_color(edge)))
+                Line(rounded_rectangle=(self.x, self.y, self.width, self.height,
+                                        dp(20)), width=dp(1))
+            if self._pressed:
+                Color(*_rgba(_color(overlay), 0.12))
+                RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(20)])
+        self.color = _color(text)
+
+
+#: The old name, kept because a couple of screens import it.
+_TextButton = AppButton
+
+#: Public aliases: the screens paint with the same helpers.
+rgba = _rgba
+theme_color = _color
 
 
 class SectionHeader(BoxLayout):
     """A title above a group of content."""
 
     def __init__(self, text: str = "", **kwargs: Any) -> None:
-        super().__init__(orientation="horizontal", size_hint_y=None, height=dp(32),
+        super().__init__(orientation="horizontal", size_hint_y=None, height=dp(40),
                          **kwargs)
-        self.add_widget(ThemedLabel(text=text, role="title_medium",
+        self.add_widget(ThemedLabel(text=text, role="title_large",
                                     color_name="on_surface"))
 
 

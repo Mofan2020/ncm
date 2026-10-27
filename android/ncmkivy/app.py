@@ -75,6 +75,7 @@ class NcmApp(App):
         self.root_widget: Widget | None = None
         self._nav_rail: BoxLayout | None = None
         self._bottom_nav: BoxLayout | None = None
+        self._nav_items: dict[str, Any] = {}
         self._mini_player: Any = None
         self._content: BoxLayout | None = None
         self._detail: BoxLayout | None = None
@@ -199,7 +200,7 @@ class NcmApp(App):
             self._nav_rail.opacity = 1 if size_class.name == "expanded" else 0
             self._nav_rail.disabled = size_class.name != "expanded"
         if self._bottom_nav is not None:
-            self._bottom_nav.height = 0 if size_class.name == "expanded" else dp(64)
+            self._bottom_nav.height = 0 if size_class.name == "expanded" else dp(72)
             self._bottom_nav.opacity = 0 if size_class.name == "expanded" else 1
             self._bottom_nav.disabled = size_class.name == "expanded"
         return True
@@ -207,11 +208,11 @@ class NcmApp(App):
     # ----------------------------------------------------------- navigation
     #: The top-level sections, in the order they appear.
     SECTIONS = (
-        ("home", "home", "player.home"),
-        ("search", "search", "player.search"),
-        ("library", "stack", "player.library"),
-        ("downloads", "arrow_down", "player.source_local"),
-        ("me", "person", "player.login_required"),
+        ("home", "home", "android.home"),
+        ("search", "search", "android.search"),
+        ("library", "stack", "android.library"),
+        ("downloads", "arrow_down", "android.downloads"),
+        ("me", "person", "android.account"),
     )
 
     def _build_nav_rail(self) -> BoxLayout:
@@ -223,28 +224,42 @@ class NcmApp(App):
         for key, icon, _label in self.SECTIONS:
             button = IconButton(icon=icon)
             button.bind(on_release=lambda *_a, k=key: self.go(k))
+            self._nav_items[key] = button
             rail.add_widget(button)
         return rail
 
     def _build_bottom_nav(self) -> BoxLayout:
-        """The bottom bar used on phones."""
-        bar = BoxLayout(orientation="horizontal", size_hint_y=None,
-                        height=dp(64), spacing=dp(4), padding=(dp(8), dp(4)))
-        from ncmkivy.widgets import IconButton
+        """The bottom bar used on phones.
 
-        for key, icon, _label in self.SECTIONS:
-            button = IconButton(icon=icon)
-            # IconButton is fixed-size by default, which leaves five buttons
-            # bunched against the left edge.  A bottom bar wants them spread
-            # evenly across the width.
-            button.size_hint_x = 1
-            button.bind(on_release=lambda *_a, k=key: self.go(k))
-            bar.add_widget(button)
+        Material 3 wants a pill behind the active icon and a label under
+        every entry.  A bar of bare glyphs gives no hint of where you are,
+        and at a glance it does not look like a navigation bar at all.
+        """
+        bar = BoxLayout(orientation="horizontal", size_hint_y=None,
+                        height=dp(72), spacing=dp(4),
+                        padding=(dp(8), dp(2), dp(8), dp(4)))
+        from ncmkivy.widgets import NavItem
+
+        for key, icon, label in self.SECTIONS:
+            item = NavItem(icon=icon, label=self._text(label, key),
+                           on_press=lambda k=key: self.go(k))
+            self._nav_items[key] = item
+            bar.add_widget(item)
         return bar
+
+    def _sync_nav_state(self) -> None:
+        """Move the active marker to the section that is on screen."""
+        for key, item in self._nav_items.items():
+            active = key == self._current_section
+            if hasattr(item, "set_active"):
+                item.set_active(active)
+            else:
+                item.set_variant("tonal" if active else "plain")
 
     def go(self, section: str) -> None:
         """Switch to a top-level section."""
         self._current_section = section
+        self._sync_nav_state()
         if self._content is None:
             return
         from ncmkivy.screens import build_screen

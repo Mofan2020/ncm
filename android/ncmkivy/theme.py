@@ -50,6 +50,21 @@ class Palette:
     error: str
     on_error: str
     scrim: str
+    # The surface levels below and above the container surface.  A card
+    # needs a level to sit on: without them every panel is the same flat
+    # colour and the page looks like a wireframe.
+    surface_container_lowest: str = "#FFFFFF"
+    surface_container_low: str = "#F7F2FA"
+    surface_container_highest: str = "#E6E0E9"
+    inverse_surface: str = "#313033"
+    inverse_on_surface: str = "#F4EFF4"
+    inverse_primary: str = "#D0BCFF"
+    # The glass layer.  A floating panel is a translucent surface with a
+    # bright hairline edge, not an opaque card -- that is what gives the
+    # desktop its liquid look, and the phone wants the same trick.
+    glass_surface: str = "#FFFFFFB8"
+    glass_border: str = "#FFFFFFA0"
+    glass_highlight: str = "#FFFFFFFF"
 
     def as_dict(self) -> dict[str, str]:
         return dict(self.__dict__)
@@ -80,6 +95,15 @@ PALETTES: dict[str, Palette] = {
         error="#B3261E",
         on_error="#FFFFFF",
         scrim="#000000",
+        surface_container_lowest="#FFFFFF",
+        surface_container_low="#F7F2FA",
+        surface_container_highest="#E6E0E9",
+        inverse_surface="#313033",
+        inverse_on_surface="#F4EFF4",
+        inverse_primary="#D0BCFF",
+        glass_surface="#FFFFFFBF",
+        glass_border="#FFFFFFA6",
+        glass_highlight="#FFFFFFFF",
     ),
     "dark": Palette(
         primary="#D0BCFF",
@@ -103,6 +127,15 @@ PALETTES: dict[str, Palette] = {
         error="#F2B8B5",
         on_error="#601410",
         scrim="#000000",
+        surface_container_lowest="#0F0E13",
+        surface_container_low="#1D1B20",
+        surface_container_highest="#36343B",
+        inverse_surface="#E6E1E5",
+        inverse_on_surface="#313033",
+        inverse_primary="#6750A4",
+        glass_surface="#2B2930D9",
+        glass_border="#FFFFFF24",
+        glass_highlight="#FFFFFF14",
     ),
 }
 

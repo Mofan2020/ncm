@@ -93,7 +93,9 @@ def test_both_palettes_have_the_same_tokens():
 def test_palette_values_are_hex_colours():
     for palette in PALETTES.values():
         for name, value in palette.as_dict().items():
-            assert value.startswith("#") and len(value) == 7, name
+            # Seven digits are opaque, nine carry the alpha of a translucent
+            # surface -- the glass panels are made of those.
+            assert value.startswith("#") and len(value) in (7, 9), name
 
 
 # ------------------------------------------------------------------ widgets
@@ -357,3 +359,57 @@ def test_the_mini_player_stays_hidden_until_something_plays():
 
     player.show_track({"name": "Shots", "artists": "JAY PARK"}, playing=True)
     assert player.opacity == 1
+
+
+# ------------------------------------------------------- the visual layer
+
+def test_the_navigation_item_marks_the_active_entry():
+    """The bar has to say where you are."""
+    from kivy.graphics import RoundedRectangle
+    from ncmkivy.widgets import NavItem
+
+    def pill(widget):
+        return [c for c in widget.canvas.before.children
+                if isinstance(c, RoundedRectangle)]
+
+    item = NavItem(icon="home", label="Home")
+    assert not pill(item), "an inactive entry still shows the pill"
+
+    item.set_active(True)
+    assert item.active is True
+    assert pill(item), "the active entry has no pill"
+
+
+def test_the_button_variants_do_not_look_alike():
+    """A filled button and an outlined one must not be the same shape."""
+    from kivy.graphics import Line, RoundedRectangle
+    from ncmkivy.widgets import AppButton
+
+    def shapes(widget):
+        return [c for c in widget.canvas.before.children
+                if isinstance(c, Line | RoundedRectangle)]
+
+    filled = AppButton(text="Go", variant="filled")
+    outlined = AppButton(text="Go", variant="outlined")
+
+    assert any(isinstance(c, RoundedRectangle) for c in shapes(filled))
+    assert any(isinstance(c, Line) for c in shapes(outlined))
+
+
+def test_a_card_paints_a_surface_that_follows_its_size():
+    from kivy.graphics import RoundedRectangle
+    from ncmkivy.widgets import SurfaceCard
+
+    card = SurfaceCard()
+    fills = [c for c in card.canvas.before.children if isinstance(c, RoundedRectangle)]
+    assert fills, "the card has no surface"
+    assert tuple(fills[0].size) == tuple(card.size)
+
+
+def test_the_icon_button_can_carry_a_tonal_disc():
+    """The variant and the glyph scale have to exist before the first paint."""
+    from ncmkivy.widgets import IconButton
+
+    button = IconButton(icon="music", size=64, variant="tonal", glyph_scale=0.5)
+    assert button.variant == "tonal"
+    assert button.glyph_scale == 0.5

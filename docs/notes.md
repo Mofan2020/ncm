@@ -2101,3 +2101,44 @@ onefile 的临时目录读文件）。原来只检查「文件在不在」就复
 
 判据用摘要而不是版本号：版本号要人肉维护，而且同一份源码重新构建一次
 就会看起来像「更新了」。
+
+## 32. Android 版的视觉层重做（2026-10-27）
+
+之前的 Android 界面是「能跑」的骨架：平涂底色、没有卡片层级、底部导航
+只有一排图标没有选中态、字号只有一个档位、空状态飘着一行字。功能链路都在，
+视觉层等于没做。
+
+这次按 Material 3 + 液态玻璃重做，气质跟桌面对齐：
+
+- **表面层**：加了 surface_container_lowest / low / highest 三级表面色，
+  外加一组玻璃色（半透明面板 + 亮边）。卡片是「色调表面 + 一根发丝描边」，
+  不再是平涂。
+- **组件**：新增 `SurfaceCard`（圆角面板）、`NavItem`（带胶囊指示器和
+  文字标签的导航项）、`AppButton`（填充 / tonal / 描边 / 文字四种变体）。
+  `IconButton` 有了按压状态层（12% 的标签色叠加）和 tonal / filled 底衬，
+  还能按比例放大字形；`TrackRow` 有了按压态和行间分隔线；`EmptyState`
+  变成「图标底衬 + 标题 + 说明 + 一个按钮」。
+- **排版**：页面标题 headline_medium（26sp），分区标题 title_large（20sp），
+  列表主标题 title_medium（16sp），次要文字 body_small（12sp），
+  导航标签 label_small（11sp）。
+- **导航**：底栏 64dp → 72dp，选中项有胶囊指示器，图标和标签一起加深。
+
+踩到的坑：
+
+1. **Kivy 里颜色不是图形对象的属性。** `RoundedRectangle` 没有 `.color`，
+   颜色是单独的 `Color` 指令。改颜色只能重画（`canvas.before.clear()`
+   之后重新画一遍），不能就地改属性。
+2. **类名会撞 Kivy 自带的控件。** 原来叫 `ActionButton`，Kivy 自己就有一个
+   `ActionButton`，它的 KV 样式按类名匹配，一命名就抛 `BuilderException`。
+   改名 `AppButton`。
+3. **构造期就会重绘。** `IconButton` 的 `on_size` 可能在 `__init__` 结束前
+   就触发，所以 `variant` / `glyph_scale` / `_pressed` 都得有类级默认值，
+   否则 `AttributeError`。
+4. **ScrollView 只能有一个子控件。** 歌单页把 `LoadingView` 直接加到
+   `TrackList`（一个 ScrollView）上，真机上会直接崩。改成
+   `TrackList.show_loading()`，占位进到行列表所在的那个 box 里。
+
+顺带修了两个既有问题：`check_screens.py` 给每个工厂都传了 artist_id 和
+playlist_id（Kivy 拒绝未知属性），以及上面第 4 条那个崩溃。
+
+无头布局检查：5 个宽度 × 8 个页面，无横向溢出。

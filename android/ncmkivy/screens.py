@@ -14,6 +14,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from kivy.graphics import Color, Line
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.scrollview import ScrollView
@@ -25,10 +26,13 @@ from ncmkivy.widgets import (
     IconButton,
     LoadingView,
     SectionHeader,
+    SurfaceCard,
     TappableRow,
     ThemedLabel,
     TrackList,
     TrackRow,
+    rgba,
+    theme_color,
 )
 
 __all__ = ["build_screen", "HomeScreen", "SearchScreen", "LibraryScreen",
@@ -58,15 +62,27 @@ class _Screen(BoxLayout):
         self.controller = app.controller
 
         self.header = BoxLayout(orientation="horizontal", size_hint_y=None,
-                                height=dp(56), spacing=dp(8),
-                                padding=(dp(8), dp(4)))
-        self.title_label = ThemedLabel(text=title, role="title_large",
+                                height=dp(64), spacing=dp(8),
+                                padding=(dp(16), dp(8)))
+        self.title_label = ThemedLabel(text=title, role="headline_medium",
                                        color_name="on_surface")
         self.header.add_widget(self.title_label)
         self.add_widget(self.header)
+        # A hairline under the title bar.  It separates the chrome from the
+        # content without the weight of a border.
+        self.header.bind(pos=self._sync_header, size=self._sync_header)
+        self._sync_header()
 
         self.body = BoxLayout(orientation="vertical")
         self.add_widget(self.body)
+
+    def _sync_header(self, *_args: Any) -> None:
+        self.header.canvas.before.clear()
+        with self.header.canvas.before:
+            Color(*rgba(theme_color("outline_variant")))
+            Line(points=[self.header.x, self.header.y,
+                         self.header.x + self.header.width, self.header.y],
+                 width=dp(1))
 
     def set_title(self, title: str) -> None:
         self.title_label.text = title
@@ -76,10 +92,12 @@ class _Screen(BoxLayout):
         self.body.add_widget(LoadingView(message=message))
 
     def show_empty(self, message: str, action_text: str = "",
-                   on_action: Callable[[], None] | None = None) -> None:
+                   on_action: Callable[[], None] | None = None,
+                   title: str = "", icon: str = "music") -> None:
         self.body.clear_widgets()
         self.body.add_widget(EmptyState(message=message, action_text=action_text,
-                                        on_action=on_action))
+                                        on_action=on_action, title=title,
+                                        icon=icon))
 
     def show_error(self, message: str) -> None:
         self.show_empty(message)
@@ -104,9 +122,11 @@ class HomeScreen(_Screen):
         status = self.controller.login_status()
         if not status.get("logged_in"):
             column.add_widget(EmptyState(
+                title=_t(self.app, "app.title", "网易云音乐歌单下载器"),
                 message=_t(self.app, "player.login_required", "请先登录账号"),
                 action_text=_t(self.app, "login.title", "登录"),
                 on_action=self._open_login,
+                icon="person",
             ))
 
         column.add_widget(SectionHeader(text=_t(self.app, "player.online_sources", "在线来源")))
@@ -126,11 +146,23 @@ class HomeScreen(_Screen):
         self.body.add_widget(scroll)
 
     def _entry(self, label: str, action: Callable[[], None]) -> BoxLayout:
+        """One row of the source list: a tinted disc, the name, a chevron."""
+        card = SurfaceCard(level="surface_container_low", radius=dp(18),
+                           padding=(dp(10), dp(2), dp(16), dp(2)))
         row = TappableRow(orientation="horizontal", size_hint_y=None, height=dp(56),
                            spacing=dp(12))
-        row.add_widget(ThemedLabel(text=label, role="body_large"))
+        icon = IconButton(icon="music", size=dp(44), variant="tonal",
+                          glyph_scale=1.2, color_name="on_secondary_container")
+        # The disc is decoration: it must not swallow the tap meant for the
+        # row.
+        icon.disabled = True
+        row.add_widget(icon)
+        row.add_widget(ThemedLabel(text=label, role="title_medium"))
+        row.add_widget(ThemedLabel(text="›", role="title_large",
+                                   color_name="on_surface_variant"))
         row.bind(on_release=lambda *_a: action())
-        return row
+        card.add_widget(row)
+        return card
 
     def _open_login(self) -> None:
         self.app.go("me")
@@ -628,8 +660,9 @@ class PlaylistScreen(_Screen):
     def _build(self) -> None:
         self.list = TrackList([], on_play=self._play)
         self.body.add_widget(self.list)
-        # show_loading() clears the body, which would detach this list.
-        self.list.add_widget(LoadingView())
+        # show_loading() clears the body, which would detach this list, so
+        # the placeholder goes into the list itself.
+        self.list.show_loading()
         threading.Thread(target=self._load, daemon=True).start()
 
     def _load(self) -> None:
