@@ -31,6 +31,18 @@ from src.core.mediaserver import get_media_server
 log = logging.getLogger("ncm.kivy.controller")
 
 
+def _local_music_library():
+    """The library of local files: MediaStore on Android, a folder scan elsewhere.
+
+    Android 10 and later do not let the app read /sdcard/Music directly, so
+    the folder scan finds nothing there.  MediaStore is the index the system
+    keeps anyway: the same tracks, read through their content URIs.
+    """
+    from ncmkivy.mediastore import MediaStoreLibrary, is_android
+
+    return MediaStoreLibrary() if is_android() else get_local_music()
+
+
 __all__ = ["Controller", "Track"]
 
 
@@ -101,7 +113,7 @@ class Controller:
         self.settings = get_settings()
         self.library = get_library()
         self.media = get_media_server()
-        self.local_music = get_local_music()
+        self.local_music = _local_music_library()
         self._downloader: SongDownloader | None = None
         self._download_thread: threading.Thread | None = None
         #: Local-file index for the online <-> local matching.

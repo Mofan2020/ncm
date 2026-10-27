@@ -2142,3 +2142,27 @@ onefile 的临时目录读文件）。原来只检查「文件在不在」就复
 playlist_id（Kivy 拒绝未知属性），以及上面第 4 条那个崩溃。
 
 无头布局检查：5 个宽度 × 8 个页面，无横向溢出。
+
+## 33. Android 的本地音乐走 MediaStore（2026-10-27）
+
+Android 版「本地音乐」一直是空的，原因不是权限也不是分区存储，是接口
+对不上：`controller.local_tracks()` 调 `self.local_music.get_tracks(...)`，
+而 `LocalMusicLibrary` 根本没有这个方法，异常被 `except Exception` 吞掉，
+页面就永远拿到空列表。
+
+顺带一个更根本的问题：Android 10 以后应用不能直接读 /sdcard/Music，
+桌面的目录扫描在手机上本来也找不到东西。所以 Android 侧改用 MediaStore ——
+系统自己维护的媒体索引，按内容 URI 读。
+
+`android/ncmkivy/mediastore.py`：`MediaStoreLibrary` 提供跟桌面
+`LocalMusicLibrary` 相同的三个方法（`tracks()` / `track()` / `get_tracks()`），
+控制器按平台选一个，上层不用关心用的是哪个。
+
+查询分两截：`_query()` 负责碰 Java（jnius + activity 的 content resolver），
+`_read()` 只吃 resolver / audio / ContentUris 三个对象，用假 cursor 就能测。
+没有权限或者查询失败时返回空列表并记一条 warning，页面显示空状态，不崩。
+
+`tests/test_android_media.py` 7 项：字段映射、空库、查询打到 audio 集合、
+按标题/歌手/专辑搜索、分页窗口、按 path 和 key 找单曲、桌面不是 Android。
+
+真机上的 MediaStore 查询没验过（模拟器已关，用户明天自己测）。
