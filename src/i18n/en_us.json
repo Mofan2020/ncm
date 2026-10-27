@@ -670,7 +670,13 @@
     "phase_albums": "Reading saved albums",
     "phase_djradios": "Reading subscribed radio programs",
     "phase_mvs": "Reading saved MVs",
-    "phase_record": "Reading the listening history"
+    "phase_record": "Reading the listening history",
+    "cookie_export": "Export login cookie",
+    "cookie_copy": "Copy login cookie",
+    "cookie_exported": "Cookie exported:",
+    "cookie_copied": "Cookie copied to the clipboard",
+    "cookie_copy_manual": "The clipboard is not available, the cookie is shown below, copy it by hand",
+    "cookie_failed": "Could not export the cookie"
   },
   "android": {
     "followed_artists": "Followed artists",
@@ -700,6 +706,9 @@
     "albums": "Albums",
     "play_unavailable": "This track cannot be played right now",
     "play_failed": "Playback failed, try again later",
-    "songs": "Songs"
+    "songs": "Songs",
+    "copy_login_cookie": "Copy login cookie",
+    "cookie_copied": "Cookie copied to the clipboard",
+    "cookie_copy_failed": "The clipboard is not available"
   }
 }

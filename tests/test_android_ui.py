@@ -413,3 +413,10 @@ def test_the_icon_button_can_carry_a_tonal_disc():
     button = IconButton(icon="music", size=64, variant="tonal", glyph_scale=0.5)
     assert button.variant == "tonal"
     assert button.glyph_scale == 0.5
+
+
+def test_off_android_the_clipboard_reports_failure():
+    """The clipboard needs the Android bridge; without it there is no clipboard."""
+    from ncmkivy.uix import copy_to_clipboard
+
+    assert copy_to_clipboard("MUSIC_U=abc") is False

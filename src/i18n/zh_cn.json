@@ -670,7 +670,13 @@
     "phase_albums": "读取收藏的专辑",
     "phase_djradios": "读取订阅的电台",
     "phase_mvs": "读取收藏的 MV",
-    "phase_record": "读取云端听歌排行"
+    "phase_record": "读取云端听歌排行",
+    "cookie_export": "导出登录 Cookie",
+    "cookie_copy": "复制登录 Cookie",
+    "cookie_exported": "Cookie 已导出：",
+    "cookie_copied": "Cookie 已复制到剪贴板",
+    "cookie_copy_manual": "剪贴板用不了，Cookie 显示在下面，手动复制",
+    "cookie_failed": "Cookie 导出失败"
   },
   "android": {
     "followed_artists": "已关注歌手",
@@ -700,6 +706,9 @@
     "albums": "专辑",
     "play_unavailable": "这首歌暂时无法播放",
     "play_failed": "播放失败，请稍后再试",
-    "songs": "歌曲"
+    "songs": "歌曲",
+    "copy_login_cookie": "复制登录 Cookie",
+    "cookie_copied": "Cookie 已复制到剪贴板",
+    "cookie_copy_failed": "剪贴板用不了"
   }
 }

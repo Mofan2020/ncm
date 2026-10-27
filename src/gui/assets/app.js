@@ -6671,7 +6671,54 @@ function bindStaticEvents() {
     document.getElementById('btn-clear-background').addEventListener('click', clearBackground);
 
     // account backup
+    async function showCookieResult(result, message) {
+        const output = document.getElementById('cookie-output');
+        if (output && result && result.cookie) {
+            output.value = result.cookie;
+            output.hidden = false;
+        }
+        setBackupStatus(message);
+    }
+
+    async function exportLoginCookie() {
+        const button = document.getElementById('btn-cookie-export');
+        if (button) button.disabled = true;
+        try {
+            const result = await state.api.export_login_cookie();
+            if (!result || result.cancelled) return;
+            if (!result.success) {
+                setBackupStatus(t(result.error_key || 'backup.cookie_failed'));
+                return;
+            }
+            await showCookieResult(result, t('backup.cookie_exported') + ' ' + (result.path || ''));
+        } catch (err) {
+            setBackupStatus(t('backup.cookie_failed'));
+        } finally {
+            if (button) button.disabled = false;
+        }
+    }
+
+    async function copyLoginCookie() {
+        const button = document.getElementById('btn-cookie-copy');
+        if (button) button.disabled = true;
+        try {
+            const result = await state.api.copy_login_cookie();
+            if (!result) return;
+            if (!result.success) {
+                setBackupStatus(t(result.error_key || 'backup.cookie_failed'));
+                return;
+            }
+            await showCookieResult(result, t(result.copied ? 'backup.cookie_copied' : 'backup.cookie_copy_manual'));
+        } catch (err) {
+            setBackupStatus(t('backup.cookie_failed'));
+        } finally {
+            if (button) button.disabled = false;
+        }
+    }
+
     document.getElementById('btn-backup-export').addEventListener('click', exportAccountBackup);
+    document.getElementById('btn-cookie-export').addEventListener('click', exportLoginCookie);
+    document.getElementById('btn-cookie-copy').addEventListener('click', copyLoginCookie);
     document.getElementById('btn-backup-import').addEventListener('click', importAccountBackup);
     document.getElementById('btn-backup-conflict-apply')
         .addEventListener('click', applyBackupConflicts);

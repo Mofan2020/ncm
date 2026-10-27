@@ -7,6 +7,7 @@ a matter of putting a rectangle on every dark module.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from kivy.graphics import Color, Rectangle
@@ -18,6 +19,30 @@ from kivy.uix.textinput import TextInput
 from ncmkivy.widgets import ThemedLabel
 
 __all__ = ["QrCodeView", "PhoneLoginDialog"]
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """Put the text on the system clipboard.
+
+    The app has no window of its own on Android, so the clipboard service of
+    the running activity is the only way.  Off Android there is no bridge and
+    this reports failure instead of raising.
+    """
+    try:
+        from jnius import autoclass
+
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        ClipData = autoclass("android.content.ClipData")
+        activity = PythonActivity.mActivity
+        manager = activity.getSystemService("clipboard")
+        manager.setPrimaryClip(ClipData.newPlainText("ncm", text))
+        return True
+    except Exception as exc:  # not Android, or no activity yet
+        log.info("clipboard write failed: %s", exc)
+        return False
+
+
+log = logging.getLogger("ncm.kivy.uix")
 
 
 class QrCodeView(BoxLayout):

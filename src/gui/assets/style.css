@@ -2282,3 +2282,16 @@ input[type="range"]::-webkit-slider-thumb {
 .cache-stats dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
 .cache-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .cache-actions .btn { padding: 6px 11px; font-size: 12px; }
+
+#cookie-output {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: transparent;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  resize: vertical;
+}

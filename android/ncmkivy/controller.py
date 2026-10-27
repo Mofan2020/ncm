@@ -166,6 +166,15 @@ class Controller:
         result = self.login.login_phone(phone, code, ctcode)
         return dict(result)
 
+    def login_cookie(self) -> dict[str, Any]:
+        """The session cookie, so another device can sign in without a password.
+
+        This is the account's credential: whoever holds it is logged in as
+        this account.  The screen copies it to the clipboard and says so.
+        """
+        cookie = self.login.cookie_string()
+        return {"success": bool(cookie), "cookie": cookie}
+
     def logout(self) -> bool:
         self.login.logout()
         return True

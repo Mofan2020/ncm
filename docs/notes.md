@@ -2218,3 +2218,26 @@ Android 6 以后声明和授予是两回事 —— 没授予时 MediaStore 只�
 
 空状态那个 64dp 的圆形底衬原来靠 `glyph_scale=0.42` 压小图标，换成固定网格
 之后这个比例没意义了，改成 0.9（21.6dp）。
+
+## 37. 设置里能导出/复制登录 Cookie（2026-10-27）
+
+需求：在设置里除了导出账号数据，还要能把当前登录的 cookie 导出来，这样在
+另一台设备上可以免密临时登录。
+
+这个 cookie 就是账号的会话凭据——拿到它的人就是这个账号，所以：
+
+- 桌面：设置 → 账号，两个按钮。「导出登录 Cookie」弹原生保存对话框写成
+  `.txt`，文件权限 0600（只有本人能读）；「复制登录 Cookie」走系统剪贴板
+  （macOS `pbcopy`、Windows `clip`）。两个按钮都会把内容显示在下面的文本框
+  里，剪贴板或者文件哪条路都不通的时候还能手动复制。
+- Android：账号页一个「复制登录 Cookie」按钮，走 ClipboardManager。
+  Android 那边不落盘——剪贴板是用户能立刻用掉再擦掉的地方。
+
+`LoginManager.cookie_string()` 是新加的公开方法（原来只有私有的
+`_cookie_string()`）。剪贴板和文件两条路都不经过日志。
+
+`tests/test_login_cookie.py` 五项：导出写文件 + 0600 权限、取消对话框不算
+错误、复制报告剪贴板接没接到、没登录时两条路都拒绝、cookie 不进日志。
+剪贴板在非 Android 上必然失败那一项放在 `tests/test_android_ui.py`（要 Kivy）。
+
+i18n 两份语言同步加了 6 个 backup.* key 和 3 个 android.* key。

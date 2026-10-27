@@ -424,6 +424,9 @@ class MeScreen(_Screen):
             column.add_widget(row)
             column.add_widget(self._button(
                 _t(self.app, "android.sign_out", "退出登录"), self._logout))
+            column.add_widget(self._button(
+                _t(self.app, "android.copy_login_cookie", "复制登录 Cookie"),
+                self._copy_login_cookie))
         else:
             column.add_widget(EmptyState(
                 message=_t(self.app, "player.login_required", "请先登录账号")))
@@ -447,6 +450,25 @@ class MeScreen(_Screen):
 
     def _logout(self) -> None:
         self.controller.logout()
+
+    def _copy_login_cookie(self) -> None:
+        """Put the session cookie on the clipboard.
+
+        The cookie is the account's credential, so it is never written into a
+        file here -- the clipboard is where the user can paste it into the
+        other device and wipe it afterwards.
+        """
+        from ncmkivy.uix import copy_to_clipboard
+
+        result = self.controller.login_cookie()
+        cookie = str(result.get("cookie") or "")
+        if not cookie:
+            self.app._toast(_t(self.app, "android.login_required", "请先登录账号"))
+            return
+        if copy_to_clipboard(cookie):
+            self.app._toast(_t(self.app, "android.cookie_copied", "Cookie 已复制到剪贴板"))
+        else:
+            self.app._toast(_t(self.app, "android.cookie_copy_failed", "剪贴板用不了"))
 
 
 class ArtistScreen(_Screen):

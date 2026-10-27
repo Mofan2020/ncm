@@ -270,6 +270,14 @@ class LoginManager:
             cookies[key.strip()] = value.strip()
         return cookies
 
+    def cookie_string(self) -> str:
+        """The session cookie, ready to be handed to another device.
+
+        This is the account's credential: whoever holds it is logged in as
+        this account.  Callers that show it to the user have to say so.
+        """
+        return self._cookie_string()
+
     def _cookie_string(self) -> str:
         """The session cookies, without the identity cookies."""
         return "; ".join(f"{k}={v}" for k, v in self._session.cookies.get_dict().items()

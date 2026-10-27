@@ -385,6 +385,66 @@ class GuiBridge:
         self.settings.update_download(download_dir=str(chosen))
         return str(chosen)
 
+    # ------------------------------------------------------------- login cookie
+    def export_login_cookie(self) -> dict[str, Any]:
+        """把当前登录 cookie 存成一个文件，方便在另一台设备上免密登录。
+
+        这个 cookie 就是账号的会话凭据：拿到它的人就是这个账号。文件按 0600
+        写，界面同时把内容显示出来，剪贴板或者文件哪条路都不通的时候还能
+        手动复制。
+        """
+        cookie = self.login_manager.cookie_string()
+        if not cookie:
+            return {"success": False, "error_key": "backup.login_required"}
+        path = self._choose_cookie_save_path()
+        if not path:
+            return {"success": False, "cancelled": True}
+        try:
+            path.write_text(cookie + "\n", encoding="utf-8")
+            os.chmod(path, 0o600)
+        except OSError as exc:
+            self.logger.warning("cannot write the cookie file: %s", exc)
+            return {"success": False, "error_key": "backup.write_failed",
+                    "message": str(exc)}
+        return {"success": True, "cookie": cookie, "path": str(path)}
+
+    def copy_login_cookie(self) -> dict[str, Any]:
+        """把当前登录 cookie 复制到系统剪贴板。"""
+        cookie = self.login_manager.cookie_string()
+        if not cookie:
+            return {"success": False, "error_key": "backup.login_required"}
+        return {"success": True, "cookie": cookie,
+                "copied": self._copy_to_clipboard(cookie)}
+
+    def _choose_cookie_save_path(self) -> Path | None:
+        """弹原生保存对话框，返回用户选好的路径。"""
+        if not self._window:
+            return None
+        try:
+            result = self._window.create_file_dialog(
+                webview.SAVE_DIALOG,
+                directory=str(Path.home()),
+                save_filename="ncm-login-cookie.txt",
+                file_types=("Text (*.txt)",))
+        except Exception as exc:
+            self.logger.warning("cookie save dialog failed: %s", exc)
+            return None
+        if not result:
+            return None
+        chosen = result[0] if isinstance(result, list | tuple) else result
+        return Path(str(chosen))
+
+    def _copy_to_clipboard(self, text: str) -> bool:
+        """把文本放进系统剪贴板。"""
+        command = ["pbcopy"] if platform.system() == "Darwin" else ["clip"]
+        try:
+            subprocess.run(command, input=text.encode("utf-8"), check=True,
+                           capture_output=True, timeout=10)
+            return True
+        except Exception as exc:
+            self.logger.warning("clipboard write failed: %s", exc)
+            return False
+
     # ------------------------------------------------------------ account backup
     def export_account_backup(self) -> dict[str, Any]:
         """把账号数据导出成一个 ``.ncmbk`` 文件。
