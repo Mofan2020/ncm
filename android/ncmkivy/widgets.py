@@ -226,7 +226,10 @@ class IconButton(ButtonBehavior, Widget):
         ``Color`` that way draws nothing at all -- no error, no glyph.
         """
         rgb = _rgba(glyph_color)
-        size = min(self.width, self.height) * self.glyph_scale
+        # A fixed 24dp grid: the button is the touch area, the glyph is
+        # not a fraction of it.  A 48dp button used to draw a 17dp icon,
+        # and the icons did not weigh the same as each other.
+        size = min(dp(24) * self.glyph_scale, min(self.width, self.height))
         cx, cy = self.center_x, self.center_y
         kind = self.ICONS.get(self.icon, "dots")
 
@@ -285,7 +288,7 @@ class IconButton(ButtonBehavior, Widget):
         elif kind == "arrow_down":
             from kivy.graphics import Line, Triangle
             Color(*rgb)
-            Line(points=[cx, cy + size * 0.22, cx, cy - size * 0.1], width=2)
+            Line(points=[cx, cy + size * 0.22, cx, cy - size * 0.1], width=dp(2))
             Triangle(points=(cx - size * 0.12, cy - size * 0.05,
                             cx + size * 0.12, cy - size * 0.05,
                             cx, cy - size * 0.22))
@@ -294,25 +297,25 @@ class IconButton(ButtonBehavior, Widget):
             Color(*rgb)
             Line(points=[cx + size * 0.1, cy + size * 0.18,
                          cx - size * 0.08, cy,
-                         cx + size * 0.1, cy - size * 0.18], width=2.2)
+                         cx + size * 0.1, cy - size * 0.18], width=dp(2.2))
         elif kind == "cross":
             from kivy.graphics import Line
             Color(*rgb)
             Line(points=[cx - size * 0.15, cy - size * 0.15,
-                         cx + size * 0.15, cy + size * 0.15], width=2)
+                         cx + size * 0.15, cy + size * 0.15], width=dp(2))
             Line(points=[cx - size * 0.15, cy + size * 0.15,
-                         cx + size * 0.15, cy - size * 0.15], width=2)
+                         cx + size * 0.15, cy - size * 0.15], width=dp(2))
         elif kind == "plus":
             from kivy.graphics import Line
             Color(*rgb)
-            Line(points=[cx - size * 0.15, cy, cx + size * 0.15, cy], width=2)
-            Line(points=[cx, cy - size * 0.15, cx, cy + size * 0.15], width=2)
+            Line(points=[cx - size * 0.15, cy, cx + size * 0.15, cy], width=dp(2))
+            Line(points=[cx, cy - size * 0.15, cx, cy + size * 0.15], width=dp(2))
         elif kind == "check":
             from kivy.graphics import Line
             Color(*rgb)
             Line(points=[cx - size * 0.16, cy,
                          cx - size * 0.04, cy - size * 0.12,
-                         cx + size * 0.18, cy + size * 0.16], width=2.4)
+                         cx + size * 0.18, cy + size * 0.16], width=dp(2.4))
         elif kind == "note":
             from kivy.graphics import Ellipse, Rectangle
             Color(*rgb)
@@ -324,10 +327,10 @@ class IconButton(ButtonBehavior, Widget):
             Color(*rgb)
             Line(points=[cx - size * 0.16, cy + size * 0.05,
                          cx, cy + size * 0.2,
-                         cx + size * 0.16, cy + size * 0.05], width=2)
+                         cx + size * 0.16, cy + size * 0.05], width=dp(2))
             Line(points=[cx - size * 0.16, cy - size * 0.05,
                          cx, cy - size * 0.2,
-                         cx + size * 0.16, cy - size * 0.05], width=2)
+                         cx + size * 0.16, cy - size * 0.05], width=dp(2))
         elif kind == "house":
             from kivy.graphics import Rectangle, Triangle
             Color(*rgb)
@@ -757,7 +760,7 @@ class EmptyState(BoxLayout):
         self.bind(minimum_height=self.setter("height"))
 
         self.disc = IconButton(icon=icon, size=dp(64), variant="tonal",
-                               glyph_scale=0.42, color_name="on_secondary_container")
+                               glyph_scale=0.9, color_name="on_secondary_container")
         self.add_widget(self.disc)
 
         if title:
