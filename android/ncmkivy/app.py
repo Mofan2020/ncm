@@ -409,8 +409,11 @@ class NcmApp(App):
                     # thread as well -- calling show() there alone is not
                     # enough and raises "Can't toast on a thread that has
                     # not called Looper.prepare()".
+                    # LENGTH_LONG is the longest the platform toast offers
+                    # (about 3.5 s).  LENGTH_SHORT is 2 s, which is gone
+                    # before the message has been read.
                     toast = toast_class.makeText(activity, text,
-                                                 toast_class.LENGTH_SHORT)
+                                                 toast_class.LENGTH_LONG)
                     toast.show()
 
                 run_on_ui_thread(on_ui)()

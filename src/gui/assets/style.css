@@ -1034,6 +1034,9 @@ input[type="range"]::-webkit-slider-thumb {
     max-width: min(380px, 82vw);
 }
 .toast {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     padding: 10px 14px;
     border-radius: var(--radius-sm);
     background: var(--glass-strong);
@@ -1046,6 +1049,23 @@ input[type="range"]::-webkit-slider-thumb {
     font-size: 13px;
     animation: toast-in .2s cubic-bezier(.22,1,.36,1);
 }
+/* The message has to be able to shrink: a long title next to the undo button
+   must wrap instead of pushing the button out of the toast. */
+.toast-text { flex: 1 1 auto; min-width: 0; }
+.toast-undo {
+    flex: 0 0 auto;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--glass-border);
+    background: var(--brand-soft);
+    color: var(--accent);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s ease, opacity .15s ease;
+}
+.toast-undo:hover { background: var(--brand); color: #fff; }
+.toast-undo:disabled { opacity: .45; cursor: default; }
 .toast-success { border-left-color: var(--ok); }
 .toast-error { border-left-color: var(--danger); }
 .toast-warning { border-left-color: var(--warn); }

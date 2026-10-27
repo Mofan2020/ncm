@@ -24,7 +24,9 @@
     "info": "提示",
     "copy": "复制",
     "unknown": "未知",
-    "remove": "移除"
+    "remove": "移除",
+    "undo": "撤销",
+    "undone": "已撤销"
   },
   "login": {
     "title": "登录",

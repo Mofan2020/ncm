@@ -335,10 +335,23 @@ function levelText(level) {
     return text === key ? '' : text;
 }
 
-function showToast(type, message, timeoutMs = 3200) {
+//: How long a plain toast stays up.  The old 3.2 s was gone before the eye
+//: had settled on it.
+const TOAST_MS = 4800;
+//: A toast carrying an undo button is a control, not a notification: the user
+//: has to notice it, read it and reach it before it leaves.
+const TOAST_UNDO_MS = 8000;
+//: Confirmation after an undo.  Nothing to act on, so it is short.
+const TOAST_UNDONE_MS = 2400;
+
+function showToast(type, message, timeoutMs = TOAST_MS, options = null) {
     if (!message) return;
     const container = document.getElementById('toast-container');
     if (!container) return;
+    // Only a toast that can actually be undone gets a button: a label without
+    // a callback would be a dead control.
+    const undo = options && options.undoLabel && typeof options.onUndo === 'function'
+        ? options : null;
     // Cap the visible queue: spam (e.g. dozens of download failures in a row)
     // would otherwise leak DOM and listeners indefinitely.  The oldest fades
     // out as soon as the cap is exceeded.
@@ -351,13 +364,67 @@ function showToast(type, message, timeoutMs = 3200) {
     }
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
-    toast.textContent = message;
-    container.appendChild(toast);
-    setTimeout(() => {
+    // The message lives in its own element: putting the undo button next to it
+    // means the toast body cannot be a bare text node any more.
+    const text = document.createElement('span');
+    text.className = 'toast-text';
+    text.textContent = message;
+    toast.appendChild(text);
+    let timer = null;
+    const dismiss = () => {
+        if (timer) {
+            clearTimeout(timer);
+            timer = null;
+        }
         toast.style.opacity = '0';
         toast.style.transform = 'translateY(6px)';
         setTimeout(() => toast.remove(), 220);
-    }, timeoutMs);
+    };
+    if (undo) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'toast-undo';
+        button.textContent = undo.undoLabel;
+        // One shot: the undo sends a write request, and a second click on a
+        // toast that is already fading must not send it twice.
+        button.addEventListener('click', () => {
+            if (button.disabled) return;
+            button.disabled = true;
+            dismiss();
+            try {
+                Promise.resolve(undo.onUndo()).catch(() => {});
+            } catch (err) {
+                /* the undo path reports its own failure */
+            }
+        });
+        toast.appendChild(button);
+    }
+    container.appendChild(toast);
+    timer = setTimeout(dismiss, undo ? Math.max(timeoutMs, TOAST_UNDO_MS) : timeoutMs);
+}
+
+/**
+ * Undo one write request and say so.
+ *
+ * ``apply`` only runs when the request came back successful, so a failed undo
+ * never leaves the screen showing the old state.
+ */
+async function runUndo(request, apply, failKey) {
+    const key = failKey || 'error.unknown';
+    let result;
+    try {
+        result = await request();
+    } catch (err) {
+        showToast('error', t(key));
+        return;
+    }
+    if (!result || result.success === false) {
+        if (result) showError(result, key);
+        else showToast('error', t(key));
+        return;
+    }
+    if (apply) await apply(result);
+    showToast('info', t('common.undone'), TOAST_UNDONE_MS);
 }
 
 function showError(payload, fallbackKey) {
@@ -2471,7 +2538,15 @@ async function createPlaylist() {
     
     const result = await state.api.create_playlist(name, 0, '');
     if (result.success) {
-        showToast('success', t('player.playlist_created', { name }));
+        const createdId = result.playlist_id;
+        showToast('success', t('player.playlist_created', { name }), undefined, {
+            undoLabel: t('common.undo'),
+            onUndo: () => runUndo(
+                () => state.api.delete_playlist([createdId]),
+                () => loadPlaylists(),
+                'player.delete_failed',
+            ),
+        });
         await loadPlaylists();
     } else {
         showError(result, 'player.create_failed');
@@ -2482,9 +2557,20 @@ async function editPlaylist(playlist) {
     const name = prompt(t('player.playlist_rename'), playlist.name);
     if (!name || name === playlist.name) return;
     
+    const before = playlist.name;
     const result = await state.api.update_playlist(playlist.id, { name });
     if (result.success) {
-        showToast('success', t('player.playlist_renamed', { name }));
+        showToast('success', t('player.playlist_renamed', { name }), undefined, {
+            undoLabel: t('common.undo'),
+            onUndo: () => runUndo(
+                () => state.api.update_playlist(playlist.id, { name: before }),
+                () => {
+                    playlist.name = before;
+                    renderPlaylists(player.playlists);
+                },
+                'player.update_failed',
+            ),
+        });
         playlist.name = name;
         renderPlaylists(player.playlists);
     } else {
@@ -2509,7 +2595,17 @@ async function toggleSubscribePlaylist(playlist) {
     const result = await state.api.subscribe_playlist(playlist.id, subscribe);
     if (result.success) {
         playlist.subscribed = subscribe;
-        showToast('success', subscribe ? t('player.playlist_subscribed') : t('player.playlist_unsubscribed'));
+        showToast('success', subscribe ? t('player.playlist_subscribed') : t('player.playlist_unsubscribed'), undefined, {
+            undoLabel: t('common.undo'),
+            onUndo: () => runUndo(
+                () => state.api.subscribe_playlist(playlist.id, !subscribe),
+                (undo) => {
+                    playlist.subscribed = !subscribe;
+                    renderPlaylists(player.playlists);
+                },
+                subscribe ? 'player.unsubscribe_failed' : 'player.subscribe_failed',
+            ),
+        });
         renderPlaylists(player.playlists);
     } else {
         showError(result, subscribe ? 'player.subscribe_failed' : 'player.unsubscribe_failed');
@@ -2781,7 +2877,15 @@ async function createLocalPlaylist() {
     
     const result = await state.api.create_local_playlist(name);
     if (result.success) {
-        showToast('success', t('player.playlist_created', { name }));
+        const created = (result.playlist || {}).id;
+        showToast('success', t('player.playlist_created', { name }), undefined, {
+            undoLabel: t('common.undo'),
+            onUndo: () => runUndo(
+                () => state.api.delete_local_playlist(created),
+                () => loadLocalPlaylists(),
+                'player.delete_failed',
+            ),
+        });
         await loadLocalPlaylists();
     } else {
         showError(result, 'player.create_failed');
@@ -2792,9 +2896,20 @@ async function editLocalPlaylist(playlist) {
     const name = prompt(t('player.playlist_rename'), playlist.name);
     if (!name || name === playlist.name) return;
     
+    const before = playlist.name;
     const result = await state.api.update_local_playlist(playlist.id, { name });
     if (result.success) {
-        showToast('success', t('player.playlist_renamed', { name }));
+        showToast('success', t('player.playlist_renamed', { name }), undefined, {
+            undoLabel: t('common.undo'),
+            onUndo: () => runUndo(
+                () => state.api.update_local_playlist(playlist.id, { name: before }),
+                (undo) => {
+                    playlist.name = before;
+                    renderLocalPlaylists(player.localPlaylists);
+                },
+                'player.update_failed',
+            ),
+        });
         playlist.name = name;
         renderLocalPlaylists(player.localPlaylists);
     } else {
@@ -2932,7 +3047,23 @@ async function removeTrackFromLocalPlaylist(playlist, track, item) {
     const result = await state.api.remove_tracks_from_local_playlist(playlist.id, [track.key]);
     if (result.success) {
         item.remove();
-        showToast('success', t('player.track_removed'));
+        showToast('success', t('player.track_removed'), undefined, {
+            undoLabel: t('common.undo'),
+            onUndo: () => runUndo(
+                () => state.api.add_tracks_to_local_playlist(playlist.id, [track.key]),
+                () => {
+                    // Put the row back where the screen expects to find it:
+                    // the local list renders from this array, not from disk.
+                    const current = player.currentLocalPlaylist;
+                    const list = current && Array.isArray(current.tracks) ? current.tracks : null;
+                    if (list && !list.some((row) => trackKeyOf(row) === track.key)) {
+                        list.push(track);
+                    }
+                    if (list) renderLocalPlaylistTracks(list);
+                },
+                'player.add_failed',
+            ),
+        });
         // Re-index
         const items = document.querySelectorAll('#track-list .playlist-track-item');
         items.forEach((el, idx) => {
@@ -3093,7 +3224,14 @@ async function removeTrackFromPlaylist(playlist, track, item) {
     const result = await state.api.remove_tracks_from_playlist(playlist.id, [track.id]);
     if (result.success) {
         item.remove();
-        showToast('success', t('player.track_removed'));
+        showToast('success', t('player.track_removed'), undefined, {
+            undoLabel: t('common.undo'),
+            onUndo: () => runUndo(
+                () => state.api.add_tracks_to_playlist(playlist.id, [track.id]),
+                () => refreshCurrentSource(),
+                'player.add_failed',
+            ),
+        });
         // Re-index
         const items = document.querySelectorAll('#playlist-tracks-list .playlist-track-item');
         items.forEach((el, idx) => {
@@ -3200,7 +3338,14 @@ async function confirmAddTracksToPlaylist() {
     const result = await state.api.add_tracks_to_playlist(player.targetPlaylist.id, trackIds);
     
     if (result.success) {
-        showToast('success', t('player.tracks_added', { count: trackIds.length }));
+        showToast('success', t('player.tracks_added', { count: trackIds.length }), undefined, {
+            undoLabel: t('common.undo'),
+            onUndo: () => runUndo(
+                () => state.api.remove_tracks_from_playlist(player.targetPlaylist.id, trackIds),
+                () => loadPlaylistTracksForModal(player.targetPlaylist),
+                'player.remove_failed',
+            ),
+        });
         closeModal('playlist-add-tracks-modal');
         // Refresh the playlist tracks view
         loadPlaylistTracksForModal(player.targetPlaylist);
@@ -3796,9 +3941,21 @@ async function toggleFollowArtist(artist, button) {
     }
     artist.followed = result.followed;
     if (button) renderFollowButton(button, result.followed);
-    showToast('success', result.followed
+    const following = result.followed;
+    showToast('success', following
         ? t('player.artist_followed')
-        : t('player.artist_unfollowed'));
+        : t('player.artist_unfollowed'), undefined, {
+        undoLabel: t('common.undo'),
+        onUndo: () => runUndo(
+            () => state.api.follow_artist(artist.id, !following),
+            async (undo) => {
+                artist.followed = undo.followed;
+                if (button) renderFollowButton(button, undo.followed);
+                if (player.sourceTab === 'followed_artists') await loadFollowedArtists();
+            },
+            following ? 'player.artist_unfollow_failed' : 'player.artist_follow_failed',
+        ),
+    });
     // The followed list changed, so it has to be re-read -- but only when it
     // is the list on screen.
     if (player.sourceTab === 'followed_artists') {
@@ -4675,11 +4832,28 @@ async function toggleFavorite(track) {
     // The cloud outcome tells more than "it worked" or "it did not": a track
     // NetEase refuses and a request that came too fast need different words,
     // and neither of them is the user's mistake.
-    if (result.cloud === 'login_required') showToast('info', t('player.favorite_local_only'), 3600);
-    else if (result.cloud === 'unsupported') showToast('warning', t('player.favorite_cloud_unsupported'), 4200);
-    else if (result.cloud === 'rate_limited') showToast('warning', t('player.favorite_cloud_busy'), 3600);
-    else if (result.cloud === 'failed') showToast('warning', t('player.favorite_cloud_failed'), 3600);
-    else if (wanted) showToast('success', t('player.favorite_added'), 1800);
+    // Every branch here reports a write that already changed the local state,
+    // including the ones that explain why the cloud refused it -- so every one
+    // of them can be undone, not just the plain success.  ``!wanted`` restores
+    // whichever state the track was in before the click.
+    const undoFavorite = {
+        undoLabel: t('common.undo'),
+        onUndo: () => runUndo(
+            () => state.api.set_favorite(track, !wanted),
+            (undo) => {
+                player.favoriteKeys = new Set(undo.favorites || []);
+                refreshTrackRow(key);
+                renderNowPlaying();
+                if (undo.liked_dirty) refreshCurrentSource();
+            },
+            'error.unknown',
+        ),
+    };
+    if (result.cloud === 'login_required') showToast('info', t('player.favorite_local_only'), 3600, undoFavorite);
+    else if (result.cloud === 'unsupported') showToast('warning', t('player.favorite_cloud_unsupported'), 4200, undoFavorite);
+    else if (result.cloud === 'rate_limited') showToast('warning', t('player.favorite_cloud_busy'), 3600, undoFavorite);
+    else if (result.cloud === 'failed') showToast('warning', t('player.favorite_cloud_failed'), 3600, undoFavorite);
+    else if (wanted) showToast('success', t('player.favorite_added'), undefined, undoFavorite);
     refreshTrackRow(key);
     renderNowPlaying();
     // The account's liked list changed, so the list on screen is out of

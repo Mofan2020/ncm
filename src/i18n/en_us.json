@@ -24,7 +24,9 @@
     "info": "Notice",
     "copy": "Copy",
     "unknown": "Unknown",
-    "remove": "Remove"
+    "remove": "Remove",
+    "undo": "Undo",
+    "undone": "Undone"
   },
   "login": {
     "title": "Sign in",
