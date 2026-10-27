@@ -10,7 +10,7 @@ source.include_exts = py,png,jpg,kv,atlas,json,ttf
 source.include_patterns = ncmkivy/*.py,ncmkivy/**/*.py,src/*.py,src/**/*.py
 source.exclude_dirs = tests,build,dist,.venv,__pycache__,tools,legacy
 
-version = 3.5.5
+version = 3.5.6
 
 # Only the pure-Python dependencies: no Pillow, no native wheels.  Every
 # image job (QR code, wallpaper) is done without one.
