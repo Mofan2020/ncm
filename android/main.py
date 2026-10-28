@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""The Android entry point.
+"""The Android entry point: the desktop's shell with a different front end.
 
-Mirrors the desktop ``main.py``: it configures logging, parses the same
-arguments, and can run a headless self-test so CI can check the bundle
-without a screen.
+The phone runs the same Python core, the same bridge and the same media
+server as the desktop.  Only the interface differs: ``android/web`` holds a
+touch-sized version of it, served over the loopback server so the WebView
+gets a plain http:// URL (the same reason the desktop does not use a file://
+URL: a WebView cannot read local files the way the desktop's can).
+
+Nothing here is Android-specific except where it has to be: the writable
+directories, and the media library permission.
 """
 from __future__ import annotations
 
@@ -22,11 +27,12 @@ for _path in (str(_PROJECT_ROOT), str(_HERE)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-# Kivy parses sys.argv itself and rejects unknown options.  Our own flags
-# have to be taken out of its way before anything imports it.
-os.environ.setdefault("KIVY_NO_ARGS", "1")
-
 __all__ = ["main"]
+
+log = logging.getLogger("ncm.android")
+
+#: The name of the bundled interface directory.
+WEB_DIR = "web"
 
 
 def _configure_logging(debug: bool) -> None:
@@ -34,7 +40,7 @@ def _configure_logging(debug: bool) -> None:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if debug else logging.INFO)
     try:
-        log_dir = Path(os.environ.get("NCM_LOG_DIR", "/tmp"))
+        log_dir = Path(os.environ.get("NCM_LOG_DIR") or "/tmp")
         log_dir.mkdir(parents=True, exist_ok=True)
         handler = logging.handlers.RotatingFileHandler(
             log_dir / "ncm.log", maxBytes=512 * 1024, backupCount=2,
@@ -64,6 +70,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _prepare_home() -> None:
+    """Point the app at directories it can actually write to.
+
+    On Android ``HOME`` is ``/data``, which the app process may not write.
+    ``ANDROID_PRIVATE`` is the app's own files directory, and everything the
+    settings, the logs and the downloads need has to live there.
+    """
+    private = os.environ.get("ANDROID_PRIVATE")
+    if not private:
+        return
+    os.environ.setdefault("HOME", private)
+    os.environ.setdefault("XDG_CONFIG_HOME", str(Path(private) / ".config"))
+    os.environ.setdefault("NCM_LOG_DIR", str(Path(private) / "logs"))
+    # The media server writes its cache next to the app data; a read-only
+    # /tmp would break playback.
+    os.environ.setdefault("TMPDIR", str(Path(private) / "tmp"))
+
+
 def _self_test(report_path: str | None = None) -> int:
     """Check that the bundle is complete, without opening a window.
 
@@ -83,19 +107,24 @@ def _self_test(report_path: str | None = None) -> int:
     except Exception as exc:
         check("core.api imports", False, str(exc))
 
-    # 2. the Kivy layer imports
+    # 2. the bridge imports -- it is the whole interface
     try:
-        from ncmkivy.theme import Theme, classify  # noqa: F401
+        from src.gui.bridge import GuiBridge  # noqa: F401
 
-        check("ncmkivy imports", True)
-    except ImportError as exc:
-        # Kivy only ships inside the Android bundle; a source run on a
-        # machine without it is not a broken bundle.
-        check("ncmkivy imports", True, f"skipped ({exc})")
+        check("bridge imports", True)
     except Exception as exc:
-        check("ncmkivy imports", False, str(exc))
+        check("bridge imports", False, str(exc))
 
-    # 3. the i18n catalogue is there
+    # 3. the webview shell is in the bundle
+    try:
+        import webview
+
+        check("pywebview", hasattr(webview, "create_window"),
+              getattr(webview, "__version__", "?"))
+    except Exception as exc:
+        check("pywebview", False, str(exc))
+
+    # 4. the i18n catalogue is there
     try:
         from src.i18n import get_i18n
 
@@ -104,7 +133,14 @@ def _self_test(report_path: str | None = None) -> int:
     except Exception as exc:
         check("i18n catalogue", False, str(exc))
 
-    # 4. the media server starts and answers
+    # 5. the bundled interface is there
+    web_root = _HERE / WEB_DIR
+    missing = [name for name in ("index.html", "app.js", "style.css")
+               if not (web_root / name).is_file()]
+    check("web interface", not missing,
+          str(web_root) if not missing else f"missing {missing}")
+
+    # 6. the media server starts and answers
     try:
         from src.core.mediaserver import get_media_server
 
@@ -114,25 +150,17 @@ def _self_test(report_path: str | None = None) -> int:
 
         with urllib.request.urlopen(f"{base}/health", timeout=5) as response:
             body = response.read().decode("utf-8", "replace")
+        server.set_ui_root(web_root)
+        ui = server.ui_url("index.html")
+        with urllib.request.urlopen(ui, timeout=5) as response:
+            page = response.read().decode("utf-8", "replace")
         server.stop()
         check("media server", "ok" in body.lower(), body[:80])
+        check("interface served",
+              "<html" in page.lower() or "<!doctype" in page.lower(),
+              f"{len(page)}B")
     except Exception as exc:
         check("media server", False, str(exc))
-
-    # 5. the player backend is reachable (Android only)
-    try:
-        from ncmkivy.player import Player
-
-        player = Player()
-        if player.available:
-            check("player backend", True, "MediaPlayer reachable")
-        else:
-            # Off-device this is the expected state, not a failure: the
-            # check exists to catch a bundle that lost its Android glue.
-            check("player backend", True,
-                  "no android.media (expected off-device)")
-    except Exception as exc:
-        check("player backend", False, str(exc))
 
     if report_path:
         lines = []
@@ -151,26 +179,51 @@ def _self_test(report_path: str | None = None) -> int:
     return 0
 
 
-def _prepare_kivy_home() -> None:
-    """Give Kivy and the core somewhere writable to keep their state.
+def _start_app() -> int:
+    """Open the window and run the event loop."""
+    import webview
 
-    On Android ``HOME`` points at ``/data``, which the app process cannot
-    write, so Kivy logs "cannot create config dir" and keeps everything in
-    memory.  ``ANDROID_PRIVATE`` is the app's own files directory and is the
-    right place for both.
-    """
-    private = os.environ.get("ANDROID_PRIVATE")
-    if not private:
-        return
-    if not os.environ.get("KIVY_HOME"):
-        kivy_home = Path(private) / ".kivy"
-        try:
-            kivy_home.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        else:
-            os.environ["KIVY_HOME"] = str(kivy_home)
-    os.environ.setdefault("HOME", private)
+    from src.config import get_settings
+    from src.gui.bridge import GuiBridge
+
+    settings = get_settings()
+    bridge = GuiBridge()
+
+    # The player streams through a loopback HTTP server (see
+    # src/core/mediaserver): it is the only way a WebView may read local
+    # files and the only way we can control the Referer the CDN sees.  A
+    # failure here disables playback but must never stop the app from opening.
+    media = bridge.media
+    media.configure(api_provider=lambda: bridge.api,
+                    background_provider=settings.background_path)
+    try:
+        media.start()
+        bridge.refresh_allowed_roots()
+    except Exception as exc:  # pragma: no cover - port exhaustion
+        log.warning("the media server could not start (%s); playback is disabled", exc)
+    log.info("media server: %s", media.stats())
+
+    # The interface is served over the loopback server, not from a file://
+    # URL: a WebView may not read local files, and the same server is
+    # already running for playback.
+    web_root = _HERE / WEB_DIR
+    ui_url = None
+    if media.running:
+        media.set_ui_root(web_root)
+        ui_url = media.ui_url("index.html", query=f"lang={settings.ui.language}")
+    if ui_url is None:
+        ui_url = (web_root / "index.html").as_uri()
+        log.warning("falling back to a file:// url: %s", ui_url)
+    log.info("loading the interface from %s", ui_url)
+
+    window = webview.create_window(
+        title="网易云音乐",
+        url=ui_url,
+        js_api=bridge,
+    )
+    bridge.set_window(window)
+    webview.start()
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -180,13 +233,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.self_test:
         return _self_test(args.report or None)
 
-    # Must happen before Kivy is imported anywhere.
-    _prepare_kivy_home()
+    # Must happen before anything reads the settings or opens a file.
+    _prepare_home()
 
-    from ncmkivy.app import NcmApp
-
-    NcmApp().run()
-    return 0
+    try:
+        return _start_app()
+    except Exception as exc:
+        log.exception("the app could not start")
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

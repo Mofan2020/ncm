@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT / "android") not in sys.path:
     sys.path.insert(0, str(ROOT / "android"))
 
-from ncmkivy.mediastore import MediaStoreLibrary, is_android  # noqa: E402
+from ncmandroid.mediastore import MediaStoreLibrary, is_android  # noqa: E402
 
 
 class FakeCursor:
@@ -165,7 +165,7 @@ def test_the_desktop_is_not_android():
 def test_the_permission_follows_the_android_version():
     """Android 13 renamed the audio permission; asking for the old name there
     grants nothing, and the library stays empty."""
-    from ncmkivy import permissions
+    from ncmandroid import permissions
 
     asked: list[str] = []
     for sdk, expected in ((28, "android.permission.READ_EXTERNAL_STORAGE"),
@@ -179,7 +179,7 @@ def test_the_permission_follows_the_android_version():
 
 
 def test_asking_for_the_permission_off_android_does_not_raise():
-    from ncmkivy import permissions
+    from ncmandroid import permissions
 
     seen: list[str] = []
     result = permissions.request_audio_permission(seen.append)
@@ -188,6 +188,6 @@ def test_asking_for_the_permission_off_android_does_not_raise():
 
 
 def test_the_permission_check_is_false_off_android():
-    from ncmkivy import permissions
+    from ncmandroid import permissions
 
     assert permissions.check_audio_permission() is False

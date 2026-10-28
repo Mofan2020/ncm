@@ -1,0 +1,985 @@
+/* ==========================================================================
+   The phone interface.
+
+   Same Python behind it as the desktop (the same bridge, the same media
+   server), different front end: one column, a bottom tab bar, a mini
+   player that grows into a full screen one, and every target big enough
+   for a thumb.
+
+   The bridge is reached through window.pywebview.api, exactly like the
+   desktop does.
+   ========================================================================== */
+
+const TOAST_MS = 4800;
+const TOAST_UNDO_MS = 8000;
+const TOAST_UNDONE_MS = 2400;
+
+const state = {
+    api: null,
+    tab: 'home',
+    queue: [],
+    index: -1,
+    playing: false,
+    detail: null,
+    libraryTab: 'mine',
+    searchType: 'songs',
+    login: null,
+    coverCache: new Map(),
+    coverPending: new Set(),
+};
+
+/* ------------------------------------------------------------------ helpers */
+const $ = (id) => document.getElementById(id);
+
+function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+}
+
+function clear(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+    return node;
+}
+
+function showSpinner(host) {
+    clear(host).appendChild(el('div', 'spinner'));
+}
+
+function showEmpty(host, title, hint) {
+    const box = el('div', 'empty');
+    if (title) box.appendChild(el('strong', null, title));
+    if (hint) box.appendChild(el('span', null, hint));
+    clear(host).appendChild(box);
+}
+
+async function api(name, ...args) {
+    if (!state.api) return { success: false, error_key: 'bridge.unavailable' };
+    try {
+        return await state.api[name](...args);
+    } catch (err) {
+        return { success: false, message: String((err && err.message) || err) };
+    }
+}
+
+function formatTime(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function trackKey(track) {
+    if (!track) return '';
+    if (track.key) return String(track.key);
+    if (track.source === 'local') return `local:${track.path || ''}`;
+    return `online:${track.id || ''}`;
+}
+
+/* ------------------------------------------------------------------ toasts */
+function showToast(message, options) {
+    if (!message) return;
+    const host = $('toast-host');
+    if (!host) return;
+    const undo = options && options.undoLabel && typeof options.onUndo === 'function'
+        ? options : null;
+    const toast = el('div', 'toast');
+    toast.appendChild(el('span', 'toast-text', message));
+    let timer = null;
+    const dismiss = () => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 200);
+    };
+    if (undo) {
+        const button = el('button', 'toast-undo', undo.undoLabel);
+        button.type = 'button';
+        button.addEventListener('click', () => {
+            if (button.disabled) return;
+            button.disabled = true;
+            dismiss();
+            try { Promise.resolve(undo.onUndo()).catch(() => {}); } catch (err) { /* handled there */ }
+        });
+        toast.appendChild(button);
+    }
+    host.appendChild(toast);
+    timer = setTimeout(dismiss, undo ? Math.max(TOAST_MS, TOAST_UNDO_MS) : TOAST_MS);
+}
+
+/* -------------------------------------------------------------- sheet/modal */
+function openSheet(title, body) {
+    $('sheet-title').textContent = title || '';
+    const host = $('sheet-body');
+    clear(host);
+    if (body) host.appendChild(body);
+    $('sheet-host').hidden = false;
+}
+
+function closeSheet() { $('sheet-host').hidden = true; }
+
+function openModal({ title, body, actions }) {
+    $('modal-title').textContent = title || '';
+    const host = $('modal-body');
+    clear(host);
+    if (body) host.appendChild(body);
+    const buttons = $('modal-actions');
+    clear(buttons);
+    (actions || []).forEach((action) => {
+        const button = el('button', `btn ${action.class || 'btn-ghost'}`, action.label);
+        button.type = 'button';
+        button.addEventListener('click', () => {
+            if (action.keepOpen !== true) $('modal-host').hidden = true;
+            if (action.onClick) action.onClick();
+        });
+        buttons.appendChild(button);
+    });
+    $('modal-host').hidden = false;
+}
+
+function closeModal() { $('modal-host').hidden = true; }
+
+/* ------------------------------------------------------------------ router */
+const TITLES = { home: '首页', search: '搜索', library: '歌单', downloads: '下载', me: '我的' };
+
+function go(tab) {
+    if (!TITLES[tab]) return;
+    state.tab = tab;
+    document.querySelectorAll('#tabbar .tab').forEach((button) => {
+        button.classList.toggle('is-on', button.dataset.tab === tab);
+    });
+    document.querySelectorAll('#views > .view').forEach((view) => {
+        view.classList.toggle('is-active', view.id === `view-${tab}`);
+    });
+    $('appbar-title').textContent = TITLES[tab];
+    $('btn-back').hidden = true;
+    $('views').scrollTop = 0;
+    if (tab === 'home') loadHome();
+    if (tab === 'search') loadSuggest();
+    if (tab === 'library') loadLibrary();
+    if (tab === 'downloads') loadDownloads();
+    if (tab === 'me') loadMe();
+}
+
+/** The detail page and the player are pushed on top; the hardware back
+ *  button has to close them, so every push leaves a history entry. */
+function pushView(name) {
+    try { history.pushState({ view: name }, ''); } catch (err) { /* no history */ }
+}
+
+function popView() {
+    try { history.back(); } catch (err) { /* no history */ }
+}
+
+window.addEventListener('popstate', () => {
+    if ($('view-player').classList.contains('is-active')) {
+        closePlayer();
+        return;
+    }
+    if ($('view-detail').classList.contains('is-active')) {
+        closeDetail();
+        return;
+    }
+});
+
+/* -------------------------------------------------------------- cover art */
+async function coverFor(track) {
+    const raw = track && track.cover_url ? String(track.cover_url) : '';
+    if (!raw) return '';
+    if (state.coverCache.has(raw)) return state.coverCache.get(raw);
+    if (state.coverPending.has(raw)) return '';
+    state.coverPending.add(raw);
+    const result = await api('resolve_cover_url', { cover_url: raw });
+    state.coverPending.delete(raw);
+    const url = result && result.success && result.url ? result.url : '';
+    state.coverCache.set(raw, url);
+    return url;
+}
+
+/** Paint a cover into a box; the url arrives a moment later. */
+function paintCover(box, track) {
+    if (!box) return;
+    box.classList.toggle('is-empty', !(track && track.cover_url));
+    if (!track || !track.cover_url) { box.style.backgroundImage = ''; return; }
+    coverFor(track).then((url) => {
+        if (url) box.style.backgroundImage = `url("${url}")`;
+    });
+}
+
+/* ------------------------------------------------------------- track rows */
+function trackRow(track, index, list) {
+    const row = el('div', 'track');
+    row.setAttribute('role', 'button');
+    row.setAttribute('tabindex', '0');
+
+    const cover = el('div', 'track-cover');
+    paintCover(cover, track);
+    row.appendChild(cover);
+
+    const main = el('div', 'track-main');
+    main.appendChild(el('div', 'track-name', track.name || '未知歌曲'));
+    const sub = el('div', 'track-sub', track.artists || track.album || '');
+    main.appendChild(sub);
+    row.appendChild(main);
+
+    const actions = el('div', 'track-actions');
+    const more = el('button', 'iconbtn');
+    more.type = 'button';
+    more.setAttribute('aria-label', '更多');
+    more.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/>'
+        + '<circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>';
+    more.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openTrackMenu(track, list, index);
+    });
+    actions.appendChild(more);
+    row.appendChild(actions);
+
+    row.addEventListener('click', () => playTracks(list, index));
+    return row;
+}
+
+function renderTracks(host, tracks, emptyTitle) {
+    clear(host);
+    if (!tracks || !tracks.length) {
+        showEmpty(host, emptyTitle || '这里还没有歌');
+        return;
+    }
+    tracks.forEach((track, index) => host.appendChild(trackRow(track, index, tracks)));
+}
+
+function cardGrid(host, items, onOpen, subtitle) {
+    clear(host);
+    if (!items || !items.length) {
+        showEmpty(host, '暂时没有内容');
+        return;
+    }
+    items.forEach((item) => {
+        const card = el('div', 'card');
+        const cover = el('div', 'card-cover');
+        paintCover(cover, item);
+        card.appendChild(cover);
+        card.appendChild(el('div', 'card-name', item.name || ''));
+        if (subtitle) {
+            const sub = el('div', 'card-sub', subtitle(item));
+            card.appendChild(sub);
+        }
+        card.addEventListener('click', () => onOpen(item));
+        host.appendChild(card);
+    });
+}
+
+/* ------------------------------------------------------------------ player */
+const audio = $('audio');
+
+function currentTrack() {
+    return state.index >= 0 ? state.queue[state.index] : null;
+}
+
+async function playTracks(tracks, index) {
+    if (!tracks || !tracks.length) return;
+    state.queue = tracks.slice();
+    state.index = index;
+    await loadCurrent();
+}
+
+async function loadCurrent(autoPlay = true) {
+    const track = currentTrack();
+    if (!track) return;
+    const resolved = await api('resolve_track', track);
+    if (!resolved || !resolved.success || !resolved.url) {
+        showToast('这首歌暂时放不了');
+        updatePlayerUi();
+        return;
+    }
+    audio.src = resolved.url;
+    if (autoPlay) {
+        try {
+            await audio.play();
+        } catch (err) {
+            /* the browser wants a gesture first; the button still works */
+        }
+    }
+    state.playing = !audio.paused;
+    updatePlayerUi();
+}
+
+function advance(step) {
+    if (!state.queue.length) return;
+    let next = state.index + step;
+    if (next < 0) next = state.queue.length - 1;
+    if (next >= state.queue.length) next = 0;
+    state.index = next;
+    loadCurrent();
+}
+
+function togglePlay() {
+    if (!currentTrack()) {
+        showToast('还没有放歌');
+        return;
+    }
+    if (audio.paused) {
+        if (!audio.src) { loadCurrent(); return; }
+        audio.play().catch(() => {});
+    } else {
+        audio.pause();
+    }
+    state.playing = !audio.paused;
+    updatePlayerUi();
+}
+
+audio.addEventListener('play', () => { state.playing = true; updatePlayerUi(); });
+audio.addEventListener('pause', () => { state.playing = false; updatePlayerUi(); });
+audio.addEventListener('ended', () => advance(1));
+audio.addEventListener('timeupdate', () => {
+    if (!audio.duration) return;
+    const ratio = Math.max(0, Math.min(1, audio.currentTime / audio.duration));
+    $('player-bar-fill').style.width = `${ratio * 100}%`;
+    $('miniplayer-progress-fill').style.width = `${ratio * 100}%`;
+    $('player-time-now').textContent = formatTime(audio.currentTime);
+    $('player-time-end').textContent = formatTime(audio.duration);
+});
+
+function updatePlayerUi() {
+    const track = currentTrack();
+    $('miniplayer').hidden = !track;
+    if (!track) return;
+    $('miniplayer-name').textContent = track.name || '';
+    $('miniplayer-artist').textContent = track.artists || '';
+    $('player-name').textContent = track.name || '';
+    $('player-artist').textContent = track.artists || track.album || '';
+    paintCover($('miniplayer-cover'), track);
+    paintCover($('player-cover'), track);
+    document.querySelectorAll('.icon-play, .icon-pause').forEach((node) => {
+        if (node.classList.contains('icon-play')) node.hidden = state.playing;
+        else node.hidden = !state.playing;
+    });
+}
+
+function openPlayer() {
+    if (!currentTrack()) return;
+    $('view-player').classList.add('is-active');
+    pushView('player');
+}
+
+function closePlayer() {
+    $('view-player').classList.remove('is-active');
+}
+
+/* ------------------------------------------------------------------- home */
+let homeLoaded = false;
+
+async function loadHome(force) {
+    if (homeLoaded && !force) return;
+    homeLoaded = true;
+
+    const fmHost = $('home-fm');
+    const newHost = $('home-new');
+    const playlistHost = $('home-playlists');
+    const topHost = $('home-tops');
+    const mvHost = $('home-mvs');
+
+    showSpinner(fmHost);
+    const fm = await api('get_personal_fm');
+    if (fm && fm.success && fm.tracks && fm.tracks.length) {
+        renderTracks(fmHost, fm.tracks.slice(0, 10));
+    } else {
+        $('home-fm-block').hidden = true;
+    }
+
+    showSpinner(newHost);
+    const fresh = await api('get_new_songs', 20, 0);
+    if (fresh && fresh.success && fresh.tracks && fresh.tracks.length) {
+        renderTracks(newHost, fresh.tracks.slice(0, 10));
+    } else {
+        $('home-new-block').hidden = true;
+    }
+
+    showSpinner(playlistHost);
+    const playlists = await api('get_recommend_playlists');
+    cardGrid(playlistHost, (playlists && playlists.playlists) || [], (item) => {
+        openDetail('playlist', item);
+    }, (item) => (item.play_count ? `${item.play_count}次播放` : ''));
+
+    showSpinner(topHost);
+    const tops = await api('get_top_lists');
+    clear(topHost);
+    ((tops && tops.toplists) || []).forEach((top) => {
+        const chip = el('button', 'chip', top.name || '');
+        chip.type = 'button';
+        chip.addEventListener('click', () => openDetail('toplist', top));
+        topHost.appendChild(chip);
+    });
+    if (!topHost.children.length) topHost.appendChild(el('span', 'small text-3', '暂时没有榜单'));
+
+    showSpinner(mvHost);
+    const mvs = await api('get_recommend_mvs', 10, 0);
+    cardGrid(mvHost, (mvs && mvs.mvs) || [], (item) => {
+        showToast(`《${item.name || ''}》暂时只能在网页版播放`);
+    }, () => 'MV');
+}
+
+/* ----------------------------------------------------------------- search */
+async function loadSuggest() {
+    const host = $('search-suggest');
+    if (host.children.length) return;
+    const result = await api('search_suggest', '');
+    clear(host);
+    ((result && result.suggestions) || []).slice(0, 8).forEach((word) => {
+        const chip = el('button', 'chip', word);
+        chip.type = 'button';
+        chip.addEventListener('click', () => {
+            $('search-input').value = word;
+            runSearch();
+        });
+        host.appendChild(chip);
+    });
+}
+
+async function runSearch() {
+    const keyword = $('search-input').value.trim();
+    const host = $('search-results');
+    if (!keyword) { clear(host); return; }
+    showSpinner(host);
+    const result = await api('search_multi', keyword, 30, 0);
+    if (!result || !result.success) {
+        showEmpty(host, '搜索失败', (result && result.message) || '');
+        return;
+    }
+    const groups = (result.results) || {};
+    clear(host);
+    const type = state.searchType;
+    if (type === 'songs') {
+        renderTracks(host, groups.songs || [], '没有找到单曲');
+    } else if (type === 'artists') {
+        cardGrid(host, groups.artists || [], (item) => openDetail('artist', item), () => '歌手');
+    } else if (type === 'albums') {
+        cardGrid(host, groups.albums || [], (item) => openDetail('album', item), () => '专辑');
+    } else if (type === 'playlists') {
+        cardGrid(host, groups.playlists || [], (item) => openDetail('playlist', item), () => '歌单');
+    } else if (type === 'mvs') {
+        cardGrid(host, groups.mvs || [], (item) => {
+            showToast(`《${item.name || ''}》暂时不能在手机上播放`);
+        }, () => 'MV');
+    }
+}
+
+/* ---------------------------------------------------------------- library */
+async function loadLibrary() {
+    const host = $('library-body');
+    showSpinner(host);
+    if (state.libraryTab === 'mine') {
+        const result = await api('get_playlists');
+        cardGrid(host, (result && result.playlists) || [], (item) => openDetail('playlist', item),
+            (item) => (item.track_count !== undefined ? `${item.track_count} 首` : ''));
+    } else if (state.libraryTab === 'liked') {
+        const result = await api('get_liked_tracks');
+        renderTracks(host, (result && result.tracks) || [], '还没有收藏的歌');
+    } else {
+        const result = await api('get_local_tracks', '', 200, 0);
+        renderTracks(host, (result && result.tracks) || [], '手机里没有找到歌曲');
+    }
+}
+
+/* -------------------------------------------------------------- downloads */
+async function loadDownloads() {
+    const statsHost = $('download-stats');
+    const queueHost = $('download-queue');
+    const localHost = $('download-local');
+    renderDownloadStats(statsHost, state.downloadStats);
+    showSpinner(queueHost);
+    showSpinner(localHost);
+    const local = await api('get_local_tracks', '', 50, 0);
+    renderTracks(localHost, (local && local.tracks) || [], '还没有下载好的歌');
+}
+
+/* The bridge pushes the download progress instead of being polled. */
+function renderDownloadStats(host, stats) {
+    clear(host);
+    const data = stats || {};
+    [['已完成', data.completed || 0], ['进行中', data.downloading || 0],
+     ['失败', data.failed || 0]].forEach(([label, value]) => {
+        const box = el('div', 'stat');
+        box.appendChild(el('div', 'stat-value', String(value)));
+        box.appendChild(el('div', 'stat-label', label));
+        host.appendChild(box);
+    });
+    if (data.total) {
+        const box = el('div', 'stat');
+        box.appendChild(el('div', 'stat-value', `${data.current || 0}/${data.total}`));
+        box.appendChild(el('div', 'stat-label', '进度'));
+        host.appendChild(box);
+    }
+}
+
+window.onDownloadProgress = (payload) => {
+    state.downloadStats = Object.assign({}, state.downloadStats, payload || {});
+    if (state.tab === 'downloads') renderDownloadStats($('download-stats'), state.downloadStats);
+};
+
+/* --------------------------------------------------------------------- me */
+async function loadMe() {
+    const host = $('me-body');
+    showSpinner(host);
+    const status = await api('get_login_status');
+    state.login = status || {};
+    clear(host);
+
+    if (status && status.is_logged_in) {
+        const profile = el('div', 'profile');
+        const avatar = el('div', 'profile-avatar');
+        if (status.avatar_url) {
+            coverFor({ cover_url: status.avatar_url }).then((url) => {
+                if (url) avatar.style.backgroundImage = `url("${url}")`;
+            });
+        }
+        profile.appendChild(avatar);
+        const info = el('div', 'grow');
+        info.appendChild(el('div', 'profile-name', status.nickname || '已登录'));
+        info.appendChild(el('div', 'profile-sub', `UID ${status.user_id || ''}`));
+        profile.appendChild(info);
+        host.appendChild(profile);
+    } else {
+        const box = el('div', 'list');
+        const row = el('button', 'list-row');
+        row.type = 'button';
+        row.appendChild(el('span', 'grow', '登录网易云账号'));
+        row.appendChild(el('span', 'chev', '›'));
+        row.addEventListener('click', openLogin);
+        box.appendChild(row);
+        host.appendChild(box);
+    }
+
+    const list = el('div', 'list');
+    const addRow = (label, value, onClick) => {
+        const row = el('button', 'list-row');
+        row.type = 'button';
+        row.appendChild(el('span', 'grow', label));
+        if (value) row.appendChild(el('span', 'value', value));
+        row.appendChild(el('span', 'chev', '›'));
+        row.addEventListener('click', onClick);
+        list.appendChild(row);
+    };
+    addRow('我关注的歌手', '', () => openFollowedArtists());
+    if (status && status.is_logged_in) {
+        addRow('退出登录', '', async () => {
+            await api('logout');
+            homeLoaded = false;
+            loadMe();
+        });
+    }
+    host.appendChild(list);
+
+    const tools = el('div', 'list');
+    const toolRow = (label, onClick) => {
+        const row = el('button', 'list-row');
+        row.type = 'button';
+        row.appendChild(el('span', 'grow', label));
+        row.appendChild(el('span', 'chev', '›'));
+        row.addEventListener('click', onClick);
+        tools.appendChild(row);
+    };
+    toolRow('导出账号数据', exportBackup);
+    toolRow('复制登录 Cookie', copyCookie);
+    toolRow('清理缓存', async () => {
+        const result = await api('clear_cache', 'all');
+        showToast(result && result.success ? '缓存已清理' : '清理失败');
+    });
+    host.appendChild(tools);
+}
+
+/* ------------------------------------------------------------------ detail */
+async function openDetail(kind, item) {
+    const head = $('detail-head');
+    const body = $('detail-body');
+    clear(head);
+    clear(body);
+    $('view-detail').classList.add('is-active');
+    $('btn-back').hidden = false;
+    pushView('detail');
+
+    const cover = el('div', 'detail-cover');
+    paintCover(cover, item);
+    head.appendChild(cover);
+    const info = el('div', 'grow');
+    info.appendChild(el('div', 'detail-title', item.name || ''));
+    info.appendChild(el('div', 'detail-sub', item.subtitle || ''));
+    head.appendChild(info);
+
+    const actions = el('div', 'detail-actions');
+    head.appendChild(actions);
+
+    const playAll = el('button', 'btn btn-primary', '播放全部');
+    playAll.type = 'button';
+    actions.appendChild(playAll);
+
+    if (kind === 'artist') {
+        const follow = el('button', 'btn btn-ghost', item.followed ? '已关注' : '关注');
+        follow.type = 'button';
+        actions.appendChild(follow);
+        follow.addEventListener('click', async () => {
+            const result = await api('follow_artist', String(item.id || ''), !item.followed);
+            if (!result || !result.success) { showToast('操作失败'); return; }
+            item.followed = result.followed;
+            follow.textContent = result.followed ? '已关注' : '关注';
+            showToast(result.followed ? '已关注' : '已取消关注', {
+                undoLabel: '撤销',
+                onUndo: async () => {
+                    const undo = await api('follow_artist', String(item.id || ''), !result.followed);
+                    if (undo && undo.success) {
+                        item.followed = undo.followed;
+                        follow.textContent = undo.followed ? '已关注' : '关注';
+                        showToast('已撤销', undefined);
+                    }
+                },
+            });
+        });
+    }
+
+    showSpinner(body);
+    if (kind === 'playlist' || kind === 'toplist') {
+        const id = kind === 'playlist' ? item.id : item.id;
+        const result = await api('get_playlist_tracks', String(id || ''));
+        const tracks = (result && result.playlist && result.playlist.tracks)
+            || (result && result.tracks) || [];
+        renderTracks(body, tracks, '这个歌单还没有歌');
+        playAll.addEventListener('click', () => playTracks(tracks, 0));
+        const download = el('button', 'btn btn-ghost', '下载全部');
+        download.type = 'button';
+        actions.appendChild(download);
+        download.addEventListener('click', () => downloadTracks(tracks));
+    } else if (kind === 'artist') {
+        const result = await api('get_artist_detail', String(item.id || ''));
+        const artist = (result && result.artist) || {};
+        const tracks = artist.hot_songs || [];
+        renderTracks(body, tracks, '这个歌手还没有热门歌曲');
+        playAll.addEventListener('click', () => playTracks(tracks, 0));
+    } else if (kind === 'album') {
+        const result = await api('get_album_detail', String(item.id || ''));
+        const album = (result && result.album) || {};
+        const tracks = album.tracks || [];
+        renderTracks(body, tracks, '这张专辑还没有歌');
+        playAll.addEventListener('click', () => playTracks(tracks, 0));
+    }
+}
+
+function closeDetail() {
+    $('view-detail').classList.remove('is-active');
+    $('btn-back').hidden = true;
+}
+
+/* ------------------------------------------------------- followed artists */
+async function openFollowedArtists() {
+    const body = el('div', 'stack');
+    openSheet('我关注的歌手', body);
+    showSpinner(body);
+    const result = await api('get_followed_artists', 50, 0);
+    const artists = (result && result.artists) || [];
+    cardGrid(body, artists, (item) => {
+        closeSheet();
+        openDetail('artist', item);
+    }, () => '歌手');
+}
+
+/* ------------------------------------------------------------------ login */
+async function openLogin() {
+    const body = el('div', 'stack');
+    const tabs = el('div', 'chiprow');
+    const qrChip = el('button', 'chip is-on', '扫码登录');
+    const phoneChip = el('button', 'chip', '手机号登录');
+    tabs.appendChild(qrChip);
+    tabs.appendChild(phoneChip);
+    body.appendChild(tabs);
+
+    const qrBox = el('div', 'qrbox');
+    const phoneBox = el('div');
+    phoneBox.hidden = true;
+    body.appendChild(qrBox);
+    body.appendChild(phoneBox);
+
+    qrChip.addEventListener('click', () => {
+        qrChip.classList.add('is-on'); phoneChip.classList.remove('is-on');
+        qrBox.hidden = false; phoneBox.hidden = true;
+    });
+    phoneChip.addEventListener('click', () => {
+        phoneChip.classList.add('is-on'); qrChip.classList.remove('is-on');
+        qrBox.hidden = true; phoneBox.hidden = false;
+    });
+
+    openSheet('登录网易云', body);
+
+    // --- QR ---------------------------------------------------------------
+    const image = el('img');
+    image.alt = '登录二维码';
+    qrBox.appendChild(image);
+    const hint = el('div', 'hint', '正在取二维码…');
+    qrBox.appendChild(hint);
+    let timer = null;
+
+    const paintQr = async () => {
+        const result = await api('login_qrcode');
+        if (result && result.success && result.qr_code) {
+            image.src = result.qr_code.startsWith('data:')
+                ? result.qr_code
+                : `data:image/png;base64,${result.qr_code}`;
+            hint.textContent = '用网易云 App 扫这个码';
+            const status = await api('get_login_status');
+            if (status && status.is_logged_in) {
+                clearInterval(timer);
+                closeSheet();
+                showToast('登录成功');
+                homeLoaded = false;
+                loadMe();
+            }
+        } else {
+            hint.textContent = (result && result.message) || '二维码取不到，稍后重试';
+        }
+    };
+    paintQr();
+    timer = setInterval(paintQr, 3000);
+
+    // --- phone ------------------------------------------------------------
+    const phoneField = el('div', 'field');
+    phoneField.appendChild(el('label', null, '手机号'));
+    const phoneInput = el('input');
+    phoneInput.type = 'tel';
+    phoneInput.inputMode = 'numeric';
+    phoneInput.placeholder = '11 位手机号';
+    phoneField.appendChild(phoneInput);
+    phoneBox.appendChild(phoneField);
+
+    const codeField = el('div', 'field');
+    codeField.appendChild(el('label', null, '验证码'));
+    const codeInput = el('input');
+    codeInput.type = 'text';
+    codeInput.inputMode = 'numeric';
+    codeField.appendChild(codeInput);
+    phoneBox.appendChild(codeField);
+
+    const sendRow = el('div', 'row');
+    const sendButton = el('button', 'btn btn-ghost', '发验证码');
+    sendButton.type = 'button';
+    sendButton.addEventListener('click', async () => {
+        const phone = phoneInput.value.trim();
+        if (!/^\d{6,15}$/.test(phone)) { showToast('手机号填对了吗'); return; }
+        const result = await api('send_phone_code', phone, '86');
+        showToast(result && result.success ? '验证码已发出' : '发送失败');
+    });
+    const loginButton = el('button', 'btn btn-primary grow', '登录');
+    loginButton.type = 'button';
+    loginButton.addEventListener('click', async () => {
+        const phone = phoneInput.value.trim();
+        const code = codeInput.value.trim();
+        if (!phone || !code) { showToast('手机号和验证码都要填'); return; }
+        const result = await api('login_phone', phone, code, '86');
+        if (result && result.success) {
+            clearInterval(timer);
+            closeSheet();
+            showToast('登录成功');
+            homeLoaded = false;
+            loadMe();
+        } else {
+            showToast((result && result.message) || '登录失败');
+        }
+    });
+    sendRow.appendChild(sendButton);
+    sendRow.appendChild(loginButton);
+    phoneBox.appendChild(sendRow);
+}
+
+/* --------------------------------------------------------------- downloads */
+async function downloadTracks(tracks) {
+    if (!tracks || !tracks.length) { showToast('没有要下载的歌'); return; }
+    const result = await api('download_tracks', tracks);
+    if (result && result.success) {
+        showToast(`开始下载 ${tracks.length} 首`);
+    } else {
+        showToast((result && result.message) || '下载没能开始');
+    }
+}
+
+/* ------------------------------------------------------------ track menu */
+function openTrackMenu(track, list, index) {
+    const body = el('div', 'list');
+    const row = (label, onClick) => {
+        const button = el('button', 'list-row');
+        button.type = 'button';
+        button.appendChild(el('span', 'grow', label));
+        button.addEventListener('click', () => { closeSheet(); onClick(); });
+        body.appendChild(button);
+    };
+    row('下一首播放', () => {
+        state.queue = list.slice();
+        state.index = index;
+        advance(1);
+    });
+    row('下载这首', () => downloadTracks([track]));
+    row('复制歌曲信息', async () => {
+        const text = `${track.name || ''} - ${track.artists || ''}`.trim();
+        try {
+            await navigator.clipboard.writeText(text);
+            showToast('已复制');
+        } catch (err) {
+            showToast('复制不了');
+        }
+    });
+    openSheet(track.name || '', body);
+}
+
+/* -------------------------------------------------------------- backup etc */
+async function exportBackup() {
+    const result = await api('export_account_backup');
+    if (result && result.success) {
+        showToast(`已导出：${result.path || ''}`);
+    } else if (result && result.cancelled) {
+        /* the user closed the dialog */
+    } else {
+        showToast((result && result.message) || '导出失败');
+    }
+}
+
+async function copyCookie() {
+    const result = await api('copy_login_cookie');
+    if (!result || !result.success) { showToast('复制失败'); return; }
+    const text = result.cookie || '';
+    try {
+        await navigator.clipboard.writeText(text);
+        showToast('Cookie 已复制');
+    } catch (err) {
+        openModal({
+            title: '登录 Cookie',
+            body: el('div', 'small', '剪贴板用不了，手动复制下面的内容：'),
+            actions: [{ label: '关闭', class: 'btn-ghost' }],
+        });
+        const body = $('modal-body');
+        const box = el('textarea', 'small', text);
+        box.style.width = '100%';
+        box.style.height = '120px';
+        body.appendChild(box);
+    }
+}
+
+/* ------------------------------------------------------------------- wire */
+function wire() {
+    document.querySelectorAll('#tabbar .tab').forEach((button) => {
+        button.addEventListener('click', () => go(button.dataset.tab));
+    });
+    $('btn-back').addEventListener('click', popView);
+    $('sheet-backdrop').addEventListener('click', closeSheet);
+    $('modal-backdrop').addEventListener('click', closeModal);
+
+    $('search-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        runSearch();
+    });
+    $('btn-search-clear').addEventListener('click', () => {
+        $('search-input').value = '';
+        clear($('search-results'));
+    });
+    $('search-input').addEventListener('input', (event) => {
+        $('btn-search-clear').hidden = !event.target.value;
+    });
+    document.querySelectorAll('#search-types .chip').forEach((chip) => {
+        chip.addEventListener('click', () => {
+            document.querySelectorAll('#search-types .chip').forEach((other) => {
+                other.classList.toggle('is-on', other === chip);
+            });
+            state.searchType = chip.dataset.type;
+            if ($('search-input').value.trim()) runSearch();
+        });
+    });
+    document.querySelectorAll('#library-tabs .chip').forEach((chip) => {
+        chip.addEventListener('click', () => {
+            document.querySelectorAll('#library-tabs .chip').forEach((other) => {
+                other.classList.toggle('is-on', other === chip);
+            });
+            state.libraryTab = chip.dataset.tab;
+            loadLibrary();
+        });
+    });
+
+    $('btn-mini-play').addEventListener('click', togglePlay);
+    $('btn-mini-next').addEventListener('click', () => advance(1));
+    $('miniplayer').addEventListener('click', (event) => {
+        if (event.target.closest('.iconbtn')) return;
+        openPlayer();
+    });
+    $('btn-player-close').addEventListener('click', closePlayer);
+    $('btn-player-play').addEventListener('click', togglePlay);
+    $('btn-player-next').addEventListener('click', () => advance(1));
+    $('btn-player-prev').addEventListener('click', () => advance(-1));
+    $('btn-player-list').addEventListener('click', () => {
+        const body = el('div', 'stack');
+        openSheet('正在播放', body);
+        renderTracks(body, state.queue, '队列是空的');
+    });
+    $('btn-player-mode').addEventListener('click', () => showToast('播放模式循环'));
+    $('btn-player-more').addEventListener('click', () => {
+        const track = currentTrack();
+        if (track) openTrackMenu(track, state.queue, state.index);
+    });
+
+    $('btn-download-pause').addEventListener('click', async () => {
+        await api('pause_download'); loadDownloads();
+    });
+    $('btn-download-resume').addEventListener('click', async () => {
+        await api('resume_download'); loadDownloads();
+    });
+    $('btn-download-cancel').addEventListener('click', async () => {
+        await api('cancel_download'); loadDownloads();
+    });
+    $('btn-scan-local').addEventListener('click', async () => {
+        showToast('正在扫描…');
+        await api('scan_local_music', true);
+        loadDownloads();
+    });
+    $('btn-more-playlists').addEventListener('click', () => {
+        go('library');
+    });
+
+    $('views').addEventListener('scroll', () => {
+        $('appbar').classList.toggle('is-scrolled', $('views').scrollTop > 4);
+    });
+}
+
+/* ------------------------------------------------------------------- boot */
+async function waitForApi(timeoutMs = 8000) {
+    const has = () => !!(window.pywebview && window.pywebview.api
+        && typeof window.pywebview.api.get_settings === 'function');
+    if (has()) return window.pywebview.api;
+    return new Promise((resolve) => {
+        const started = Date.now();
+        const finish = () => {
+            if (has()) resolve(window.pywebview.api);
+            else if (Date.now() - started > timeoutMs) resolve(null);
+            else setTimeout(finish, 120);
+        };
+        window.addEventListener('pywebviewready', finish);
+        finish();
+    });
+}
+
+async function boot() {
+    state.api = await waitForApi();
+    if (!state.api) {
+        showEmpty($('views'), '连不上后台', 'pywebview 桥没有就绪');
+        return;
+    }
+    wire();
+
+    const info = await api('get_app_info');
+    if (info && info.theme) {
+        document.documentElement.dataset.theme = info.theme === 'light' ? 'light' : 'dark';
+    }
+    const settings = await api('get_settings');
+    if (settings && settings.ui && settings.ui.theme) {
+        document.documentElement.dataset.theme =
+            settings.ui.theme === 'light' ? 'light' : 'dark';
+    }
+    const status = await api('get_login_status');
+    state.login = status || {};
+
+    go('home');
+}
+
+document.addEventListener('DOMContentLoaded', boot);

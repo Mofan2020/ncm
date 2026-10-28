@@ -30,6 +30,9 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 ASSETS = ROOT / "src" / "gui" / "assets"
+#: The phone interface lives in its own directory; the harness can serve
+#: either, so the mobile pages can be driven from a browser.
+MOBILE_ASSETS = ROOT / "android" / "web"
 
 #: The shim installs a ``window.pywebview`` whose ``api`` methods are
 #: ``fetch`` calls back to this server.  pywebview's methods are async on the
@@ -164,7 +167,13 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8777)
+    parser.add_argument("--assets", default="",
+                        help="serve this directory instead of the desktop interface")
     args = parser.parse_args()
+    global ASSETS
+    if args.assets:
+        ASSETS = Path(args.assets).expanduser().resolve()
+        print(f'serving {ASSETS}')
 
     from src.gui.bridge import GuiBridge
 

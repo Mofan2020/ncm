@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="format-detection" content="telephone=no">
+<title>网易云音乐</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ------------------------------------------------------------- 顶栏 -->
+  <header class="appbar" id="appbar">
+    <button class="iconbtn appbar-back" id="btn-back" type="button" aria-label="返回" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <h1 class="appbar-title" id="appbar-title">首页</h1>
+    <div class="appbar-actions" id="appbar-actions"></div>
+  </header>
+
+  <!-- ------------------------------------------------------------- 页面 -->
+  <main class="views" id="views">
+
+    <!-- 首页 -->
+    <section class="view is-active" id="view-home">
+      <div class="stack">
+        <section class="block" id="home-fm-block">
+          <div class="block-head"><h2>每日推荐</h2></div>
+          <div class="tracklist" id="home-fm"></div>
+        </section>
+        <section class="block" id="home-new-block">
+          <div class="block-head"><h2>新歌速递</h2></div>
+          <div class="tracklist" id="home-new"></div>
+        </section>
+        <section class="block">
+          <div class="block-head"><h2>推荐歌单</h2><button class="linkbtn" id="btn-more-playlists" type="button">更多</button></div>
+          <div class="cardgrid" id="home-playlists"></div>
+        </section>
+        <section class="block">
+          <div class="block-head"><h2>榜单</h2></div>
+          <div class="chiprow" id="home-tops"></div>
+        </section>
+        <section class="block">
+          <div class="block-head"><h2>推荐 MV</h2></div>
+          <div class="cardgrid" id="home-mvs"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- 搜索 -->
+    <section class="view" id="view-search">
+      <div class="stack">
+        <form class="searchbar" id="search-form">
+          <svg class="searchbar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+          <input class="searchbar-input" id="search-input" type="search" inputmode="search"
+                 autocomplete="off" placeholder="搜索单曲、专辑、歌手、歌单" enterkeyhint="search">
+          <button class="searchbar-clear" id="btn-search-clear" type="button" aria-label="清空" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
+          </button>
+        </form>
+        <div class="chiprow" id="search-suggest"></div>
+        <div class="chiprow" id="search-types">
+          <button class="chip is-on" data-type="songs" type="button">单曲</button>
+          <button class="chip" data-type="albums" type="button">专辑</button>
+          <button class="chip" data-type="artists" type="button">歌手</button>
+          <button class="chip" data-type="playlists" type="button">歌单</button>
+          <button class="chip" data-type="mvs" type="button">MV</button>
+        </div>
+        <div class="stack" id="search-results"></div>
+      </div>
+    </section>
+
+    <!-- 歌单 -->
+    <section class="view" id="view-library">
+      <div class="stack">
+        <div class="chiprow" id="library-tabs">
+          <button class="chip is-on" data-tab="mine" type="button">我的歌单</button>
+          <button class="chip" data-tab="liked" type="button">收藏的歌单</button>
+          <button class="chip" data-tab="local" type="button">本地音乐</button>
+        </div>
+        <div class="stack" id="library-body"></div>
+      </div>
+    </section>
+
+    <!-- 下载 -->
+    <section class="view" id="view-downloads">
+      <div class="stack">
+        <section class="block">
+          <div class="block-head">
+            <h2>下载任务</h2>
+            <div class="block-actions">
+              <button class="linkbtn" id="btn-download-pause" type="button">暂停</button>
+              <button class="linkbtn" id="btn-download-resume" type="button">继续</button>
+              <button class="linkbtn" id="btn-download-cancel" type="button">取消</button>
+            </div>
+          </div>
+          <div class="statrow" id="download-stats"></div>
+          <div class="tracklist" id="download-queue"></div>
+        </section>
+        <section class="block">
+          <div class="block-head"><h2>已下载</h2><button class="linkbtn" id="btn-scan-local" type="button">扫描</button></div>
+          <div class="tracklist" id="download-local"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- 我的 -->
+    <section class="view" id="view-me">
+      <div class="stack" id="me-body"></div>
+    </section>
+
+    <!-- 详情（歌单 / 歌手 / 专辑） -->
+    <section class="view view-detail" id="view-detail">
+      <div class="detail-head" id="detail-head"></div>
+      <div class="stack" id="detail-body"></div>
+    </section>
+
+    <!-- 全屏播放器 -->
+    <section class="view view-player" id="view-player">
+      <div class="player">
+        <div class="player-top">
+          <button class="iconbtn" id="btn-player-close" type="button" aria-label="收起">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="player-title" id="player-title"></div>
+          <button class="iconbtn" id="btn-player-more" type="button" aria-label="更多">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+          </button>
+        </div>
+        <div class="player-cover" id="player-cover"></div>
+        <div class="player-meta">
+          <div class="player-name" id="player-name"></div>
+          <div class="player-artist" id="player-artist"></div>
+        </div>
+        <div class="player-progress" id="player-progress">
+          <div class="player-bar"><div class="player-bar-fill" id="player-bar-fill"></div></div>
+          <div class="player-times"><span id="player-time-now">00:00</span><span id="player-time-end">00:00</span></div>
+        </div>
+        <div class="player-controls">
+          <button class="iconbtn" id="btn-player-mode" type="button" aria-label="播放模式">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10l-3-3M20 17H10l3 3M4 7v6M20 17v-6"/></svg>
+          </button>
+          <button class="iconbtn iconbtn-lg" id="btn-player-prev" type="button" aria-label="上一首">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6v12L9 12zM6 6v12"/></svg>
+          </button>
+          <button class="playbtn" id="btn-player-play" type="button" aria-label="播放">
+            <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none"/></svg>
+            <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true" hidden><path d="M9 5.5v13M15 5.5v13"/></svg>
+          </button>
+          <button class="iconbtn iconbtn-lg" id="btn-player-next" type="button" aria-label="下一首">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6v12l9-6zM18 6v12"/></svg>
+          </button>
+          <button class="iconbtn" id="btn-player-list" type="button" aria-label="播放列表">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h12M4 12h12M4 17h8M18 15v6M15 18h6"/></svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ------------------------------------------------------- 播放条 / 标签栏 -->
+  <div class="miniplayer" id="miniplayer" hidden>
+    <div class="miniplayer-cover" id="miniplayer-cover"></div>
+    <div class="miniplayer-meta">
+      <div class="miniplayer-name" id="miniplayer-name"></div>
+      <div class="miniplayer-artist" id="miniplayer-artist"></div>
+    </div>
+    <button class="iconbtn" id="btn-mini-play" type="button" aria-label="播放">
+      <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none"/></svg>
+      <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true" hidden><path d="M9 5.5v13M15 5.5v13"/></svg>
+    </button>
+    <button class="iconbtn" id="btn-mini-next" type="button" aria-label="下一首">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6v12l9-6zM18 6v12"/></svg>
+    </button>
+    <div class="miniplayer-progress"><div class="miniplayer-progress-fill" id="miniplayer-progress-fill"></div></div>
+  </div>
+
+  <nav class="tabbar" id="tabbar" role="tablist">
+    <button class="tab is-on" data-tab="home" type="button" role="tab">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6h-6v6H5a1 1 0 0 1-1-1z"/></svg>
+      <span>首页</span>
+    </button>
+    <button class="tab" data-tab="search" type="button" role="tab">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+      <span>搜索</span>
+    </button>
+    <button class="tab" data-tab="library" type="button" role="tab">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h12M4 12h12M4 18h8"/></svg>
+      <span>歌单</span>
+    </button>
+    <button class="tab" data-tab="downloads" type="button" role="tab">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10m0 0l-4-4m4 4l4-4M5 19h14"/></svg>
+      <span>下载</span>
+    </button>
+    <button class="tab" data-tab="me" type="button" role="tab">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.6"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>
+      <span>我的</span>
+    </button>
+  </nav>
+
+</div>
+
+<!-- ------------------------------------------------------------- 浮层 -->
+<div class="toast-host" id="toast-host"></div>
+
+<div class="sheet-host" id="sheet-host" hidden>
+  <div class="sheet-backdrop" id="sheet-backdrop"></div>
+  <div class="sheet" id="sheet">
+    <div class="sheet-grip"></div>
+    <div class="sheet-title" id="sheet-title"></div>
+    <div class="sheet-body" id="sheet-body"></div>
+  </div>
+</div>
+
+<div class="modal-host" id="modal-host" hidden>
+  <div class="modal-backdrop" id="modal-backdrop"></div>
+  <div class="modal" id="modal">
+    <div class="modal-title" id="modal-title"></div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-actions" id="modal-actions"></div>
+  </div>
+</div>
+
+<audio id="audio" preload="metadata"></audio>
+
+<script src="app.js"></script>
+</body>
+</html>

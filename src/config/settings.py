@@ -13,6 +13,7 @@ user's configuration.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -22,7 +23,13 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    import yaml
+except ImportError:  # pragma: no cover - the Android build has no PyYAML wheel
+    # PyYAML has no wheel that pip can use for an Android target, so the
+    # phone build stores the same settings as JSON.  The file format is the
+    # only difference: the settings themselves are identical.
+    yaml = None
 
 from src.version import APP_NAME
 
@@ -233,7 +240,9 @@ class Settings:
             directory.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             self.logger.warning("cannot create config dir %s: %s", directory, exc)
-        return directory / "settings.yaml"
+        # Without PyYAML the file is JSON; the extension follows the writer so
+        # nobody tries to read one format as the other.
+        return directory / ("settings.yaml" if yaml is not None else "settings.json")
 
     @property
     def config_path(self) -> Path:
@@ -245,7 +254,10 @@ class Settings:
             return
         try:
             with open(self._config_path, encoding="utf-8") as handle:
-                raw = yaml.safe_load(handle) or {}
+                if yaml is not None:
+                    raw = yaml.safe_load(handle) or {}
+                else:
+                    raw = json.load(handle) or {}
             if not isinstance(raw, dict):
                 raise ValueError("settings file is not a mapping")
             self._data = AppSettings(
@@ -329,7 +341,10 @@ class Settings:
             }
             try:
                 with open(self._config_path, "w", encoding="utf-8") as handle:
-                    yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
+                    if yaml is not None:
+                        yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
+                    else:
+                        json.dump(payload, handle, ensure_ascii=False, indent=2)
             except OSError as exc:
                 self.logger.warning("failed to save settings: %s", exc)
 

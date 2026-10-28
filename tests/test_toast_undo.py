@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parent.parent
 JS = (ROOT / "src" / "gui" / "assets" / "app.js").read_text(encoding="utf-8")
 CSS = (ROOT / "src" / "gui" / "assets" / "style.css").read_text(encoding="utf-8")
 I18N = ROOT / "src" / "i18n"
-ANDROID_APP = (ROOT / "android" / "ncmkivy" / "app.py").read_text(encoding="utf-8")
 
 #: What the toast lasted before this change.  The point of the change is that
 #: it no longer does.
@@ -161,13 +160,8 @@ def test_the_undo_wording_exists_in_both_languages():
         assert common.get("undone"), language
 
 
-def test_the_android_toast_uses_the_long_duration():
-    """Android offers two lengths; the short one is two seconds.
-
-    Checked on the call itself: the comment above it names the short constant
-    to explain why it is not used.
-    """
-    match = re.search(r"makeText\(([^)]*)\)", ANDROID_APP, re.S)
-    assert match, "no makeText call"
-    assert "LENGTH_LONG" in match.group(1)
-    assert "LENGTH_SHORT" not in match.group(1)
+def test_the_phone_interface_has_its_own_toast():
+    """The Android app is a web page now, so its toast lives in the page."""
+    mobile = (ROOT / "android" / "web" / "app.js").read_text(encoding="utf-8")
+    assert "function showToast" in mobile
+    assert "TOAST_UNDO_MS" in mobile
