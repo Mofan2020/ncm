@@ -53,6 +53,11 @@ html[data-theme="light"] {
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
+/* The hidden attribute has to win over the display rules below: the
+   buttons set display:inline-flex, which would otherwise keep a
+   hidden button on screen. */
+[hidden] { display: none !important; }
+
 html, body {
     margin: 0;
     padding: 0;

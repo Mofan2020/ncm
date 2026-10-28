@@ -7,14 +7,14 @@ package.name = neteasemusic
 title = NetEase Music
 source.dir = .
 source.include_exts = py,png,jpg,json,ttf,html,css,js
-source.include_patterns = ncmandroid/*.py,src/*.py,src/**/*.py,web/*.html,web/*.js,web/*.css
+source.include_patterns = ncmandroid/*.py,src/*.py,src/**/*.py,web/*.html,web/*.js,web/*.css,webview/*.py,webview/**/*.py,proxytools/*.py,typing_extensions.py
 source.exclude_dirs = tests,build,dist,.venv,__pycache__,tools,legacy
 
 version = 3.5.10
 
 # Only the pure-Python dependencies: no Pillow, no native wheels.  Every
 # image job (QR code, wallpaper) is done without one.
-requirements = python3,requests,qrcode,pywebview
+requirements = python3,kivy,requests,pyyaml,qrcode
 
 orientation = all
 # The phone interface is a web page: it is served over the loopback server.

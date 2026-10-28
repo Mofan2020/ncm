@@ -99,6 +99,13 @@ class Handler(BaseHTTPRequestHandler):
             html = html.replace('<script src="icons.js"></script>',
                                 '<script src="shim.js"></script>\n'
                                 '    <script src="icons.js"></script>')
+            if 'shim.js' not in html:
+                # The phone interface has no icons.js; the shim still has to
+                # be the first script, or the page polls for a bridge that
+                # was never installed.
+                html = html.replace('<script src="app.js"></script>',
+                                    '<script src="shim.js"></script>\n'
+                                    '    <script src="app.js"></script>')
             self._send(200, "text/html; charset=utf-8", html.encode())
             return
 
