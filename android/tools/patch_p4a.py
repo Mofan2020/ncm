@@ -1,20 +1,32 @@
 #!/usr/bin/env python3
-"""Apply the python-for-android patch this build needs, idempotently.
+"""Apply the python-for-android patches this build needs, idempotently.
 
-The ``android`` recipe declares only setuptools in its pyproject.toml while
-its setup.py does ``import Cython``.  pip's isolated build environment has
-no Cython, so the build dies with::
-
-    ModuleNotFoundError: No module named 'Cython'
-
-The fix is to build that one recipe without isolation.  It cannot be turned
-off globally: kivy pins exact cython/setuptools/wheel versions and the host
-environment has different ones, so every other recipe *needs* the isolation.
-
-The patch edits the toolchain's site-packages, which lives outside the
+Three problems, all in the toolchain's site-packages, which lives outside the
 repository -- a rebuilt toolchain comes back unpatched and the build fails
-again with no hint why.  So it is applied here on every build, and applying
-it twice is a no-op.
+again with no hint why.  So they are applied here on every build, and
+applying them twice is a no-op.
+
+1. **The ``android`` recipe builds without isolation.**
+   It declares only setuptools in its pyproject.toml while its setup.py does
+   ``import Cython``.  pip's isolated build environment has no Cython, so the
+   build dies with::
+
+       ModuleNotFoundError: No module named 'Cython'
+
+   The flag cannot be turned off globally: kivy pins exact cython/setuptools/
+   wheel versions and the host environment has different ones, so every other
+   recipe *needs* the isolation.
+
+2. **The Python modules are installed with the target's platform tags.**
+   The wheels for Android are tagged ``android_24_arm64_v8a``, but the pip
+   that runs the install only knows the host's platform, so it refuses every
+   one of them with "is not a supported wheel on this platform".
+
+3. **The build venv does not upgrade its pip.**
+   The upgrade pulls a newer pip from the mirror whose cli imports names the
+   installed ``pip._internal.exceptions`` no longer has, and every later pip
+   call in that venv dies with "cannot import name
+   BuildDependencyImportError".  The seeded pip works; leave it alone.
 
     python android/tools/patch_p4a.py [--buildozer /path/to/buildozer]
 """
@@ -45,9 +57,21 @@ PATCH = '''
 
 MARKER = 'if self.name == "android":'
 
+#: The pip self-upgrade inside the build venv.
+PIP_UPGRADE = '"source venv/bin/activate && pip install -U pip"'
+PIP_VERSION = '"source venv/bin/activate && pip --version"'
 
-def recipe_path(buildozer: Path | None) -> Path:
-    """Locate pythonforandroid/recipe.py inside the buildozer environment."""
+#: The install of the pure-Python modules into the dist.
+INSTALL_LINE = '"install -v --target'
+#: The line it becomes.  Written in pieces so the quoting stays readable.
+INSTALL_NEW = ('"install -v --target ' + "'{0}'"
+               + ' --no-deps " + platforms + " -r requirements.txt"')
+#: How the patched line reads, so a second run can tell.
+BUILD_MARKER = '--no-deps " + platforms + " -r requirements.txt'
+
+
+def site_packages(buildozer: Path | None) -> Path:
+    """The site-packages of the buildozer environment."""
     python = buildozer.parent / "python" if buildozer else Path(sys.executable)
     try:
         out = subprocess.run(
@@ -58,7 +82,101 @@ def recipe_path(buildozer: Path | None) -> Path:
     except (OSError, subprocess.CalledProcessError) as exc:
         print(f"cannot ask {python} for its site-packages: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    return Path(out.stdout.strip()) / "pythonforandroid" / "recipe.py"
+    return Path(out.stdout.strip())
+
+
+def indent_of(line: str) -> str:
+    """The leading whitespace of a line."""
+    return line[:len(line) - len(line.lstrip())]
+
+
+def patch_recipe(path: Path) -> bool:
+    """Let the android recipe build without isolation."""
+    if not path.is_file():
+        print(f"cannot find {path}", file=sys.stderr)
+        return False
+    text = path.read_text(encoding="utf-8")
+    if MARKER in text:
+        print(f"already patched: {path.name}")
+        return True
+    if ANCHOR not in text:
+        print(f"{path} does not look like the version this patch was written "
+              "for -- the anchor is missing", file=sys.stderr)
+        return False
+    path.write_text(text.replace(ANCHOR, ANCHOR + PATCH, 1), encoding="utf-8")
+    print(f"patched {path.name}: the android recipe builds without isolation")
+    return True
+
+
+def patch_build(path: Path) -> bool:
+    """Install the modules with the target's tags, and leave pip alone."""
+    if not path.is_file():
+        print(f"cannot find {path}", file=sys.stderr)
+        return False
+    text = path.read_text(encoding="utf-8")
+    if BUILD_MARKER in text or PIP_VERSION in text:
+        print(f"already patched: {path.name}")
+        return True
+
+    lines = text.splitlines()
+    changed = False
+
+    # 3. the pip self-upgrade
+    for index, line in enumerate(lines):
+        if PIP_UPGRADE not in line:
+            continue
+        lines[index] = indent_of(line) + PIP_VERSION
+        # the note goes above the call, not inside its parentheses
+        call = index
+        for back in range(index, 0, -1):
+            if "shprint(sh.bash, '-c', (" in lines[back]:
+                call = back
+                break
+        outer = indent_of(lines[call])
+        lines[call:call] = [
+            outer + "# The upgrade is what breaks this venv: pip is pulled from",
+            outer + "# the mirror as a newer version whose cli imports names the",
+            outer + "# installed pip._internal.exceptions no longer has, and every",
+            outer + "# later pip call in this venv dies with \"cannot import name",
+            outer + "# BuildDependencyImportError\".  The seeded pip works.",
+        ]
+        changed = True
+        break
+
+    # 2. the platform tags on the install
+    for index, line in enumerate(lines):
+        if INSTALL_LINE not in line:
+            continue
+        lines[index] = indent_of(line) + INSTALL_NEW
+        # the block belongs next to the shprint call that uses it, so it takes
+        # that call's indentation, not the string's
+        call = index
+        for back in range(index, 0, -1):
+            if "shprint(sh.bash, '-c', (" in lines[back]:
+                call = back
+                break
+        outer = indent_of(lines[call])
+        lines[call:call] = [
+            outer + "# The wheels for this target are tagged for Android, but",
+            outer + "# the host pip only knows the host's platform: without the",
+            outer + "# tags it refuses every one of them.",
+            outer + "platforms = ' '.join(",
+            outer + "    '--platform={}'.format(tag)",
+            outer + "    for tag in PyProjectRecipe.get_wheel_platform_tags("
+                    "arch.arch, ctx))",
+        ]
+        changed = True
+        break
+
+    if not changed:
+        print(f"{path} does not look like the version this patch was written "
+              "for -- the anchors are missing", file=sys.stderr)
+        return False
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"patched {path.name}: the modules are installed with the target's "
+          "platform tags, and pip is left alone")
+    return True
 
 
 def main() -> int:
@@ -67,24 +185,10 @@ def main() -> int:
                         help="path to the buildozer executable")
     args = parser.parse_args()
 
-    path = recipe_path(args.buildozer)
-    if not path.is_file():
-        print(f"cannot find {path}", file=sys.stderr)
-        return 1
-
-    text = path.read_text(encoding="utf-8")
-    if MARKER in text:
-        print(f"p4a is already patched: {path}")
-        return 0
-
-    if ANCHOR not in text:
-        print(f"{path} does not look like the version this patch was written "
-              "for -- the anchor is missing", file=sys.stderr)
-        return 1
-
-    path.write_text(text.replace(ANCHOR, ANCHOR + PATCH, 1), encoding="utf-8")
-    print(f"patched {path}: the android recipe now builds without isolation")
-    return 0
+    p4a = site_packages(args.buildozer) / "pythonforandroid"
+    ok = patch_recipe(p4a / "recipe.py")
+    ok = patch_build(p4a / "build.py") and ok
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
