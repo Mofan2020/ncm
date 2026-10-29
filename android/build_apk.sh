@@ -102,6 +102,38 @@ if [ ! -f "$HERE/src/version.py" ]; then
 fi
 echo "   $(find "$HERE/src" -name '*.py' | wc -l | tr -d ' ') python files staged"
 
+# pywebview's Android backend talks to the Java WebView through the classes
+# under com/pywebview/.  They ship as a jar in the upstream repository and
+# are not in the PyPI package, so the build has to carry it explicitly.  A
+# missing jar produces an APK that dies on launch with a ClassNotFoundError,
+# which is exactly the kind of failure nobody can debug from a phone.
+echo "== checking the pywebview Java classes are present =="
+JAR="$HERE/libs/pywebview-android.jar"
+if [ ! -f "$JAR" ]; then
+    echo "missing $JAR: pywebview's Android backend will not find its Java classes" >&2
+    echo "  fetch it from the upstream repository:" >&2
+    echo "    webview/lib/pywebview-android.jar" >&2
+    exit 1
+fi
+for CLASS in PyWebViewClient PyWebChromeClient PyJavascriptInterface \
+             EventCallbackWrapper JsApiCallbackWrapper WebViewRequestInterceptor; do
+    if ! unzip -l "$JAR" | grep -q "com/pywebview/$CLASS.class"; then
+        echo "$JAR does not contain com/pywebview/$CLASS.class" >&2
+        exit 1
+    fi
+done
+echo "   $(unzip -l "$JAR" | grep -c 'com/pywebview/.*\.class') java classes"
+
+# The launch screen: p4a stretches the presplash over the whole screen, so a
+# square icon becomes a full-screen logo.  A tall image is what keeps the
+# logo small.
+if [ ! -f "$HERE/assets/presplash.png" ]; then
+    echo "missing $HERE/assets/presplash.png" >&2
+    echo "  generate it with: .venv/bin/python scripts/make_presplash.py" >&2
+    exit 1
+fi
+echo "   launch screen: $(file -b "$HERE/assets/presplash.png")"
+
 MODE="${1:-debug}"
 case "$MODE" in
     --release|release)
