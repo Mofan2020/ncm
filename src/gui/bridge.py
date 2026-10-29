@@ -2563,7 +2563,11 @@ class GuiBridge:
         if target is None:
             return {"success": False, "reason": "desktop_lyrics_window_closed"}
         try:
-            wanted = max(80, min(400, int(height)))
+            # The card is a fixed 468 px wide, so a long line at a large font
+            # size wraps to several rows: at 36 px the content is 381 px tall.
+            # A 400 px ceiling clipped the last row, so the cap follows the
+            # font size range (10-36 px) instead.
+            wanted = max(80, min(600, int(height)))
             current = getattr(target, "height", None)
             if current is None or int(current) == wanted:
                 return {"success": True, "height": wanted}

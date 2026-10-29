@@ -74,7 +74,10 @@
         .desktop-lyrics-content {
             /* 设计令牌：默认值 / 可调范围见交付说明 */
             --dl-radius: 16px;                                   /* 圆角 10–24px */
-            --dl-width: 26em;                                    /* 卡片宽度，随字号缩放 */
+            /* 卡片宽度用像素，不用 em：em 会跟着 JS 写的字号一起变，字号一大
+               卡片就跟着视口宽度走，宽度不再恒定。定宽之后只有高度会随字号
+               变化，而高度本来就由 JS 动态报给原生窗口。 */
+            --dl-width: 468px;                                   /* 卡片固定宽度 */
             --dl-pad-x: 1.35em;                                  /* 横向内边距 */
             --dl-pad-top: 1.05em;                                /* 顶部留出把手位 */
             --dl-pad-bottom: 0.75em;
@@ -92,8 +95,8 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            /* 定宽：歌词长短不会让卡片变形；窄窗口下退化为视口宽度减边距，
-               不会横向溢出。 */
+            /* 定宽：歌词长短不会让卡片变形。视口比卡片还窄的时候（用户把
+               窗口拖得很小）退化为视口宽度减边距，不横向溢出。 */
             width: min(var(--dl-width), calc(100vw - 40px));
             padding: var(--dl-pad-top) var(--dl-pad-x) var(--dl-pad-bottom);
             border: 1px solid var(--dl-hairline);
