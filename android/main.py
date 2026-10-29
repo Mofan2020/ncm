@@ -17,6 +17,7 @@ import logging
 import logging.handlers
 import os
 import sys
+import traceback
 from pathlib import Path
 
 # The Android app ships the shared core next to it, so the project root has
@@ -51,12 +52,16 @@ def _configure_logging(debug: bool) -> None:
         root.addHandler(handler)
     except OSError as exc:  # pragma: no cover - unwritable directory
         print(f"warning: cannot write log file: {exc}", file=sys.stderr)
-    if debug:
-        stream = logging.StreamHandler()
-        stream.setLevel(logging.DEBUG)
-        stream.setFormatter(logging.Formatter(
-            "%(levelname)-7s %(name)s: %(message)s"))
-        root.addHandler(stream)
+
+    # python-for-android pipes stdout and stderr into logcat, and logcat is
+    # the only place a crash on the phone can be read from: the app's own
+    # directory is not reachable without a file manager or adb.  So errors
+    # always go to the stream, and the stream is only noisy in debug mode.
+    stream = logging.StreamHandler()
+    stream.setLevel(logging.DEBUG if debug else logging.WARNING)
+    stream.setFormatter(logging.Formatter(
+        "%(levelname)-7s %(name)s: %(message)s"))
+    root.addHandler(stream)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -239,7 +244,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _start_app()
     except Exception as exc:
+        # The traceback goes to stdout and stderr on purpose: p4a forwards
+        # both to logcat, and without it a crash on the phone is a black
+        # screen with nothing to go on.
         log.exception("the app could not start")
+        traceback.print_exc()
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
