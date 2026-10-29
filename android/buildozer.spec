@@ -7,7 +7,7 @@ package.name = neteasemusic
 title = NetEase Music
 source.dir = .
 source.include_exts = py,png,jpg,json,ttf,html,css,js
-source.include_patterns = ncmandroid/*.py,src/*.py,src/**/*.py,web/*.html,web/*.js,web/*.css,webview/*.py,webview/**/*.py,proxytools/*.py,typing_extensions.py,yaml/*.py
+source.include_patterns = ncmandroid/*.py,src/*.py,src/**/*.py,web/*.html,web/*.js,web/*.css,webview/*.py,webview/**/*.py,proxy_tools.py,bottle.py,typing_extensions.py,yaml/*.py
 source.exclude_dirs = tests,build,dist,.venv,__pycache__,tools,legacy
 
 version = 3.5.11
@@ -62,9 +62,15 @@ android.add_jars = libs/pywebview-android.jar
 # before the local library is read.
 android.wakelock = True
 
-# The NetEase CDN and the API are both HTTPS, but the loopback media server
-# is plain HTTP on 127.0.0.1, so cleartext has to stay allowed for it.
 android.allow_backup = True
+
+# The interface is served over the loopback media server as plain HTTP on
+# 127.0.0.1, and Android has blocked cleartext traffic by default since API
+# 28.  The exemption for loopback addresses only exists from Android 17
+# (API 37) on, so the address has to be allowed explicitly -- and only that
+# address: the API and the CDN stay HTTPS.
+android.add_resources = res/xml/network_security_config.xml:xml/network_security_config.xml
+android.extra_manifest_application_arguments = manifest_application.xml
 
 android.accept_sdk_license = True
 android.sdk_path = /Users/mofan/android-toolchain/sdk

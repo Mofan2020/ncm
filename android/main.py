@@ -85,12 +85,19 @@ def _prepare_home() -> None:
     private = os.environ.get("ANDROID_PRIVATE")
     if not private:
         return
-    os.environ.setdefault("HOME", private)
-    os.environ.setdefault("XDG_CONFIG_HOME", str(Path(private) / ".config"))
-    os.environ.setdefault("NCM_LOG_DIR", str(Path(private) / "logs"))
+    # These are set outright, not with setdefault: Android hands the process a
+    # HOME (usually /data) that it cannot write to, and setdefault would keep
+    # it because the variable exists.  Everything the app writes -- settings,
+    # logs, downloads, the media server's cache -- has to land inside the
+    # app's own directory.
+    os.environ["HOME"] = private
+    os.environ["XDG_CONFIG_HOME"] = str(Path(private) / ".config")
+    os.environ["NCM_LOG_DIR"] = str(Path(private) / "logs")
     # The media server writes its cache next to the app data; a read-only
     # /tmp would break playback.
-    os.environ.setdefault("TMPDIR", str(Path(private) / "tmp"))
+    os.environ["TMPDIR"] = str(Path(private) / "tmp")
+    for name in ("XDG_CONFIG_HOME", "NCM_LOG_DIR", "TMPDIR"):
+        Path(os.environ[name]).mkdir(parents=True, exist_ok=True)
 
 
 def _self_test(report_path: str | None = None) -> int:
@@ -233,13 +240,15 @@ def _start_app() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+
+    # Before the logging, because that is what decides where the log file
+    # goes: NCM_LOG_DIR is set here, and without it the log would land in
+    # /tmp, which is read-only on Android.
+    _prepare_home()
     _configure_logging(args.debug)
 
     if args.self_test:
         return _self_test(args.report or None)
-
-    # Must happen before anything reads the settings or opens a file.
-    _prepare_home()
 
     try:
         return _start_app()

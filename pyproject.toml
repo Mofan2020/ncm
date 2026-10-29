@@ -12,11 +12,21 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-# android/webview, android/proxytools, android/yaml and
-# android/typing_extensions.py are upstream packages vendored so the Android
-# build can carry them; they are not our code and are not held to this
-# project's style.
-exclude = ["build", "dist", "legacy", ".venv", "android/webview", "android/proxytools", "android/yaml", "android/typing_extensions.py"]
+# The android/ directory holds upstream packages vendored so the Android
+# build can carry them (pywebview, proxy_tools, bottle, typing_extensions and
+# the pure-Python part of PyYAML); they are not our code and are not held to
+# this project's style.
+exclude = [
+    "build",
+    "dist",
+    "legacy",
+    ".venv",
+    "android/webview",
+    "android/proxy_tools.py",
+    "android/bottle.py",
+    "android/typing_extensions.py",
+    "android/yaml",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "C4"]

@@ -138,6 +138,35 @@ if [ ! -f "$HERE/assets/presplash.png" ]; then
 fi
 echo "   launch screen: $(file -b "$HERE/assets/presplash.png")"
 
+# The network security config has to be valid XML before it is handed to
+# AAPT: a double dash inside a comment fails the resource compile with a
+# parse error that names the file but not the offending line.
+if command -v xmllint >/dev/null 2>&1; then
+    if ! xmllint --noout "$HERE/res/xml/network_security_config.xml"; then
+        echo "res/xml/network_security_config.xml is not valid XML" >&2
+        exit 1
+    fi
+fi
+
+# pywebview's own imports have to be satisfied inside the bundle: the pure
+# Python ones are vendored next to it, and jnius comes from the p4a recipe.
+# A missing one kills the app on launch with nothing but a ModuleNotFoundError
+# in logcat, so they are checked here instead.
+echo "== checking the vendored python dependencies =="
+for MOD in proxy_tools bottle typing_extensions; do
+    if [ ! -f "$HERE/$MOD.py" ]; then
+        echo "missing $HERE/$MOD.py: pywebview imports it at startup" >&2
+        exit 1
+    fi
+done
+# proxy_tools is a module, not a package: vendoring it as a directory is the
+# mistake that cost a build cycle.
+if [ -d "$HERE/proxytools" ]; then
+    echo "$HERE/proxytools is a directory but pywebview imports 'proxy_tools'" >&2
+    exit 1
+fi
+echo "   proxy_tools.py bottle.py typing_extensions.py"
+
 MODE="${1:-debug}"
 case "$MODE" in
     --release|release)
