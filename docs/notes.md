@@ -2287,3 +2287,70 @@ Android 从 `Toast.LENGTH_SHORT`（2 秒）换成 `LENGTH_LONG`（3.5 秒），�
 
 真实浏览器验过：普通 toast 4.8 秒消失、带撤销的 8 秒还在；点一次触发一次、
 按钮立刻禁用；420px 窄屏下长标题换行、按钮不挤出 toast。
+
+## 39. Android 启动闪退：四层原因，逐层剥
+
+安卓版从 v3.5.9 的原生 Kivy UI 换成 pywebview 之后，第一次启动必崩。四个
+原因叠在一起，每一个都是前一个修好之后才暴露出来的。
+
+**第一层：缺 Java 类。** pywebview 的 Android backend 用 jnius 调
+`com/pywebview/` 下的七个 Java 类，PyPI 包里只有 Python 端的类名字符串，
+没有实现。报错是 `ClassNotFoundError`，但因为在 Java 层抛的，Python 的
+traceback 里看不到，logcat 里也只有一行。实现在上游仓库的
+`webview/lib/pywebview-android.jar` 里，14,789 字节，SHA-256
+`d5715b9c07ff2858c854bda872191c581dbbe101acabeff0076fc69edfc612a8`。
+`android.add_jars` 引进来，构建脚本在构建前校验七个类都在，缺任一个就停。
+
+**第二层：proxy_tools 找不到。** `webview/util.py` 在 import 阶段就
+`import proxy_tools`。之前把 vendored 文件放成了 `android/proxytools/`
+目录——模块名是 `proxy_tools`，目录形态永远 import 不到，报错还指向一个
+明明就在旁边的名字。改成顶层 `android/proxy_tools.py`，构建脚本里加了一条
+断言：出现 `proxytools/` 目录直接失败。
+
+**第三层：缺 bottle。** `webview/http.py` 在 import 阶段 import bottle，同一
+个坑。我们其实不用 pywebview 自带的 server（页面是桌面的 MediaServer 提供
+的），但 import 已经发生了，躲不掉。一并 vendored。
+
+**第四层：WebView 拒绝明文 HTTP。** 页面由 loopback media server 提供，
+是 `http://127.0.0.1:<port>/`。Android 9 起默认禁明文，WebView 直接报
+`net::ERR_CLEARTEXT_NOT_PERMITTED`，页面全空。官方文档里 localhost 的豁免
+要到 Android 17 (API 37) 才有，所以要显式配 network security config：
+
+```xml
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
+```
+
+只放行回环地址，API 和 CDN 继续走 HTTPS 受系统信任库管。
+
+两个坑：
+
+- `android.add_resources` 的目标路径是**相对 res/ 目录**的。写
+  `res/xml/xxx.xml:res/xml/xxx.xml` 会被放到 `res/res/xml/`，AAPT 报资源
+  找不到，manifest 里那个属性看起来完全正确。
+- 这份 XML 的注释里不能出现 `--`，AAPT 报解析错误但不指出行号。构建脚本
+  现在先用 `xmllint --noout` 校验，省掉一次四分钟的失败。
+
+**顺带两处环境问题。** Android 的 `HOME` 是 `/data`，不可写。原来的
+`setdefault` 会保留这个已经存在的值——恰恰是问题所在，改成无条件覆盖。
+而且 `_prepare_home()` 必须提到 `_configure_logging()` 之前，否则日志先落到
+只读的 `/tmp`。
+
+**崩溃日志要能进 logcat。** release 构建会把 traceback 收进 app 私有目录，
+没人看得见。日志同时写 stderr，p4a 会转发到 logcat，这样一次启动失败就是
+一条 `adb logcat -d | grep python` 的事，不用猜。
+
+**模拟器实测（Pixel 6 / Android 14）**：安装后启动，进程存活，logcat 无
+FATAL，页面正常渲染，底部标签栏点击可切换、选中态跟随。数据为空是模拟器
+没登录网易云账号，不是接口坏了。
+
+### 构建脚本现在会拦的
+
+- jar 里七个 Java 类缺任一个
+- `proxytools/` 目录形态
+- 缺 proxy_tools.py / bottle.py / typing_extensions.py
+- network security config 不是合法 XML
