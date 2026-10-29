@@ -10,7 +10,7 @@ source.include_exts = py,png,jpg,json,ttf,html,css,js
 source.include_patterns = ncmandroid/*.py,src/*.py,src/**/*.py,web/*.html,web/*.js,web/*.css,webview/*.py,webview/**/*.py,proxy_tools.py,bottle.py,typing_extensions.py,yaml/*.py
 source.exclude_dirs = tests,build,dist,.venv,__pycache__,tools,legacy
 
-version = 3.5.11
+version = 3.5.12
 
 # Only the pure-Python dependencies: no Pillow, no native wheels.  Every
 # image job (QR code, wallpaper) is done without one.

@@ -208,7 +208,7 @@
            一根灰条；命中区用伪元素放大到 50x26，视觉尺寸不变。 */
         .desktop-lyrics-drag-handle {
             position: absolute;
-            top: 8px;
+            top: 11px;
             left: 50%;
             transform: translateX(-50%);
             width: 30px;
@@ -216,6 +216,10 @@
             border-radius: 2px;
             background: rgba(255, 255, 255, 0.3);
             cursor: grab;
+            /* The card below is painted after this element (it comes later in
+               the DOM) and its background is opaque, so without a z-index the
+               handle ends up underneath it and simply is not visible. */
+            z-index: 2;
             transition: width 200ms cubic-bezier(0.22, 1, 0.36, 1),
                         background-color 200ms ease,
                         opacity 200ms ease;
