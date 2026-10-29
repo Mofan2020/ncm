@@ -115,14 +115,18 @@ if [ ! -f "$JAR" ]; then
     echo "    webview/lib/pywebview-android.jar" >&2
     exit 1
 fi
+# The listing is taken once and grepped from the file: a pipeline into
+# ``grep -q`` breaks under ``set -o pipefail``, because grep exits as soon as
+# it matches, unzip gets a SIGPIPE and the pipeline then reports failure.
+LISTING="$(unzip -l "$JAR")"
 for CLASS in PyWebViewClient PyWebChromeClient PyJavascriptInterface \
              EventCallbackWrapper JsApiCallbackWrapper WebViewRequestInterceptor; do
-    if ! unzip -l "$JAR" | grep -q "com/pywebview/$CLASS.class"; then
+    if ! grep -q "com/pywebview/$CLASS.class" <<< "$LISTING"; then
         echo "$JAR does not contain com/pywebview/$CLASS.class" >&2
         exit 1
     fi
 done
-echo "   $(unzip -l "$JAR" | grep -c 'com/pywebview/.*\.class') java classes"
+echo "   $(grep -c 'com/pywebview/.*\.class' <<< "$LISTING") java classes"
 
 # The launch screen: p4a stretches the presplash over the whole screen, so a
 # square icon becomes a full-screen logo.  A tall image is what keeps the
