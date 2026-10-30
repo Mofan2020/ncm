@@ -290,6 +290,15 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
+          # The notes are written by the maintainer, not generated from the
+          # commit log: `--generate-notes` fills the page with commit
+          # subjects, which are development notes, not user-facing copy.
+          # They live in release-notes.md at the repository root, so the text
+          # that ships with a version is reviewed together with the code.
+          if [ ! -f release-notes.md ]; then
+            echo "::error::release-notes.md is missing: the release would have no description"
+            exit 1
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "release $tag exists - uploading the assets again"
             gh release upload "$tag" artifacts/*.exe artifacts/*.zip artifacts/*.dmg --clobber
@@ -299,14 +308,10 @@ jobs:
             #   gh release edit <tag> --prerelease=false
             # after the release has been tested.  Without the flag the release
             # lands as stable and "/releases/latest" points at it.
-            #
-            # The notes are written by the maintainer, not generated from the
-            # commit log: `--generate-notes` fills the page with commit
-            # subjects, which are development notes, not user-facing copy.
             gh release create "$tag" \
               --title "NeteaseMusicDownloader $tag" \
               --prerelease \
-              --notes "See the project README for what changed." \
+              --notes-file release-notes.md \
               artifacts/NeteaseMusicDownloader.exe \
               artifacts/NeteaseMusicDownloader-Windows-x64.zip \
               artifacts/NeteaseMusicDownloader-macOS-arm64.zip \
