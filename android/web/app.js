@@ -26,6 +26,7 @@ const state = {
     login: null,
     coverCache: new Map(),
     coverPending: new Set(),
+    translations: {},
 };
 
 /* ------------------------------------------------------------------ helpers */
@@ -52,6 +53,43 @@ function showEmpty(host, title, hint) {
     if (title) box.appendChild(el('strong', null, title));
     if (hint) box.appendChild(el('span', null, hint));
     clear(host).appendChild(box);
+}
+
+/* ------------------------------------------------------------------- i18n */
+/**
+ * The translation for a key, e.g. "login.code_send_failed".
+ *
+ * The bridge reports what went wrong as an ``error_key``; this is what
+ * turns that into a sentence the user can read.  A key that is not in
+ * the catalogue comes back unchanged, so a missing translation shows the
+ * key rather than an empty bubble.
+ */
+function t(key, params) {
+    let text = state.translations[key];
+    if (text === undefined || text === null) text = key;
+    if (params) {
+        text = text.replace(/\{(\w+)\}/g, (match, name) =>
+            (params[name] !== undefined && params[name] !== null) ? params[name] : match);
+    }
+    return text;
+}
+
+/**
+ * The text for a failed call.
+ *
+ * The bridge reports failures with an ``error_key`` and, for some calls,
+ * a ``message``.  The key is the one that is always there, so it comes
+ * first; the message is the raw text from the server and only reads
+ * well when it is not a translation key itself.
+ */
+function errorText(result, fallback) {
+    if (!result) return fallback;
+    if (result.error_key) {
+        const text = t(result.error_key, { message: result.message || '' });
+        if (text !== result.error_key) return text;
+    }
+    if (result.message && result.message !== result.error_key) return result.message;
+    return fallback;
 }
 
 async function api(name, ...args) {
@@ -153,7 +191,11 @@ function go(tab) {
     });
     $('appbar-title').textContent = TITLES[tab];
     $('btn-back').hidden = true;
-    $('views').scrollTop = 0;
+    // Each page scrolls inside itself (the pages are absolutely positioned
+    // in the content area), so the scroll position to reset is the one of
+    // the page being shown, not of the container.
+    const active = document.getElementById(`view-${tab}`);
+    if (active) active.scrollTop = 0;
     if (tab === 'home') loadHome();
     if (tab === 'search') loadSuggest();
     if (tab === 'library') loadLibrary();
@@ -443,7 +485,7 @@ async function runSearch() {
     showSpinner(host);
     const result = await api('search_multi', keyword, 30, 0);
     if (!result || !result.success) {
-        showEmpty(host, '搜索失败', (result && result.message) || '');
+        showEmpty(host, t('player.search_failed'), errorText(result, ''));
         return;
     }
     const groups = (result.results) || {};
@@ -497,7 +539,10 @@ async function loadDownloads() {
 function renderDownloadStats(host, stats) {
     clear(host);
     const data = stats || {};
-    [['已完成', data.completed || 0], ['进行中', data.downloading || 0],
+    /* The bridge counts with "finished" and "total"; there is no
+     * "completed" and no "downloading", so both of those used to read
+     * 0 forever. */
+    [['已完成', data.finished || 0], ['总数', data.total || 0],
      ['失败', data.failed || 0]].forEach(([label, value]) => {
         const box = el('div', 'stat');
         box.appendChild(el('div', 'stat-value', String(value)));
@@ -528,15 +573,19 @@ async function loadMe() {
     if (status && status.is_logged_in) {
         const profile = el('div', 'profile');
         const avatar = el('div', 'profile-avatar');
-        if (status.avatar_url) {
-            coverFor({ cover_url: status.avatar_url }).then((url) => {
+        // The user lives under ``status.user``: reading it off the top
+        // level gave an empty nickname and a UID of 0, so the page said
+        // "已登录" for an account that was signed in properly.
+        const user = status.user || {};
+        if (user.avatar_url) {
+            coverFor({ cover_url: user.avatar_url }).then((url) => {
                 if (url) avatar.style.backgroundImage = `url("${url}")`;
             });
         }
         profile.appendChild(avatar);
         const info = el('div', 'grow');
-        info.appendChild(el('div', 'profile-name', status.nickname || '已登录'));
-        info.appendChild(el('div', 'profile-sub', `UID ${status.user_id || ''}`));
+        info.appendChild(el('div', 'profile-name', user.nickname || '已登录'));
+        info.appendChild(el('div', 'profile-sub', user.user_id ? `UID ${user.user_id}` : ''));
         profile.appendChild(info);
         host.appendChild(profile);
     } else {
@@ -732,7 +781,7 @@ async function openLogin() {
                 loadMe();
             }
         } else {
-            hint.textContent = (result && result.message) || '二维码取不到，稍后重试';
+            hint.textContent = errorText(result, '二维码取不到，稍后重试');
         }
     };
     paintQr();
@@ -759,11 +808,48 @@ async function openLogin() {
     const sendRow = el('div', 'row');
     const sendButton = el('button', 'btn btn-ghost', '发验证码');
     sendButton.type = 'button';
+
+    // NetEase refuses a second code for the same number for a while, and
+    // every extra request extends that wait.  The button therefore counts
+    // down and stays disabled, exactly like the desktop does -- otherwise
+    // the second tap comes back with "操作过于频繁" and the user has no
+    // idea why.
+    let codeTimer = null;
+    const startCountdown = (seconds = 60) => {
+        if (codeTimer) clearInterval(codeTimer);
+        sendButton.disabled = true;
+        let remaining = seconds;
+        const tick = () => {
+            if (remaining <= 0) {
+                clearInterval(codeTimer);
+                codeTimer = null;
+                sendButton.disabled = false;
+                sendButton.textContent = '发验证码';
+                return;
+            }
+            sendButton.textContent = `${remaining} 秒后重发`;
+            remaining -= 1;
+        };
+        tick();
+        codeTimer = setInterval(tick, 1000);
+    };
+
     sendButton.addEventListener('click', async () => {
+        if (sendButton.disabled) return;
         const phone = phoneInput.value.trim();
         if (!/^\d{6,15}$/.test(phone)) { showToast('手机号填对了吗'); return; }
+        sendButton.disabled = true;
         const result = await api('send_phone_code', phone, '86');
-        showToast(result && result.success ? '验证码已发出' : '发送失败');
+        if (result && result.success) {
+            showToast(t('login.code_sent'));
+            startCountdown(60);
+        } else if (result && (result.throttled || result.error_key === 'login.code_too_frequent')) {
+            showToast(t('login.code_too_frequent', { message: result.message || '' }));
+            startCountdown(180);
+        } else {
+            showToast(errorText(result, t('login.code_send_failed', { message: '' })));
+            startCountdown(60);
+        }
     });
     const loginButton = el('button', 'btn btn-primary grow', '登录');
     loginButton.type = 'button';
@@ -775,11 +861,11 @@ async function openLogin() {
         if (result && result.success) {
             clearInterval(timer);
             closeSheet();
-            showToast('登录成功');
+            showToast(t('login.login_success'));
             homeLoaded = false;
             loadMe();
         } else {
-            showToast((result && result.message) || '登录失败');
+            showToast(errorText(result, t('login.login_failed')));
         }
     });
     sendRow.appendChild(sendButton);
@@ -794,7 +880,7 @@ async function downloadTracks(tracks) {
     if (result && result.success) {
         showToast(`开始下载 ${tracks.length} 首`);
     } else {
-        showToast((result && result.message) || '下载没能开始');
+        showToast(errorText(result, '下载没能开始'));
     }
 }
 
@@ -834,7 +920,7 @@ async function exportBackup() {
     } else if (result && result.cancelled) {
         /* the user closed the dialog */
     } else {
-        showToast((result && result.message) || '导出失败');
+        showToast(errorText(result, '导出失败'));
     }
 }
 
@@ -937,8 +1023,13 @@ function wire() {
         go('library');
     });
 
-    $('views').addEventListener('scroll', () => {
-        $('appbar').classList.toggle('is-scrolled', $('views').scrollTop > 4);
+    // The pages scroll inside themselves, so the listener goes on each of
+    // them.  A scroll event does not bubble, and the container has
+    // overflow: hidden -- watching it would never fire.
+    document.querySelectorAll('#views > .view').forEach((view) => {
+        view.addEventListener('scroll', () => {
+            $('appbar').classList.toggle('is-scrolled', view.scrollTop > 4);
+        });
     });
 }
 
@@ -967,10 +1058,15 @@ async function boot() {
     }
     wire();
 
-    const info = await api('get_app_info');
-    if (info && info.theme) {
-        document.documentElement.dataset.theme = info.theme === 'light' ? 'light' : 'dark';
+    /* The translations come first: every message below is looked up by
+     * key, and without the catalogue the user would read "login.
+     * code_send_failed" instead of a sentence. */
+    try {
+        state.translations = (await api('get_translations')) || {};
+    } catch (err) {
+        state.translations = {};
     }
+
     const settings = await api('get_settings');
     if (settings && settings.ui && settings.ui.theme) {
         document.documentElement.dataset.theme =

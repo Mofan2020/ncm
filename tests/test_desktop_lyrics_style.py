@@ -186,7 +186,28 @@ def test_the_overlay_window_is_transparent(bridge):
     bridge.open_desktop_lyrics()
 
     assert captured.get("transparent") is True, captured
-    assert captured.get("background_color") == "#00000000", captured
+    assert captured.get("background_color") == "#000000", captured
+
+
+def test_the_overlay_colour_is_one_pywebview_accepts():
+    """The window must actually be created, not rejected on the way.
+
+    pywebview checks ``background_color`` against a 3-or-6-digit hex
+    pattern and raises otherwise.  An 8-digit "#00000000" looks like the
+    obvious way to say "transparent", but it is rejected: the window is
+    never created and the button does nothing at all.
+    """
+    import re
+
+    bridge_source = (ROOT / "src" / "gui" / "bridge.py").read_text(encoding="utf-8")
+    match = re.search(r'background_color="(#[0-9a-fA-F]*)"', bridge_source)
+    assert match, "the desktop lyrics window has no background_color"
+    colour = match.group(1)
+
+    # The same pattern pywebview's create_window uses.
+    assert re.match(r"^#(?:[0-9a-fA-F]{3}){1,2}$", colour), (
+        f"{colour} is not a hex pywebview accepts -- the window would never "
+        "be created")
 
 
 def test_a_double_click_does_not_hide_the_lyrics(overlay_js):

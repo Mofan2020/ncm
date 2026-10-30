@@ -2453,3 +2453,102 @@ compatibility」——于是白底回来了。
 恢复透明，另加 `vibrancy=True`（系统材质）；卡片本身从深色渐变换成主窗口同款
 的液态玻璃：半透明中性灰 + backdrop-filter + 高光描边，文字另加一层阴影兜底
 （底色半透明，壁纸会透上来）。
+
+## 45. 安卓版不是「有几个 bug」，是根本没接上（2026-10-30）
+
+用户反馈安卓版「简陋」：验证码没有冷却、toast 看不见、UID 是 0、用户名写死
+「已登录」。这四条看着像四个独立的小毛病，实际是**同一个根因**：安卓前端是
+照着界面写的，不是照着 bridge 写的。
+
+逐条查下去：
+
+- **UID 0 / 「已登录」**——`get_login_status` 把用户放在 `status.user` 里，
+  安卓读的是 `status.nickname`。字段名对不上，于是昵称空、UID 空，
+  代码兜底成「已登录」。
+- **toast 看不见**——`.toast-host` 的 `z-index` 是 80，登录 sheet 是 90。
+  弹窗一盖，提示就在下面。
+- **验证码没有冷却**——桌面端有 `startCountdown()`，安卓端**压根没写**。
+- **失败提示只有「下载没能开始」**——安卓前端读 `result.message`，但 bridge
+  失败时给的是 `error_key`（`player.download_local_only` 这种）。安卓端没有
+  翻译表，`error_key` 是纯给机器看的，翻译成句子需要词典——而词典在
+  `get_translations()` 里躺着，安卓从来没调过。
+
+方法名层面完全对得上：安卓调的 32 个方法 bridge 全有（`comm -23` 为空）。
+**所以只比对方法名是查不出这类问题的**，要看的是字段路径、层级、状态提示
+和调用时机。
+
+同一个根因还有两处：
+
+- **下载统计永远是 0**——安卓读 `stats.completed` / `stats.downloading`，
+  bridge 发的是 `stats.finished` / `stats.total`。
+- **主题设置不生效**——安卓读 `info.theme`，`get_app_info` 里没有这个字段
+  （主题在 `get_settings().ui.theme`）。
+
+**教训**：前端和后端之间的契约，光比对「调了哪些方法」是不够的。要比的是
+**返回结构里的字段路径**、**CSS 层级**、**状态机的每一步**。安卓前端和桌面
+前端是两套代码，各自跑得好好的，接口对不上的时候没有任何一边会报错——
+UI 照常渲染，只是内容是空的或者错的。
+
+另外，安卓的 `error_key` 一律配上翻译词典：新增 `t()` 与 `errorText()`，
+`boot()` 里先拉 `get_translations()` 再渲染，失败提示统一走
+`errorText(result, fallback)`。
+
+## 46. 内容区撑破了整个界面（2026-10-30）
+
+安卓的底部菜单栏跟着内容高度跑，不是贴在屏幕底部。
+
+三处 CSS 一起造成这个：
+
+- `.app` 用了 `min-height: 100dvh`——**min** 不是 **max**，内容比屏幕高的
+  时候整个壳会被撑大。
+- `.views` 是 flex item，没写 `min-height: 0`。flex item 的自动最小尺寸是
+  它的内容高度，所以它拒绝收缩。
+- `.view` 用了 `height: 100%`——**百分比高度依赖父元素的高度**，而父元素
+  的高度正是这条规则想建立的。循环依赖，结果是按内容算。
+
+改成：`.app { height: 100dvh; min-height: 0; overflow: hidden }`，
+`.views { min-height: 0 }`，`.view { position: absolute; inset: 0;
+overflow-y: auto }`。页面在中间那块里自己滚，菜单栏永远贴底。
+
+连带两处：滚动监听原来挂在 `#views` 上——scroll 事件不冒泡，而容器现在
+`overflow: hidden`，那个监听永远不触发（顶栏的阴影因此一直是错的）。改成给
+每个 `.view` 单独挂。切页时的 `scrollTop = 0` 同样要重置**活动页**的，不是
+容器的。
+
+**教训**：`min-height` 和 `height` 在「填满视口」这件事上是两回事；flex
+item 想收缩就得显式 `min-height: 0`；百分比高度在高度未定的容器里是循环
+依赖。
+
+## 47. 桌面歌词窗口根本没建起来（2026-10-30）
+
+用户点「打开桌面歌词」完全没反应。日志里连着二十多行同一个错：
+
+```
+WARNING ncm.bridge: Failed to create desktop lyrics window:
+  #00000000 is not a valid hex triplet color
+```
+
+第 44 节把浮窗改成透明时，`background_color` 写成了八位的 `#00000000`。
+pywebview 的校验是 `^#(?:[0-9a-fA-F]{3}){1,2}$`——**只认 3 位或 6 位**，
+8 位 RGBA 会被 `create_window` 直接拒掉，窗口从来没建过。
+
+`transparent=True` 时 Cocoa 后端自己把 alpha 设成 0
+（`nscolor_from_hex(window.background_color, 0)`），颜色写 `#000000` 就够。
+
+**教训**：改 pywebview 的窗口参数时，`background_color` 的**格式**本身就是
+契约的一部分。测试里之前断言的是 `#00000000`——把非法值固化成了「正确」，
+所以 CI 全绿也拦不住。断言要对着 pywebview 的正则写。
+
+## 48. 测试不能读注释（2026-10-30）
+
+给安卓前端补契约测试时踩的坑：我把 `min-height: 100dvh` 从 `.app` 里删掉了，
+测试却报「规则里还有这个值」——因为**我自己在注释里写了这句话**。
+
+同一个坑踩了三次：CSS 规则体里的注释、JS 函数体里的注释（「用户住在
+`status.user` 里」）、以及查 `'"throttled"'` 时匹配到了
+`result.get("throttled")` 而不是返回字典的键。
+
+**教训**：断言要读**解析后的结构**，不是源码文本。CSS 剥注释、JS 剥注释、
+Python 用 `ast` 拿字典的键。写完还得做变异测试——把实现改坏一次，看测试
+会不会红。这次 12 个变异全部被杀才算数。
+

@@ -84,7 +84,12 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
     display: flex;
     flex-direction: column;
     height: 100dvh;
-    min-height: 100dvh;
+    /* No min-height: 100dvh here.  The shell is exactly the viewport, and
+       the content area scrolls inside it.  A min-height lets the whole
+       column grow past the viewport, and then the tab bar goes wherever
+       the content ends instead of staying at the bottom of the screen. */
+    min-height: 0;
+    overflow: hidden;
 }
 
 .appbar {
@@ -113,9 +118,23 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
 }
 .appbar-actions { display: flex; align-items: center; gap: 2px; }
 
-.views { flex: 1 1 auto; position: relative; overflow: hidden; }
+/* min-height: 0 is what lets this shrink below its content height: a flex
+   item's automatic minimum size is its content, so without it the column
+   grows with the page and pushes the tab bar off the bottom of the
+   screen. */
+.views { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
 
-.view { display: none; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+/* The pages fill the area and scroll inside it.  position: absolute with
+   inset: 0 rather than height: 100%, because a percentage height here
+   depends on the parent's height, and the parent's height is exactly what
+   this rule is trying to establish. */
+.view {
+    display: none;
+    position: absolute;
+    inset: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
 .view.is-active { display: block; }
 
 .stack { display: flex; flex-direction: column; gap: 20px; padding: 12px var(--pad) 24px; }
@@ -472,7 +491,10 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
     position: fixed;
     left: 0; right: 0;
     bottom: calc(var(--tabbar-h) + var(--safe-bottom) + var(--mini-h) + 10px);
-    z-index: 80;
+    /* Above the sheet (90) and the modal (95): a toast that reports "验证码
+       已发出" is raised while the login sheet is open, and at a lower
+       stacking order it was hidden behind the sheet that raised it. */
+    z-index: 120;
     display: flex;
     flex-direction: column;
     align-items: center;

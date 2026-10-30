@@ -2302,7 +2302,13 @@ class GuiBridge:
                 easy_drag=True,
                 on_top=True,
                 transparent=True,
-                background_color="#00000000",
+                # pywebview only accepts a 3- or 6-digit hex here: an
+                # 8-digit "#00000000" is rejected by create_window with
+                # "not a valid hex triplet color", and the window is then
+                # never created at all.  The alpha is not ours to set --
+                # with transparent=True the backend forces it to 0 and
+                # clears the window background itself.
+                background_color="#000000",
                 vibrancy=True,
             )
 
