@@ -47,8 +47,11 @@
            1. 形状：胶囊（border-radius: 999px）换成定宽圆角卡片。胶囊宽度跟着
               文字长度变，歌词从短句切到长句时整块气泡在桌面上反复抽动；卡片
               宽度写死并只随字号缩放，长句在卡内换行，短句居中留白。
-           2. 材质：深色半透明渐变 + 1px 高光描边 + 背景模糊，不跟随系统深浅
-              色主题 —— 浮窗压在任意壁纸上，自身必须自洽可读。
+           2. 材质：半透明中性灰 + 背景模糊 + 1px 高光描边，跟主窗口的
+              "liquid glass" 是同一套观感。浮窗压在任意壁纸上，材质必须
+              自洽可读 —— 灰底透出壁纸的颜色，模糊把它压平，文字再补一层
+              阴影兜底。之前这里是深色渐变，外面还套着一圈白色原生窗口，
+              深色卡片压在白底上像贴纸；现在整块浮窗就是那张玻璃。
            3. 层级：当前行 / 上下文行 / 翻译行三档，靠字号 + 字重 + 透明度拉
               开。desktop-lyrics.js 给四行写了同样的内联 opacity 和内联
               color，所以这里的 opacity 必须带 !important 才压得住内联值。
@@ -81,11 +84,11 @@
             --dl-pad-x: 1.35em;                                  /* 横向内边距 */
             --dl-pad-top: 1.05em;                                /* 顶部留出把手位 */
             --dl-pad-bottom: 0.75em;
-            --dl-fill-top: rgba(30, 30, 34, 0.88);                /* 顶部材质色 */
-            --dl-fill-bottom: rgba(14, 14, 18, 0.94);             /* 底部材质色 */
-            --dl-hairline: rgba(255, 255, 255, 0.12);             /* 1px 高光描边 */
-            --dl-blur: 20px;                                      /* 背景模糊 8–32px */
-            --dl-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);          /* 收紧，避免晕成黑边 */
+            --dl-fill-top: rgba(58, 58, 62, 0.62);               /* 顶部材质色 */
+            --dl-fill-bottom: rgba(38, 38, 42, 0.72);            /* 底部材质色 */
+            --dl-hairline: rgba(255, 255, 255, 0.18);             /* 1px 高光描边 */
+            --dl-blur: 24px;                                      /* 背景模糊 8–32px */
+            --dl-shadow: 0 2px 12px rgba(0, 0, 0, 0.26);          /* 收紧，避免晕成黑边 */
 
             /* 三档层级透明度，随文字模式整体调节 */
             --dl-op-current: 1;
@@ -107,9 +110,13 @@
             text-align: center;
             color: #fff;                                          /* 运行时被 JS 的颜色覆盖 */
             background: linear-gradient(180deg, var(--dl-fill-top) 0%, var(--dl-fill-bottom) 100%);
-            box-shadow: var(--dl-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            box-shadow: var(--dl-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.12);
             backdrop-filter: blur(var(--dl-blur)) saturate(160%);
             -webkit-backdrop-filter: blur(var(--dl-blur)) saturate(160%);
+            /* 底色是半透明的，壁纸会透上来。文字阴影是这层透明度的兜底：
+               亮壁纸上白字没有这层阴影就糊成一片。JS 的文字模式会写内联
+               text-shadow，所以这里用 !important 压住它。 */
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 12px rgba(0, 0, 0, 0.45) !important;
             transition: opacity 240ms cubic-bezier(0.22, 1, 0.36, 1),
                         transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
                         color 300ms ease;
@@ -189,12 +196,12 @@
         /* 半透明：更薄一层，桌面透出来。桌面可能很亮，所以文字另加一层暗色
            光晕保证可读（!important 是为了压过 JS 写的内联 text-shadow）。 */
         .desktop-lyrics-content[data-background="translucent"] {
-            background: linear-gradient(180deg, rgba(38, 38, 44, 0.24) 0%, rgba(14, 14, 18, 0.34) 100%) !important;
-            border-color: rgba(255, 255, 255, 0.14) !important;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22) !important;
+            background: linear-gradient(180deg, rgba(58, 58, 62, 0.42) 0%, rgba(38, 38, 42, 0.5) 100%) !important;
+            border-color: rgba(255, 255, 255, 0.16) !important;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.22) !important;
             backdrop-filter: blur(14px) saturate(150%) !important;
             -webkit-backdrop-filter: blur(14px) saturate(150%) !important;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85), 0 0 10px rgba(0, 0, 0, 0.6) !important;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 14px rgba(0, 0, 0, 0.7) !important;
         }
         /* 无气泡：纯文字，靠多层阴影在任何壁纸上都读得清 */
         .desktop-lyrics-content[data-background="none"] {
@@ -237,15 +244,24 @@
 
         /* ---------------- 隐藏态 ----------------
            !important 是必须的：JS 把用户设定的透明度写在 content 的内联
-           style 上，正常优先级的 opacity: 0 会被内联值盖掉，隐藏不生效。 */
+           style 上，正常优先级的 opacity: 0 会被内联值盖掉，隐藏不生效。
+
+           隐藏后把手要留下来，它是唯一的恢复入口：卡片整个淡出且
+           pointer-events: none，点不到自己。把手保持可见可点，点一下
+           歌词就回来。 */
         .desktop-lyrics-hidden .desktop-lyrics-content {
             opacity: 0 !important;
             transform: scale(0.97);
             pointer-events: none;
         }
         .desktop-lyrics-hidden .desktop-lyrics-drag-handle {
-            opacity: 0 !important;
-            pointer-events: none;
+            opacity: 0.55 !important;
+            pointer-events: auto;
+            cursor: pointer;
+            width: 38px;
+        }
+        .desktop-lyrics-hidden .desktop-lyrics-drag-handle:hover {
+            opacity: 0.9 !important;
         }
 
         /* ---------------- 无障碍偏好 ---------------- */

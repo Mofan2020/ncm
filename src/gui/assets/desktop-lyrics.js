@@ -198,10 +198,13 @@
             style.backdropFilter = 'none';
             style.webkitBackdropFilter = 'none';
         } else if (mode === 'translucent') {
-            style.background = 'rgba(0, 0, 0, 0.28)';
-            style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.25)';
-            style.backdropFilter = 'blur(3px)';
-            style.webkitBackdropFilter = 'blur(3px)';
+            // Thinner than the default glass, and the same neutral grey:
+            // the desktop shows through more, but the material stays the
+            // one the main window uses.
+            style.background = 'rgba(58, 58, 62, 0.42)';
+            style.boxShadow = '0 2px 12px rgba(0, 0, 0, 0.22)';
+            style.backdropFilter = 'blur(14px) saturate(150%)';
+            style.webkitBackdropFilter = 'blur(14px) saturate(150%)';
         } else {
             style.background = '';
             style.boxShadow = '';
@@ -215,6 +218,15 @@
         const win = elements.window;
 
         handle.addEventListener('mousedown', (e) => {
+            // While the lyrics are hidden the handle is the only thing left
+            // on screen, and it is the way back: click it and the card
+            // comes back.  Dragging it is not useful then -- the window
+            // would move while there is nothing to see.
+            if (state.hidden) {
+                setVisibility(true);
+                e.preventDefault();
+                return;
+            }
             state.drag.active = true;
             state.drag.startX = e.clientX;
             state.drag.startY = e.clientY;
@@ -291,8 +303,12 @@
             }
         });
 
-        // Double-click to toggle visibility
-        elements.content.addEventListener('dblclick', toggleVisibility);
+        // Double-click on the card used to hide the whole overlay.  It was
+        // an accident waiting to happen: a double-click is a gesture people
+        // make to select text or to hit a control, and the result was the
+        // lyrics vanishing with no way back (the hidden card has
+        // pointer-events: none, so it cannot be clicked again).  Hiding now
+        // lives in the context menu only, where it is deliberate.
 
         // Right-click context menu for settings
         elements.content.addEventListener('contextmenu', (e) => {
@@ -463,13 +479,17 @@
         }
     }
 
+    /**
+     * Show or hide the lyric text.
+     *
+     * Hiding is not a dead end: the drag handle stays clickable, so a
+     * single click on it brings the lyrics back.  Without that the hidden
+     * card had `pointer-events: none` and the overlay could only be
+     * recovered by closing and reopening it from the main window.
+     */
     function setVisibility(visible) {
         state.hidden = !visible;
         elements.window.classList.toggle('desktop-lyrics-hidden', !visible);
-    }
-
-    function toggleVisibility() {
-        setVisibility(state.hidden);
         sendToMain({ type: 'visibility', hidden: state.hidden });
     }
 

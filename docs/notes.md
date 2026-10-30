@@ -2388,3 +2388,68 @@ FATAL，页面正常渲染，底部标签栏点击可切换、选中态跟随。
 **教训**：绝对定位的元素叠在有背景的元素上面时，`z-index: auto` 不等于「在
 上面」。DOM 顺序决定绘制顺序，`position: absolute` 只改变定位基准，不改变
 层级。
+
+## 41. 安卓的整个 JS 桥是断的，而且不报错（2026-10-29）
+
+安卓版登录弹窗报 "method error"，首页的榜单和推荐 MV 全是空。电脑端一切正
+常，所以先怀疑的是登录逻辑。
+
+真因在更下面：`android/libs/pywebview-android.jar` 是从上游 master 拿的，
+Java 侧 `PyJavascriptInterface.call(func, params, id, token)` 收**四个**参数；
+随包的 `android/webview/` 是 PyPI 6.2.1，JS 侧
+`window.external.call(funcName, params, id)` 传**三个**。
+
+Android 按参数个数精确解析 `@JavascriptInterface`，个数对不上就抛
+`Method not found`——不抛别的错，也不写 Python 日志。于是每一个 `api()` 调用
+都失败，整个前端像死了一样，但进程活着、界面也渲染。
+
+换成上游 6.2.1 tag 的 jar（`3f9d3ee…`，14309 字节）就对了。
+
+**教训**：jar 和随包的 Python 包必须同一个版本，以后取 jar 一律带
+`?ref=6.2.1`，别取 master。构建脚本现在会用 `javap` 读出 jar 里 `call()` 的
+参数个数，跟 `webview/js/api.js` 实际传的个数对比，不一致直接 fail build。
+
+**为什么这个坑这么贵**：症状（登录二维码不出来、首页空）离真因（jar 版本）
+隔了三层，而且真因不产生任何日志。找不到线索时，先去看版本对不对得上。
+
+## 42. 二维码图片只走了一条路（2026-10-29）
+
+桥修通之后，安卓的二维码还是裂的，底下写着「二维码取不到，稍后重试」。
+
+桌面端拿二维码图片靠 `onQrcodeUpdate` 事件推送，安卓端是轮询——调
+`login_qrcode`，然后直接用 `result.qr_code` 画图。而 `login_qrcode` 只返回
+`{success, error_key}`，图片从来没有进过返回值。
+
+安卓没有 `onQrcodeUpdate` 这个监听函数，push 也送不到它那儿。
+
+改成 `login_qrcode` 同步返回图片（data URL）。桌面端那条推送照旧，两边不用
+互相迁就。
+
+顺带修了一个边界：key 请求被拒时不返回旧码。失败后 `_qrcode_key` 还是上次的
+值，把它画出来等于给一个没人轮询的二维码。
+
+## 43. 隐藏之后点不回来（2026-10-29）
+
+桌面歌词双击会隐藏整个浮窗——这是个会被误触的手势，而且隐藏后卡片
+`pointer-events: none`，**再也点不回来**，只能关掉重开。
+
+删掉双击绑定，隐藏只留在右键菜单里。再把拖拽把手改成隐藏态下依然可见可点，
+点一下就恢复。
+
+**教训**：一个「隐藏」的动作必须自带恢复入口，否则它就是单向门。淡出 + 禁用
+指针事件是最容易写出单向门的地方。
+
+## 44. 浮窗外面那圈白底（2026-10-29）
+
+桌面歌词浮在一块纯白不透明的圆角矩形里，深色卡片压在它中间。
+
+白底是**原生窗口的背景色**，不是网页画的：pywebview 默认 `background_color`
+是不透明的 `#FFFFFF`，macOS 把无边框窗口画成那个形状。
+
+10 月 3 日那次提交（`3bc1d81`）把 `transparent=True` 和
+`background_color="#00000000"` 删掉了，理由写的是「for better
+compatibility」——于是白底回来了。
+
+恢复透明，另加 `vibrancy=True`（系统材质）；卡片本身从深色渐变换成主窗口同款
+的液态玻璃：半透明中性灰 + backdrop-filter + 高光描边，文字另加一层阴影兜底
+（底色半透明，壁纸会透上来）。

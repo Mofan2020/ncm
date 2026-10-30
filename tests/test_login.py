@@ -5,6 +5,7 @@ opt-in live tests in ``test_live_api.py``.
 """
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -425,3 +426,45 @@ def test_bridge_forwards_the_qrcode_status_payload(bridge):
     bridge.login_manager._last_qr_message = "风控校验"
     bridge._on_login_message("风控校验")
     assert calls == [("onLoginMessage", {"message": "风控校验"})]
+
+
+def test_the_bridge_returns_the_qrcode_picture_with_the_answer(bridge, monkeypatch):
+    """The phone polls ``login_qrcode`` and paints ``result.qr_code``.
+
+    The desktop listens for the ``onQrcodeUpdate`` push instead, so the
+    picture used to travel only that way.  The phone has no such listener:
+    it asked for the code, got an answer without a picture, and showed an
+    empty frame with "二维码取不到，稍后重试" while the QR code was fine.
+    """
+    monkeypatch.setattr(bridge.login_manager, "_poll_qrcode", lambda: None)
+    bridge.login_manager._qrcode_key = "KEY"
+    bridge.login_manager._set_status(LoginStatus.PENDING)
+
+    result = bridge.login_qrcode()
+
+    assert result["success"] is True
+    qr = result["qr_code"]
+    assert qr is not None, "the reply has to carry the QR code image"
+    assert qr.startswith("data:image/png;base64,"), qr[:40]
+    payload = base64.b64decode(qr.split(",", 1)[1])
+    assert payload.startswith(b"\x89PNG\r\n\x1a\n"), "not a PNG"
+
+
+def test_no_qrcode_picture_when_the_key_request_is_refused(bridge, monkeypatch):
+    """A refused key request must not hand back the *previous* code.
+
+    The old key is still lying around after a failure, and its picture is
+    a QR code nobody is polling for -- worse than no picture at all.
+    """
+    monkeypatch.setattr(bridge.login_manager, "_poll_qrcode", lambda: None)
+    monkeypatch.setattr(
+        bridge.login_manager, "_session",
+        type("S", (), {"get": lambda *args, **kwargs: type(
+            "R", (), {"json": staticmethod(lambda: {"code": 400, "message": "nope"})})()})())
+    bridge.login_manager._qrcode_key = "OLD-KEY"
+    bridge.login_manager._set_status(LoginStatus.IDLE)
+
+    result = bridge.login_qrcode()
+
+    assert result["success"] is False
+    assert result["qr_code"] is None

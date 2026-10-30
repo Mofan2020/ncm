@@ -159,3 +159,76 @@ def test_the_overlay_url_carries_the_text_style():
     source = (ROOT / "src" / "gui" / "bridge.py").read_text(encoding="utf-8")
     assert '"textStyle": ui.desktop_lyrics_text_style' in source
     assert GuiBridge is not None
+
+
+# ------------------------------------------------------- the floating panel
+def test_the_overlay_window_is_transparent(bridge):
+    """The panel must not paint a white rectangle on the wallpaper.
+
+    pywebview's default window background is an opaque #FFFFFF, and macOS
+    draws a frameless window as a rounded rectangle in that colour -- the
+    lyrics floated in a white slab with the dark card inside it.
+    """
+    captured: dict = {}
+
+    class FakeModule:
+        @staticmethod
+        def create_window(**kwargs):
+            captured.update(kwargs)
+            window = type("W", (), {"events": type(
+                "E", (), {"closed": type("C", (), {"__iadd__": lambda s, o: s})()})()})()
+            return window
+
+    bridge._webview_module = FakeModule
+    bridge._desktop_lyrics_window = None
+    bridge._call_js = lambda *a, **k: None
+
+    bridge.open_desktop_lyrics()
+
+    assert captured.get("transparent") is True, captured
+    assert captured.get("background_color") == "#00000000", captured
+
+
+def test_a_double_click_does_not_hide_the_lyrics(overlay_js):
+    """A double click is a gesture people make by accident.
+
+    It used to hide the whole overlay, and the hidden card has
+    ``pointer-events: none`` -- so the lyrics were gone with no way back
+    except closing and reopening the window from the main window.
+    """
+    assert "dblclick" not in overlay_js, (
+        "the overlay must not hide itself on a double click")
+    assert "toggleVisibility" not in overlay_js, (
+        "the visibility toggle had exactly one caller: the double click")
+
+
+def test_the_hidden_lyrics_can_be_brought_back(overlay_js, overlay_html):
+    """Hiding has to leave a way out.
+
+    The card fades out completely and stops taking pointer events, so the
+    drag handle stays visible and clickable; clicking it restores the card.
+    """
+    assert "state.hidden" in overlay_js, "the handle has to know the state"
+    hidden = overlay_js[overlay_js.index("handle.addEventListener('mousedown'"):
+                        overlay_js.index("document.addEventListener('mousemove'")]
+    assert "setVisibility(true)" in hidden, (
+        "clicking the handle while hidden must bring the lyrics back")
+
+    # The handle keeps its pointer events while the card is hidden.
+    hidden_css = overlay_html[overlay_html.index(".desktop-lyrics-hidden .desktop-lyrics-drag-handle"):
+                              overlay_html.index(".desktop-lyrics-hidden .desktop-lyrics-drag-handle:hover")]
+    assert "pointer-events: none" not in hidden_css, hidden_css
+    assert "pointer-events: auto" in hidden_css, hidden_css
+
+
+def test_the_card_is_the_glass_panel_and_not_white(overlay_html):
+    """The card is the translucent grey panel, not a white board.
+
+    The material matches the main window's "liquid glass": a neutral grey
+    that lets the wallpaper through, blurred, with a hairline edge.
+    """
+    assert "rgba(58, 58, 62, 0.62)" in overlay_html, (
+        "the card has to be the translucent grey glass")
+    assert "backdrop-filter: blur(var(--dl-blur))" in overlay_html
+    # A readable text on a see-through panel needs a shadow of its own.
+    assert "text-shadow" in overlay_html

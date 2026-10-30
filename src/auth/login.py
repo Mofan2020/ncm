@@ -358,6 +358,19 @@ class LoginManager:
         return self._last_qr_message
 
     @property
+    def qrcode_url(self) -> str:
+        """The URL of the QR code currently on screen, or ``""``.
+
+        The QR image is rendered from this URL, so a front end that wants
+        to paint the code itself needs it: the desktop listens for the
+        ``qrcode_update`` event, but the phone asks for the code and the
+        picture in one go.
+        """
+        if not self._qrcode_key:
+            return ""
+        return f"{self.BASE_URL}/login?codekey={self._qrcode_key}"
+
+    @property
     def user_info(self) -> UserInfo | None:
         return self._user_info
 

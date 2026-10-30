@@ -682,7 +682,32 @@ class GuiBridge:
     def login_qrcode(self) -> dict[str, Any]:
         # The manager reuses a QR code that is still pending on its own.
         ok = self.login_manager.login_qrcode()
-        return {"success": ok, "error_key": None if ok else "login.login_failed"}
+        return {
+            "success": ok,
+            "error_key": None if ok else "login.login_failed",
+            # The QR image comes back with the answer, not as a separate
+            # push.  The desktop front end listens for the ``onQrcodeUpdate``
+            # event, but the phone front end polls: it calls this method and
+            # paints ``result.qr_code`` straight away.  Without the image in
+            # the reply the phone showed an empty frame and the message
+            # "二维码取不到，稍后重试" while the QR code was perfectly fine.
+            #
+            # Only a code that was actually minted is worth returning: after
+            # a refused key request the old key is still lying around, and
+            # its picture is a QR code that nobody is polling for.
+            "qr_code": self._qrcode_image() if ok else None,
+        }
+
+    def _qrcode_image(self) -> str | None:
+        """The pending QR code as a data URL, or ``None`` if there is none."""
+        url = getattr(self.login_manager, "qrcode_url", None)
+        if not url:
+            return None
+        image = self.login_manager.get_qrcode_image(url)
+        if not image:
+            return None
+        encoded = base64.b64encode(image).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
 
     def refresh_qrcode(self) -> dict[str, Any]:
         return {"success": self.login_manager.refresh_qrcode()}
@@ -2253,7 +2278,18 @@ class GuiBridge:
             if url is None:
                 url = f"{html_path.as_uri()}?{query}"
 
-            # Use a simpler window configuration for better compatibility
+            # The overlay is a floating panel, not a document window: it has
+            # no title bar, it floats above everything and it must not paint
+            # a white rectangle on the wallpaper.
+            #
+            # The white came from the window background.  pywebview's default
+            # is an opaque #FFFFFF, and macOS draws a frameless window as a
+            # rounded rectangle in that colour -- so the lyrics floated in a
+            # white slab with the dark card inside it.  ``transparent`` makes
+            # the window background clear and lets the WebView composite
+            # over the desktop, and ``vibrancy`` puts the system material
+            # (the translucent grey panel macOS uses for floating windows)
+            # behind the content.
             self._desktop_lyrics_window = self._webview_module.create_window(
                 title="Desktop Lyrics",
                 url=url,
@@ -2265,7 +2301,9 @@ class GuiBridge:
                 frameless=True,
                 easy_drag=True,
                 on_top=True,
-                # Remove transparent/background_color for better compatibility
+                transparent=True,
+                background_color="#00000000",
+                vibrancy=True,
             )
 
             # Store reference to this bridge for the desktop lyrics window

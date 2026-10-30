@@ -128,6 +128,61 @@ for CLASS in PyWebViewClient PyWebChromeClient PyJavascriptInterface \
 done
 echo "   $(grep -c 'com/pywebview/.*\.class' <<< "$LISTING") java classes"
 
+# The Java side and the bundled JavaScript have to agree on the bridge
+# signature.  Upstream changed ``PyJavascriptInterface.call`` after 6.2.1
+# (it grew a fourth ``token`` argument) while the bundled JavaScript still
+# calls ``window.external.call(funcName, params, id)`` with three.  Android
+# resolves ``@JavascriptInterface`` methods by exact parameter count, so the
+# mismatch does not raise: every bridge call throws ``Method not found`` and
+# the app looks alive but does nothing -- the login dialog says "method
+# error" and the home page stays empty, with nothing in the Python log.
+#
+# ``javap`` reads the method straight out of the class file, so the count
+# checked here is the count the phone will see.
+if ! command -v javap >/dev/null 2>&1; then
+    echo "   javap not found: cannot verify the bridge signature" >&2
+    exit 1
+fi
+JAR_CALLS="$(javap -classpath "$JAR" com.pywebview.PyJavascriptInterface \
+    | grep -c 'public void call(java.lang.String' || true)"
+if [ "$JAR_CALLS" != "1" ]; then
+    echo "$JAR does not declare exactly one call() method" >&2
+    exit 1
+fi
+# The bundled JavaScript calls external.call with three arguments; the Java
+# method has to take three too.
+JAR_CALL_PARAMS="$(javap -classpath "$JAR" com.pywebview.PyJavascriptInterface \
+    | grep 'public void call(' \
+    | sed 's/.*call(//; s/).*//' | awk -F',' '{print NF}')"
+# Count the top-level arguments of the call: the argument list holds nested
+# calls of its own (``pywebview.stringify(params)``), so a plain comma count
+# would stop at the first closing parenthesis.
+JS_CALL_PARAMS="$(grep -o 'window\.external\.call(.*' \
+    "$HERE/webview/js/api.js" | head -1 \
+    | awk '{
+        line = $0
+        depth = 0
+        commas = 0
+        for (i = 1; i <= length(line); i++) {
+            c = substr(line, i, 1)
+            if (c == "(") depth++
+            else if (c == ")") { depth--; if (depth == 0) { print commas + 1; exit } }
+            else if (c == "," && depth == 1) commas++
+        }
+    }')"
+if [ -z "$JS_CALL_PARAMS" ]; then
+    echo "cannot find window.external.call in $HERE/webview/js/api.js" >&2
+    exit 1
+fi
+if [ "$JAR_CALL_PARAMS" != "$JS_CALL_PARAMS" ]; then
+    echo "the jar and the bundled JavaScript disagree on the bridge signature:" >&2
+    echo "  jar:     call($JAR_CALL_PARAMS parameters)" >&2
+    echo "  api.js:  external.call($JS_CALL_PARAMS arguments)" >&2
+    echo "  take the jar from the tag that matches the bundled pywebview" >&2
+    exit 1
+fi
+echo "   bridge signature: jar call() takes $JAR_CALL_PARAMS parameters, api.js passes $JS_CALL_PARAMS"
+
 # The launch screen: p4a stretches the presplash over the whole screen, so a
 # square icon becomes a full-screen logo.  A tall image is what keeps the
 # logo small.
