@@ -38,7 +38,7 @@ BRAND_DEEP = (196, 40, 40)
 #: How large the logo is on the canvas, as a fraction of its width.
 LOGO_RATIO = 0.26
 
-TEXT = "网易云音乐歌单下载器"
+TEXT = "SkycMedia"
 
 
 def _font(size: int) -> ImageFont.ImageFont:

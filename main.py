@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NetEase Music Playlist Downloader - desktop entry point.
+"""SkycMedia - desktop entry point.
 
 Launches the pywebview window that hosts ``src/gui/assets`` and wires it to the
 Python bridge.  Works from source (``python3 main.py``) and from the frozen
@@ -124,7 +124,7 @@ def _initial_geometry(width: int, height: int,
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="SkycMedia",
-        description=f"{APP_DISPLAY_NAME} / NetEase Music Playlist Downloader",
+        description=f"{APP_DISPLAY_NAME} / NetEase + Bilibili music client",
     )
     parser.add_argument("--debug", action="store_true", help="verbose logging and dev tools")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

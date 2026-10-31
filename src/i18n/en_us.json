@@ -1,7 +1,7 @@
 {
   "app": {
-    "title": "NetEase Music Playlist Downloader",
-    "subtitle": "Windows / macOS · sign in to fetch private playlists",
+    "title": "SkycMedia",
+    "subtitle": "NetEase + Bilibili · sign in to fetch private playlists",
     "ready": "Ready",
     "init_failed": "Initialisation failed: {message}"
   },
@@ -566,7 +566,7 @@
   "about": {
     "title": "About",
     "version": "Version {version}",
-    "description": "NetEase Music playlist downloader with quality selection, parallel downloads and private playlist support.",
+    "description": "SkycMedia: a NetEase and Bilibili music client with multiple qualities, concurrent downloads and private playlists.",
     "github": "GitHub repository",
     "license": "MIT License",
     "author": "Author: {author}"

@@ -1,4 +1,4 @@
-# 网易云音乐歌单下载器 / NetEase Music Playlist Downloader
+# SkycMedia
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Android-green.svg)

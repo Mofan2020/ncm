@@ -1,5 +1,5 @@
 /**
- * 网易云音乐歌单下载器 / NetEase Music Playlist Downloader - frontend logic.
+ * SkycMedia - frontend logic.
  *
  * Talks to the Python side through `window.pywebview.api` (see src/gui/bridge.py).
  * The backend pushes updates into the `on*` functions declared at the bottom of

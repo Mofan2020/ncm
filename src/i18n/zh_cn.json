@@ -1,7 +1,7 @@
 {
   "app": {
-    "title": "网易云音乐歌单下载器",
-    "subtitle": "Windows / macOS 双平台 · 支持登录下载非公开歌单",
+    "title": "SkycMedia",
+    "subtitle": "网易云音乐 + B 站 · 支持登录下载非公开歌单",
     "ready": "应用已就绪",
     "init_failed": "初始化失败：{message}"
   },
@@ -566,7 +566,7 @@
   "about": {
     "title": "关于",
     "version": "版本 {version}",
-    "description": "网易云音乐歌单下载器：支持多音质、并发下载、登录后下载非公开歌单。",
+    "description": "SkycMedia：网易云音乐与 B 站音乐客户端，支持多音质、并发下载、登录后下载非公开歌单。",
     "github": "GitHub 仓库",
     "license": "MIT License",
     "author": "作者：{author}"
