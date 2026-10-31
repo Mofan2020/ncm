@@ -659,3 +659,131 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
     animation: spin .8s linear infinite; margin: 28px auto;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ------------------------------------------------------------ artist rows */
+/* A followed artist: a small avatar and the name on the same line, so a
+   long list of them can be scrolled instead of swiped past giant tiles. */
+.artist-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+}
+
+.artist-avatar {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--surface-2) center/cover no-repeat;
+}
+
+.artist-avatar.is-empty::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    background: linear-gradient(140deg, var(--surface-3), var(--surface-2));
+    border-radius: 50%;
+}
+
+/* ---------------------------------------------------------------- lyrics */
+/* The player swaps between the big cover and the lyrics.  Both live in the
+   same stage so the layout does not jump when they trade places. */
+.player-stage {
+    position: relative;
+    width: 100%;
+}
+
+.player-lyrics {
+    width: 100%;
+    /* The lyrics are as tall as the cover they replace. */
+    height: 78vw;
+    max-height: 340px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.lyrics-box {
+    padding: 4px 2px;
+}
+
+.lyric-line {
+    padding: 7px 0;
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--text-3);
+    transition: color 0.2s ease;
+}
+
+.lyric-line.is-active {
+    color: var(--text-1);
+    font-weight: 600;
+}
+
+.lyric-translation {
+    display: block;
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--text-3);
+}
+
+/* --------------------------------------------------------- artist links */
+.artist-names {
+    display: inline;
+}
+
+.artist-link {
+    display: inline;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent, var(--text-1));
+    font-size: 13.5px;
+    text-decoration: underline;
+}
+
+/* --------------------------------------------------------------- switch */
+.switch {
+    position: relative;
+    width: 46px;
+    height: 28px;
+    flex: 0 0 auto;
+    border: 0;
+    border-radius: 14px;
+    background: var(--surface-3);
+    transition: background 0.2s ease;
+}
+
+.switch::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.2s ease;
+}
+
+.switch.is-on {
+    background: var(--accent, #4a8cff);
+}
+
+.switch.is-on::after {
+    transform: translateX(18px);
+}
+
+/* -------------------------------------------------------- section title */
+.section-title {
+    margin: 14px 0 6px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text-3);
+}

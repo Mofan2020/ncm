@@ -28,7 +28,9 @@ def test_defaults(isolated_home):
     assert settings.download.overwrite is False
     assert settings.ui.language == "zh_cn"
     assert settings.ui.theme == "system"
-    assert settings.auth.remember_login is False
+    # On by default: the session cookie is written to disk after a login,
+    # so the app comes back with the account still signed in.
+    assert settings.auth.remember_login is True
     assert settings.debug is False
 
 

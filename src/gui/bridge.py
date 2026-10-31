@@ -300,7 +300,15 @@ class GuiBridge:
                 if "theme" in data:
                     self._sync_native_theme()
             elif category == "auth":
-                self.settings.update_auth(**self._clean(data, {"remember_login", "login_method"}))
+                cleaned = self._clean(data, {"remember_login", "login_method"})
+                self.settings.update_auth(**cleaned)
+                # Turning "remember the login" off has to take the saved
+                # cookie with it, otherwise the next start finds the cookie
+                # on disk and signs the account in again -- the switch
+                # would only stop the next cookie from being written.
+                if ("remember_login" in cleaned
+                        and not cleaned["remember_login"]):
+                    self.settings.update_auth(saved_cookie="")
             elif category == "debug":
                 self.settings.debug = bool(data.get("debug", False))
                 self.api.debug = self.settings.debug

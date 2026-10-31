@@ -2602,3 +2602,133 @@ old-css (no dvh)   app height 108, views 0,    tabbar 贴在标题下面（离�
 还得让用户自己装一次确认。
 
 
+## 50. 安卓版八处问题：闪退、登录丢失、关注歌手大头像、没歌词、没设置、没缓存、歌单卡住、下载转圈（2026-10-31）
+
+用户一次报了八条。前七条能定位能修，**闪退定位不了**——模拟器上复现不
+出来，只能先把日志打开（下文）。
+
+### 前端六条
+
+**1. 下载列表永久转圈**：`loadDownloads()` 里 `showSpinner(queueHost)` 之后
+**再没有任何代码重新渲染 `queueHost`**。没有下载任务时转圈是对的（任务在
+跑），但任务数为 0 时也一样转，就成了永远转。改成 `renderDownloadQueue()`，
+按 `state.downloadStats.total` 分流：0 就显示空状态，非 0 显示进度。
+
+**2. 关注歌手是大卡片网格**：`openFollowedArtists()` 调 `cardGrid()`，一个
+关注多的人得滑很久。改成 `artistRow()` 列表行，头像 40px 圆形和名字同行。
+
+**3. 播放器没有歌词**：bridge 早就有 `get_track_lyrics`，安卓前端**从来没
+调用过**。现在大封面点击切歌词、再点切回，歌词按时间戳高亮当前行并跟随
+滚动。返回结构跟桌面一样（`lines[].time/text/translation`），所以两个前端
+读的是同一份数据。
+
+**4. 歌曲信息太粗、歌手跳不过去**：`openTrackMenu()` 只有三个动作，没有详情
+页。`_track_payload` 里本来就带 `artist_list`（含 id），现在用它渲染可点的
+歌手名。
+
+**5. 没有设置页**：bridge 有 `get_settings` / `update_settings`，安卓前端
+一个都没调。
+
+**6. 歌单加载没反馈**：`get_playlist_info` 默认 `max_tracks=1000`，大歌单要
+分批补全，前端只有一个转圈。现在先显示「正在读取歌曲…」，读不出来会说明
+原因。
+
+### 后端三条
+
+**7. 登录不持久化**：`AuthSettings.remember_login` 默认 `False`，
+`login.py:935` 的 `if ...: self._save_cookie()` 于是永远不执行——登录成功
+也不落盘，重启必然退出登录。安卓版又没有设置页，用户根本开不了这个开关。
+
+改成默认 `True`。**同时要处理「关掉它」**：光把开关存成 False 只是不再写
+新 cookie，旧的 `saved_cookie` 还在盘上，`load_saved_cookie()` 下次启动照
+样读回来——开关形同虚设。所以 `bridge.update_settings` 的 auth 分支里，
+关掉时一并 `update_auth(saved_cookie="")`。
+
+**8. 日志被静音**：`_configure_logging()` 把 file handler 和 stream handler
+都设成 `WARNING`（`debug` 才用 DEBUG），`log.info(...)` 全被丢弃。实测模拟器
+上 `files/logs/ncm.log` 是 **0 字节**。两个 handler 都提到 `INFO`。stream
+尤其重要：p4a 把 stdout/stderr 接到 logcat，而 logcat 是手机上唯一能拿到
+崩溃上下文的地方。
+
+**9. `_prepare_home()` 整个空转**：读 `os.environ.get("ANDROID_PRIVATE")`，
+取不到就 `return`。**p4a 根本不设这个变量**——
+
+```
+$ grep -rn ANDROID_PRIVATE /Users/mofan/android-toolchain/bv/lib/python3.11/site-packages/pythonforandroid/
+（0 命中）
+
+$ adb shell cat /proc/<pid>/environ | tr ' ' '
+' | grep -E '^(HOME|ANDROID)'
+（只有 ANDROID_BOOTLOGO / ROOT / DATA / ASSETS / STORAGE 等系统变量，
+  没有 HOME，也没有 ANDROID_PRIVATE）
+```
+
+所以 HOME / XDG_CONFIG_HOME / NCM_LOG_DIR / TMPDIR 四个都没设。改用
+`os.path.expanduser("~")`——它走 passwd 解析，落到应用私有目录
+`/data/user/0/<pkg>/files`，正是应用唯一能写的地方。
+
+**关键约束**：`XDG_CONFIG_HOME` 必须仍然指向 `<私有目录>/.config`。配置文件
+实际落在 `files/.config/NeteaseMusicDownloader/`，改路径等于让升级过的用户
+「登录态和缓存消失」。
+
+### 踩到的坑
+
+1. **bridge 的 `get_settings` 是分组的**，不是扁平键。实际结构是
+   `download` / `playback` / `ui` / `auth` 四个组，`remember_login` 在
+   `auth` 里。第一版按扁平键写，`Boolean(settings['remember_login'])` 永远
+   false。
+2. **`update_settings` 的签名是 `(category, data: dict)`**，不是
+   `(key, value)`。传 `(key, value)` 不会报错，只是静默不生效。
+3. **`get_cache_stats` 的字段是嵌套的**：`audio.bytes` / `cover.bytes` /
+   `meta_bytes`，没有 `total_size`。
+4. **`get_artist_detail` 把 `hot_songs` 放在顶层，不在 `artist` 里面**。
+   `openDetail()` 原来读 `artist.hot_songs`，所以**每个歌手页都显示「这个
+   歌手还没有热门歌曲」**。album 的 `tracks` 同理。改对之后歌手页才真的有
+   歌。
+5. **断言要读解析后的结构**（第 48 节的教训第三次应验）。契约测试查
+   `el('button', 'artist-link', ...)` 时，只查 `"artist-link" in links` 漏掉了
+   「把 button 改成 span」这个变异——span 点不了，歌手就跳不过去了。要查
+   `'artist-link'` 这个**带引号的类名**才算数。
+
+### 真机上又抓到一个：时长单位
+
+模拟器和 Playwright 全绿，装到模拟器上一看，歌曲信息里的时长写的是
+**`3747:22`**——一首歌不可能这么长。
+
+`_track_payload` 的 `duration` 来自网易云的 `dt` 字段，**单位是毫秒**
+（`bridge.py:891`；bridge 自己也知道，`bridge.py:1230` 那里写着
+`seconds = float(track.get("duration") or 0) / 1000.0`）。安卓前端直接把它
+喂给 `formatTime()`，而 `formatTime()` 假设入参是秒。
+
+桌面端是对的：`Math.floor(track.duration / 1000)`。安卓这边漏了。
+
+修法是 `formatTime(track.duration / 1000)`。**注意别改错地方**——播放器
+进度条上的 `formatTime(audio.duration)` 用的是 HTML5 Audio 元素的时长，
+那个本来就是秒，除 1000 就错了。
+
+**教训**：Playwright 的桩数据是我自己写的，`duration: 245`，单位是秒，
+所以测试全绿。真机上的数据是 245000 毫秒。**桩数据的单位必须跟真实
+bridge 一致**，否则测的是一个不存在的世界。改完桩数据要重跑。
+
+### 闪退：没修，只能等日志
+
+用户报「打开一会儿后崩溃闪退」。模拟器 Android 14 / WebView 113 上跑
+20 秒：无 FATAL、crash buffer 为空、进程 PID 不变。**复现不了**。
+
+这一版能做的只有把日志从 0 字节变成有内容（第 8 条）。下次闪退时，
+`adb logcat -s python` 或应用私有目录的 `ncm.log` 会有线索。**没有堆栈就
+定位不了根因**，所以这一版不宣称修了闪退。
+
+### 验证
+
+- `scripts/check-android-features.mjs`（新）：Playwright 加载真实页面，
+  stub 一个符合 bridge 契约的假桥，点封面、切歌词、点歌手、开设置、
+  看下载列表。**20 项全过**。
+- pytest 契约测试 7 条 + `tests/test_android_main.py` 6 条。
+- **变异测试**：前端 10 个变异、后端 6 个变异，**全部被杀，漏网 0**。
+- 完整套件 `826 passed, 6 skipped`（用 conda `xijianBase` 的 Python 3.11）。
+  注意：系统 python3.9 跑会有一片 `unsupported operand type(s) for |` 的
+  失败，那是 `X | Y` 类型语法要 3.10+，**不是真失败**。
+
+
+

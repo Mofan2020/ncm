@@ -129,10 +129,17 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
           </button>
         </div>
-        <div class="player-cover" id="player-cover"></div>
+        <div class="player-stage" id="player-stage">
+          <div class="player-cover" id="player-cover" role="button" tabindex="0"
+               aria-label="显示歌词"></div>
+          <div class="player-lyrics" id="player-lyrics" hidden>
+            <div class="lyrics-box" id="lyrics-box"></div>
+          </div>
+        </div>
         <div class="player-meta">
           <div class="player-name" id="player-name"></div>
           <div class="player-artist" id="player-artist"></div>
+          <div class="player-album" id="player-album"></div>
         </div>
         <div class="player-progress" id="player-progress">
           <div class="player-bar"><div class="player-bar-fill" id="player-bar-fill"></div></div>

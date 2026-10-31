@@ -46,7 +46,10 @@ def _configure_logging(debug: bool) -> None:
         handler = logging.handlers.RotatingFileHandler(
             log_dir / "ncm.log", maxBytes=512 * 1024, backupCount=2,
             encoding="utf-8")
-        handler.setLevel(logging.DEBUG if debug else logging.WARNING)
+        # INFO, not WARNING: with the level at WARNING every ordinary
+        # line was dropped and the log file stayed empty, so a crash on
+        # the phone left nothing to read.
+        handler.setLevel(logging.DEBUG if debug else logging.INFO)
         handler.setFormatter(logging.Formatter(
             "%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
         root.addHandler(handler)
@@ -55,10 +58,11 @@ def _configure_logging(debug: bool) -> None:
 
     # python-for-android pipes stdout and stderr into logcat, and logcat is
     # the only place a crash on the phone can be read from: the app's own
-    # directory is not reachable without a file manager or adb.  So errors
-    # always go to the stream, and the stream is only noisy in debug mode.
+    # directory is not reachable without a file manager or adb.  So the
+    # stream carries the same level as the file, and a report of a crash
+    # can be copied straight out of logcat.
     stream = logging.StreamHandler()
-    stream.setLevel(logging.DEBUG if debug else logging.WARNING)
+    stream.setLevel(logging.DEBUG if debug else logging.INFO)
     stream.setFormatter(logging.Formatter(
         "%(levelname)-7s %(name)s: %(message)s"))
     root.addHandler(stream)
@@ -78,18 +82,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _prepare_home() -> None:
     """Point the app at directories it can actually write to.
 
-    On Android ``HOME`` is ``/data``, which the app process may not write.
-    ``ANDROID_PRIVATE`` is the app's own files directory, and everything the
-    settings, the logs and the downloads need has to live there.
+    On Android the app process gets no ``HOME`` at all and there is no
+    ``ANDROID_PRIVATE``: the environment of a running app holds only the
+    handful of variables the system itself sets (checked on an Android 14
+    emulator, ``/proc/<pid>/environ``).  The private directory is still
+    known, though -- ``~`` resolves through the password database to the
+    app's own files directory, which is the one place the app may write.
+
+    Everything the settings, the logs and the downloads need has to live
+    there, so the four variables are set outright.
     """
-    private = os.environ.get("ANDROID_PRIVATE")
-    if not private:
+    private = os.environ.get("ANDROID_PRIVATE") or os.path.expanduser("~")
+    if not private or not os.path.isabs(private):
         return
-    # These are set outright, not with setdefault: Android hands the process a
-    # HOME (usually /data) that it cannot write to, and setdefault would keep
-    # it because the variable exists.  Everything the app writes -- settings,
-    # logs, downloads, the media server's cache -- has to land inside the
-    # app's own directory.
+    # These are set outright, not with setdefault: the process may already
+    # carry a HOME that points somewhere the app may not write, and
+    # setdefault would keep it because the variable exists.  Everything the
+    # app writes -- settings, logs, downloads, the media server's cache --
+    # has to land inside the app's own directory.
     os.environ["HOME"] = private
     os.environ["XDG_CONFIG_HOME"] = str(Path(private) / ".config")
     os.environ["NCM_LOG_DIR"] = str(Path(private) / "logs")

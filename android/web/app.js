@@ -27,6 +27,11 @@ const state = {
     coverCache: new Map(),
     coverPending: new Set(),
     translations: {},
+    downloadStats: {},
+    /* The lyrics of the current track and the line that is playing. */
+    lyrics: [],
+    lyricIndex: -1,
+    lyricsTrack: null,
 };
 
 /* ------------------------------------------------------------------ helpers */
@@ -344,6 +349,8 @@ async function loadCurrent(autoPlay = true) {
     }
     state.playing = !audio.paused;
     updatePlayerUi();
+    /* A new song means new lyrics. */
+    if (state.lyricsTrack !== trackKey(track)) loadLyrics(track);
 }
 
 function advance(step) {
@@ -380,6 +387,7 @@ audio.addEventListener('timeupdate', () => {
     $('miniplayer-progress-fill').style.width = `${ratio * 100}%`;
     $('player-time-now').textContent = formatTime(audio.currentTime);
     $('player-time-end').textContent = formatTime(audio.duration);
+    updateLyricHighlight();
 });
 
 function updatePlayerUi() {
@@ -404,8 +412,102 @@ function openPlayer() {
     pushView('player');
 }
 
+/* ---------------------------------------------------------------- lyrics */
+/**
+ * The lyrics of the current track, and which line is playing.
+ *
+ * The phone has no desktop lyrics window, so the lyrics live in the player
+ * itself: the big cover shows them, and tapping it goes back to the cover.
+ * The lines arrive from the bridge with a timestamp each, the same shape
+ * the desktop uses, so the two front ends read the same data.
+ */
+/** Load the lyrics of a track (or clear them when it has none). */
+async function loadLyrics(track) {
+    state.lyrics = [];
+    state.lyricIndex = -1;
+    state.lyricsTrack = track ? trackKey(track) : null;
+    const box = $('lyrics-box');
+    if (!box) return;
+    clear(box);
+    if (!track) return;
+    box.appendChild(el('div', 'small text-3', '正在取歌词…'));
+    const result = await api('get_track_lyrics', track, false);
+    clear(box);
+    if (!result || !result.has_lyrics || !(result.lines || []).length) {
+        state.lyrics = [];
+        box.appendChild(el('div', 'small text-3', '这首歌没有歌词'));
+        renderLyrics();
+        return;
+    }
+    state.lyrics = result.lines || [];
+    renderLyrics();
+}
+
+/** Draw the lyric lines and mark the one that is playing. */
+function renderLyrics() {
+    const box = $('lyrics-box');
+    if (!box) return;
+    clear(box);
+    if (!state.lyrics.length) return;
+    state.lyrics.forEach((line, index) => {
+        const element = el('div', 'lyric-line', line.text || '');
+        element.dataset.time = String(line.time);
+        element.dataset.index = String(index);
+        if (line.translation) {
+            const translation = el('span', 'lyric-translation', line.translation);
+            element.appendChild(translation);
+        }
+        box.appendChild(element);
+    });
+    updateLyricHighlight();
+}
+
+/** Mark the line that belongs to the current playback position. */
+function updateLyricHighlight() {
+    const box = $('lyrics-box');
+    if (!box || !state.lyrics.length) return;
+    const ms = (audio.currentTime || 0) * 1000;
+    let index = -1;
+    for (let i = 0; i < state.lyrics.length; i += 1) {
+        if ((state.lyrics[i].time || 0) <= ms) index = i;
+        else break;
+    }
+    if (index === state.lyricIndex) return;
+    state.lyricIndex = index;
+    box.querySelectorAll('.lyric-line').forEach((node) => {
+        const at = Number(node.dataset.index);
+        node.classList.toggle('is-active', at === index);
+    });
+    if (index >= 0) {
+        const line = box.querySelector(`.lyric-line[data-index="${index}"]`);
+        if (line && line.scrollIntoView) {
+            line.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+    }
+}
+
+/** Show the lyrics instead of the cover, or the cover instead of them. */
+function toggleLyrics() {
+    const cover = $('player-cover');
+    const lyrics = $('player-lyrics');
+    if (!cover || !lyrics) return;
+    const showLyrics = lyrics.hidden;
+    lyrics.hidden = !showLyrics;
+    cover.hidden = showLyrics;
+    if (showLyrics && !state.lyrics.length) loadLyrics(currentTrack());
+    if (showLyrics) updateLyricHighlight();
+}
+
 function closePlayer() {
     $('view-player').classList.remove('is-active');
+    /* Leaving the player puts the cover back, so the next song starts
+       from the cover again. */
+    const cover = $('player-cover');
+    const lyrics = $('player-lyrics');
+    if (cover && lyrics) {
+        lyrics.hidden = true;
+        cover.hidden = false;
+    }
 }
 
 /* ------------------------------------------------------------------- home */
@@ -528,11 +630,33 @@ async function loadDownloads() {
     const statsHost = $('download-stats');
     const queueHost = $('download-queue');
     const localHost = $('download-local');
-    renderDownloadStats(statsHost, state.downloadStats);
-    showSpinner(queueHost);
+    /* The queue used to get a spinner that nothing ever replaced, so the
+       page spun forever.  The download progress arrives pushed from the
+       bridge, so the queue is drawn from that state: no task means an
+       empty state, not a spinner that never stops. */
+    renderDownloadQueue(queueHost, state.downloadStats);
     showSpinner(localHost);
     const local = await api('get_local_tracks', '', 50, 0);
     renderTracks(localHost, (local && local.tracks) || [], '还没有下载好的歌');
+}
+
+/** The download queue, drawn from the pushed progress state. */
+function renderDownloadQueue(host, stats) {
+    clear(host);
+    const data = stats || {};
+    const total = Number(data.total) || 0;
+    if (!total) {
+        showEmpty(host, '还没有下载任务', '在歌单里点「下载全部」就能开始');
+        return;
+    }
+    const row = el('div', 'list-row');
+    row.appendChild(el('span', 'grow', `正在下载 ${data.current || 0}/${total}`));
+    host.appendChild(row);
+    if (data.failed) {
+        const failed = el('div', 'list-row');
+        failed.appendChild(el('span', 'grow', `失败 ${data.failed} 首`));
+        host.appendChild(failed);
+    }
 }
 
 /* The bridge pushes the download progress instead of being polled. */
@@ -610,6 +734,7 @@ async function loadMe() {
         list.appendChild(row);
     };
     addRow('我关注的歌手', '', () => openFollowedArtists());
+    addRow('设置', '', () => openSettings());
     if (status && status.is_logged_in) {
         addRow('退出登录', '', async () => {
             await api('logout');
@@ -688,9 +813,19 @@ async function openDetail(kind, item) {
     showSpinner(body);
     if (kind === 'playlist' || kind === 'toplist') {
         const id = kind === 'playlist' ? item.id : item.id;
+        /* A big playlist is fetched in batches and can take a while, so
+           the page says what it is doing instead of showing a bare
+           spinner. */
+        const note = el('div', 'small text-3', '正在读取歌曲…');
+        body.appendChild(note);
         const result = await api('get_playlist_tracks', String(id || ''));
         const tracks = (result && result.playlist && result.playlist.tracks)
             || (result && result.tracks) || [];
+        if (!tracks.length && result && result.error_key) {
+            clear(body);
+            showEmpty(body, '读不出来', errorText(result, '这个歌单暂时读不到'));
+            return;
+        }
         renderTracks(body, tracks, '这个歌单还没有歌');
         playAll.addEventListener('click', () => playTracks(tracks, 0));
         const download = el('button', 'btn btn-ghost', '下载全部');
@@ -700,13 +835,15 @@ async function openDetail(kind, item) {
     } else if (kind === 'artist') {
         const result = await api('get_artist_detail', String(item.id || ''));
         const artist = (result && result.artist) || {};
-        const tracks = artist.hot_songs || [];
+        /* The bridge puts the hot songs next to the artist, not inside
+           it, so they are read from the top level. */
+        const tracks = result.hot_songs || artist.hot_songs || [];
         renderTracks(body, tracks, '这个歌手还没有热门歌曲');
         playAll.addEventListener('click', () => playTracks(tracks, 0));
     } else if (kind === 'album') {
         const result = await api('get_album_detail', String(item.id || ''));
         const album = (result && result.album) || {};
-        const tracks = album.tracks || [];
+        const tracks = result.tracks || album.tracks || [];
         renderTracks(body, tracks, '这张专辑还没有歌');
         playAll.addEventListener('click', () => playTracks(tracks, 0));
     }
@@ -718,16 +855,195 @@ function closeDetail() {
 }
 
 /* ------------------------------------------------------- followed artists */
+/** One followed artist as a row: a small avatar and the name next to it. */
+function artistRow(artist) {
+    const row = el('button', 'list-row artist-row');
+    row.type = 'button';
+    const avatar = el('div', 'artist-avatar');
+    paintCover(avatar, artist);
+    row.appendChild(avatar);
+    row.appendChild(el('span', 'grow', artist.name || '未知歌手'));
+    row.addEventListener('click', () => {
+        closeSheet();
+        openDetail('artist', artist);
+    });
+    return row;
+}
+
 async function openFollowedArtists() {
     const body = el('div', 'stack');
     openSheet('我关注的歌手', body);
     showSpinner(body);
     const result = await api('get_followed_artists', 50, 0);
+    clear(body);
     const artists = (result && result.artists) || [];
-    cardGrid(body, artists, (item) => {
-        closeSheet();
-        openDetail('artist', item);
-    }, () => '歌手');
+    if (!artists.length) {
+        const hint = result && result.error_key
+            ? errorText(result, '取不到关注的歌手')
+            : '还没有关注任何歌手';
+        showEmpty(body, '没有关注的人', hint);
+        return;
+    }
+    const list = el('div', 'list');
+    artists.forEach((artist) => list.appendChild(artistRow(artist)));
+    body.appendChild(list);
+    const count = el('div', 'small text-3', `共 ${artists.length} 位`);
+    body.appendChild(count);
+}
+
+/* --------------------------------------------------------------- settings */
+/**
+ * The settings page.
+ *
+ * Everything here comes from the bridge: the values it reports and the
+ * values it accepts.  Nothing is invented on the phone side.
+ */
+async function openSettings() {
+    const body = el('div', 'stack');
+    openSheet('设置', body);
+    showSpinner(body);
+
+    const [settings, cache] = await Promise.all([
+        api('get_settings'),
+        api('get_cache_stats'),
+    ]);
+    clear(body);
+    if (!settings || settings.success === false) {
+        showEmpty(body, '读不到设置', errorText(settings, '请稍后再试'));
+        return;
+    }
+
+    const list = el('div', 'list');
+
+    /* The bridge groups the settings, and takes the group name plus a
+       dict of the fields to change, so a switch here writes into its
+       own group. */
+    const switchRow = (label, group, key, hint) => {
+        const row = el('div', 'list-row');
+        const text = el('div', 'grow');
+        text.appendChild(el('div', '', label));
+        if (hint) text.appendChild(el('div', 'small text-3', hint));
+        row.appendChild(text);
+        const toggle = el('button', 'switch');
+        toggle.type = 'button';
+        const value = Boolean((settings && settings[group] && settings[group][key]));
+        toggle.classList.toggle('is-on', value);
+        toggle.setAttribute('aria-checked', value ? 'true' : 'false');
+        toggle.setAttribute('aria-label', label);
+        toggle.addEventListener('click', async () => {
+            const next = !toggle.classList.contains('is-on');
+            toggle.classList.toggle('is-on', next);
+            toggle.setAttribute('aria-checked', next ? 'true' : 'false');
+            const payload = {};
+            payload[key] = next;
+            const result = await api('update_settings', group, payload);
+            if (!result || result.success === false) {
+                toggle.classList.toggle('is-on', !next);
+                toggle.setAttribute('aria-checked', !next ? 'true' : 'false');
+                showToast('保存不了');
+                return;
+            }
+            showToast(next ? '已打开' : '已关闭');
+        });
+        row.appendChild(toggle);
+        list.appendChild(row);
+    };
+
+    switchRow('记住登录', 'auth', 'remember_login', '下次打开不用重新登录');
+    switchRow('显示歌词翻译', 'playback', 'show_translation', '有翻译时一起显示');
+    switchRow('优先在线播放', 'playback', 'prefer_online', '没有下载的歌走在线');
+    body.appendChild(list);
+
+    body.appendChild(el('div', 'section-title', '播放'));
+    const playback = el('div', 'list');
+    const modeRow = el('div', 'list-row');
+    modeRow.appendChild(el('span', 'grow', '播放模式'));
+    const modes = { sequence: '顺序', loop: '循环', shuffle: '随机' };
+    modeRow.appendChild(el('span', 'value',
+        modes[(settings && settings.playback && settings.playback.play_mode)]
+        || '顺序'));
+    playback.appendChild(modeRow);
+    const qualityRow = el('div', 'list-row');
+    qualityRow.appendChild(el('span', 'grow', '在线音质'));
+    qualityRow.appendChild(el('span', 'value',
+        (settings && settings.playback && settings.playback.online_quality) || ''));
+    playback.appendChild(qualityRow);
+    body.appendChild(playback);
+
+    body.appendChild(el('div', 'section-title', '缓存'));
+    body.appendChild(renderCacheStats(cache));
+}
+
+/** The cache size and a button to clear it. */
+function renderCacheStats(cache) {
+    const box = el('div', 'list');
+    const data = cache || {};
+    const audio = data.audio || {};
+    const cover = data.cover || {};
+    const audioBytes = Number(audio.bytes) || 0;
+    const coverBytes = Number(cover.bytes) || 0;
+    const metaBytes = Number(data.meta_bytes) || 0;
+    const total = audioBytes + coverBytes + metaBytes;
+
+    const row = el('div', 'list-row');
+    row.appendChild(el('span', 'grow', '缓存大小'));
+    row.appendChild(el('span', 'value', formatCacheSize(total)));
+    box.appendChild(row);
+
+    const audioRow = el('div', 'list-row');
+    audioRow.appendChild(el('span', 'grow', '歌曲'));
+    audioRow.appendChild(el('span', 'value',
+        `${formatCacheSize(audioBytes)}（${audio.count || 0} 个）`));
+    box.appendChild(audioRow);
+
+    const coverRow = el('div', 'list-row');
+    coverRow.appendChild(el('span', 'grow', '封面'));
+    coverRow.appendChild(el('span', 'value',
+        `${formatCacheSize(coverBytes)}（${cover.count || 0} 个）`));
+    box.appendChild(coverRow);
+
+    const metaRow = el('div', 'list-row');
+    metaRow.appendChild(el('span', 'grow', '信息与歌词'));
+    metaRow.appendChild(el('span', 'value', formatCacheSize(metaBytes)));
+    box.appendChild(metaRow);
+
+    if (data.available === false) {
+        const note = el('div', 'small text-3', '缓存功能没有打开，所以这里一直是空的。');
+        box.appendChild(note);
+    }
+
+    const clear = el('button', 'list-row');
+    clear.type = 'button';
+    clear.appendChild(el('span', 'grow', '清除缓存'));
+    clear.appendChild(el('span', 'chev', '›'));
+    clear.addEventListener('click', async () => {
+        clear.disabled = true;
+        const result = await api('clear_cache', 'all');
+        clear.disabled = false;
+        if (!result || result.success === false) {
+            showToast('清除失败');
+            return;
+        }
+        showToast('缓存已清除');
+        const fresh = await api('get_cache_stats');
+        const holder = $('sheet-body');
+        if (holder) {
+            clear(holder);
+            holder.appendChild(renderCacheStats(fresh));
+        }
+    });
+    box.appendChild(clear);
+    return box;
+}
+
+/** A byte count as something a person can read. */
+function formatCacheSize(bytes) {
+    const value = Number(bytes) || 0;
+    if (value <= 0) return '0 B';
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+    return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 /* ------------------------------------------------------------------ login */
@@ -885,6 +1201,69 @@ async function downloadTracks(tracks) {
 }
 
 /* ------------------------------------------------------------ track menu */
+/**
+ * The artists of a track, each one opening that artist's page.
+ *
+ * The ids come from the bridge as ``artist_list``.  A track without them --
+ * a local file -- falls back to plain text.
+ */
+function renderArtistLinks(host, track) {
+    clear(host);
+    const list = (track && track.artist_list) || [];
+    const usable = list.filter((item) => item && item.id && item.name);
+    if (!usable.length) {
+        host.appendChild(el('span', '', (track && track.artists) || ''));
+        return;
+    }
+    usable.forEach((item, index) => {
+        if (index) host.appendChild(el('span', '', ', '));
+        const button = el('button', 'artist-link', item.name);
+        button.type = 'button';
+        button.addEventListener('click', () => {
+            closeSheet();
+            openDetail('artist', { id: item.id, name: item.name });
+        });
+        host.appendChild(button);
+    });
+}
+
+/** The details of one track: everything the bridge knows about it. */
+function openTrackDetails(track) {
+    const body = el('div', 'stack');
+    const list = el('div', 'list');
+
+    const addRow = (label, value, onClick) => {
+        const row = el(onClick ? 'button' : 'div', 'list-row');
+        if (onClick) row.type = 'button';
+        row.appendChild(el('span', 'grow', label));
+        if (value) row.appendChild(el('span', 'value', value));
+        if (onClick) {
+            row.appendChild(el('span', 'chev', '›'));
+            row.addEventListener('click', onClick);
+        }
+        list.appendChild(row);
+    };
+
+    addRow('歌曲', track.name || '未知歌曲');
+    const artistRow = el('div', 'list-row');
+    artistRow.appendChild(el('span', 'grow', '歌手'));
+    const artistNames = el('span', 'value artist-names');
+    renderArtistLinks(artistNames, track);
+    artistRow.appendChild(artistNames);
+    list.appendChild(artistRow);
+    addRow('专辑', track.album || '');
+    /* The bridge reports the length in milliseconds (the field the API
+       sends), while formatTime works in seconds. */
+    addRow('时长', track.duration ? formatTime(track.duration / 1000) : '');
+    addRow('音质', track.vip ? 'VIP / 无损' : '标准');
+    body.appendChild(list);
+
+    const hint = el('div', 'small text-3',
+        '歌手的名字可以点进去看这个歌手的页面和热门歌曲。');
+    body.appendChild(hint);
+    openSheet('歌曲信息', body);
+}
+
 function openTrackMenu(track, list, index) {
     const body = el('div', 'list');
     const row = (label, onClick) => {
@@ -900,6 +1279,7 @@ function openTrackMenu(track, list, index) {
         advance(1);
     });
     row('下载这首', () => downloadTracks([track]));
+    row('歌曲信息', () => openTrackDetails(track));
     row('复制歌曲信息', async () => {
         const text = `${track.name || ''} - ${track.artists || ''}`.trim();
         try {
@@ -991,6 +1371,9 @@ function wire() {
         openPlayer();
     });
     $('btn-player-close').addEventListener('click', closePlayer);
+    /* Tap the big cover to read the lyrics, tap the lyrics to go back. */
+    $('player-cover').addEventListener('click', toggleLyrics);
+    $('player-lyrics').addEventListener('click', toggleLyrics);
     $('btn-player-play').addEventListener('click', togglePlay);
     $('btn-player-next').addEventListener('click', () => advance(1));
     $('btn-player-prev').addEventListener('click', () => advance(-1));

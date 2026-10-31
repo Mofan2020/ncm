@@ -31,6 +31,37 @@ def test_update_settings_rejects_unknown_category(bridge):
     assert bridge.update_settings("nonsense", {})["success"] is False
 
 
+def test_remembering_the_login_is_on_by_default(bridge):
+    """The app has to come back with the account still signed in.
+
+    With the switch off the session cookie was never written to disk, so
+    every restart of the app dropped the login.
+    """
+    assert bridge.get_settings()["auth"]["remember_login"] is True
+
+
+def test_turning_remember_login_off_takes_the_cookie_with_it(bridge):
+    """The switch has to really forget the session.
+
+    Only stopping the next cookie from being written is not enough: the
+    saved one stays on disk and the next start signs the account in
+    again, which is not what turning the switch off means.
+    """
+    bridge.settings.update_auth(saved_cookie="MUSIC_U=abc")
+    result = bridge.update_settings("auth", {"remember_login": False})
+    assert result["success"] is True
+    assert result["settings"]["auth"]["remember_login"] is False
+    assert bridge.settings.auth.saved_cookie == ""
+
+
+def test_turning_remember_login_on_keeps_the_cookie(bridge):
+    """Switching it on is not a reason to forget the session."""
+    bridge.settings.update_auth(saved_cookie="MUSIC_U=abc")
+    result = bridge.update_settings("auth", {"remember_login": True})
+    assert result["success"] is True
+    assert bridge.settings.auth.saved_cookie == "MUSIC_U=abc"
+
+
 def test_reset_settings(bridge):
     bridge.update_settings("download", {"quality": "hires"})
     assert bridge.reset_settings()["settings"]["download"]["quality"] == "standard"

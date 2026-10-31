@@ -169,7 +169,10 @@ class AuthSettings:
 
     login_method: str = ""           # qrcode|phone|cookie
     saved_cookie: str = ""
-    remember_login: bool = False
+    # On by default: the session cookie is written to disk after a login,
+    # so the app comes back with the account still signed in.  Turning it
+    # off in the settings keeps the app from saving the cookie.
+    remember_login: bool = True
 
 
 @dataclass

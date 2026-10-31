@@ -383,6 +383,150 @@ def test_the_download_counters_use_the_names_the_bridge_sends():
     assert "data.downloading" not in stats, stats
 
 
+
+
+# ------------------------------------------------------- the phone fixes
+# The things that were reported as broken on the phone.  They are checked
+# here as contracts, because the real behaviour is checked by
+# scripts/check-android-features.mjs in a real browser.
+def test_the_download_queue_is_not_left_spinning():
+    """The download list used to spin forever.
+
+    ``showSpinner(queueHost)`` put a spinner in the queue and nothing
+    ever replaced it, so a user with no downloads at all watched a
+    loading circle for as long as the page was open.
+    """
+    downloads = _js_function(APP_JS, "loadDownloads")
+    assert "showSpinner(queueHost)" not in downloads, downloads
+    assert "renderDownloadQueue" in downloads, downloads
+    # And the queue itself has to be able to say "nothing to do".
+    queue = _js_function(APP_JS, "renderDownloadQueue")
+    assert "showEmpty" in queue, queue
+
+
+def test_the_followed_artists_are_rows_and_not_tiles():
+    """A grid of big covers means a long list that has to be swiped.
+
+    The artists are drawn as rows now: a small avatar and the name
+    next to it.
+    """
+    followed = _js_function(APP_JS, "openFollowedArtists")
+    assert "cardGrid" not in followed, followed
+    assert "artistRow" in followed, followed
+
+    row = _js_function(APP_JS, "artistRow")
+    assert "artist-avatar" in row, row
+    assert "grow" in row, row
+
+    avatar = _css_rule(STYLE_CSS, ".artist-avatar")
+    width = re.search(r"width:\s*(\d+)px", avatar)
+    assert width, avatar
+    assert int(width.group(1)) <= 56, (
+        f"the avatar is {width.group(1)}px wide -- it is meant to be small")
+    assert re.search(r"border-radius:\s*50%", avatar), avatar
+
+
+def test_the_player_swaps_between_the_cover_and_the_lyrics():
+    """Tapping the big cover shows the lyrics, tapping them goes back.
+
+    The phone has no desktop lyrics window, so the lyrics live in the
+    player itself.
+    """
+    assert "player-stage" in INDEX_HTML, INDEX_HTML
+    assert 'id="player-lyrics"' in INDEX_HTML, INDEX_HTML
+    assert 'id="lyrics-box"' in INDEX_HTML, INDEX_HTML
+
+    toggle = _js_function(APP_JS, "toggleLyrics")
+    assert "$('player-cover')" in toggle, toggle
+    assert "$('player-lyrics')" in toggle, toggle
+    assert "loadLyrics" in toggle, toggle
+
+    # Both have to be wired to the same toggle.
+    assert "$('player-cover').addEventListener('click', toggleLyrics)" in APP_JS
+    assert "$('player-lyrics').addEventListener('click', toggleLyrics)" in APP_JS
+
+    # The lyrics come from the bridge, with a timestamp per line.
+    loader = _js_function(APP_JS, "loadLyrics")
+    assert "get_track_lyrics" in loader, loader
+    assert "state.lyrics" in loader, loader
+
+
+def test_the_track_details_carry_the_artist_as_a_link():
+    """The artist has to be reachable from the track.
+
+    The bridge sends the artists with their ids in ``artist_list``, so
+    the name can open the page of that artist.
+    """
+    links = _js_function(APP_JS, "renderArtistLinks")
+    assert "artist_list" in links, (
+        "the artist links need the ids the bridge sends")
+    # It has to be a button, not a piece of text: a plain span cannot be
+    # clicked, so the artist would not be reachable at all.
+    assert "artist-link" in links, links
+    assert "'artist-link'" in links, links
+    assert "openDetail('artist'" in links, links
+    # And the menu has to offer the details at all.
+    menu = _js_function(APP_JS, "openTrackMenu")
+    assert "openTrackDetails" in menu, menu
+    details = _js_function(APP_JS, "openTrackDetails")
+    assert "renderArtistLinks" in details, details
+
+
+def test_the_phone_has_a_settings_page():
+    """The phone had no settings at all.
+
+    The bridge groups its settings, so the page has to write into the
+    right group instead of guessing a flat key.
+    """
+    assert "function openSettings" in APP_JS
+    settings = _js_function(APP_JS, "openSettings")
+    assert "get_settings" in settings, settings
+    assert "get_cache_stats" in settings, settings
+    # The settings are grouped: auth, playback, ui, download.
+    assert "settings['auth']" in settings or "settings[group]" in settings, settings
+    assert "update_settings" in settings, settings
+    # Remember-login lives in the auth group.
+    assert "'auth', 'remember_login'" in settings, settings
+
+    # The entry has to be reachable from the me page.
+    me = _js_function(APP_JS, "loadMe")
+    assert "openSettings" in me, me
+
+
+def test_the_cache_size_is_shown_and_can_be_cleared():
+    """The cache was there, but nobody could see or empty it."""
+    cache = _js_function(APP_JS, "renderCacheStats")
+    assert "formatCacheSize" in cache, cache
+    assert "clear_cache" in cache, cache
+    # The sizes the bridge sends are nested, not flat.
+    assert "data.audio" in cache or "audio.bytes" in cache, cache
+    assert "meta_bytes" in cache, cache
+
+
+def test_the_track_length_is_shown_in_seconds():
+    """The bridge reports the length in milliseconds.
+
+    The API field is in milliseconds, so a three minute song arrives as
+    180000.  Handing that to a formatter that works in seconds prints
+    "180000:00" -- or, with the hour-style formatter, "3000:00".
+    """
+    details = _js_function(APP_JS, "openTrackDetails")
+    assert "track.duration / 1000" in details, details
+    # The player bar uses the audio element's own duration, which is
+    # already in seconds.  That one must not be divided.
+    assert "formatTime(audio.duration)" in APP_JS
+
+
+def test_the_artist_page_reads_the_hot_songs_from_the_top_level():
+    """The bridge puts the hot songs next to the artist.
+
+    Reading them from inside the artist object gave every artist page
+    an empty list, which looked like the artist had no songs.
+    """
+    detail = _js_function(APP_JS, "openDetail")
+    assert "result.hot_songs" in detail, detail
+
+
 # --------------------------------------------------------- the code style
 def test_the_phone_style_follows_the_desktop_palette():
     """The two front ends are one product and should look like one."""
