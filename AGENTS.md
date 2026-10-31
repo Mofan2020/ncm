@@ -244,6 +244,9 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
 - Settings: unknown YAML keys are **ignored** (never crash on an older config file);
   `max_concurrent` is clamped to 1–3.
 - Version lives only in `src/version.py`; `main.spec` and the UI read it from there.
+  **安卓的版本号是另一处**：`android/buildozer.spec` 的 `version` 不读 `src/version.py`，
+  发版时要一起改。漏了就会出现 tag 里写着 3.6.0、从 tag 重建出来的 APK 却是 3.5.17
+  的情况。**两处必须在同一个 commit 里，而且这个 commit 要在打 tag 之前。**
 - **版本号按改动性质递增，不按提交次数。** 判据只有一个：用户能不能看出多了什么。
   - 能 —— 加了功能、换了交互、行为变了 → **minor +1，patch 归零**（3.5.17 → 3.6.0）
   - 不能 —— 只修错、改文档、调性能、改内部结构 → **patch +1**
