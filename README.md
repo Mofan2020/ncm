@@ -55,9 +55,11 @@
 
 ## 下载安装
 
-到 [Releases](https://github.com/Mofan2020/ncm/releases) 列表页挑对应系统的产物。标签上标 **Latest** 的是正式版，标 **Pre-release** 的是预发布，列表最上面一格是最新的一版。
+到 [Releases](https://github.com/Mofan2020/ncm/releases) 列表页挑对应系统的产物。
 
-**Pre-release** 表示这个版本还没测完，测完确认没问题之后才转成正式版。预发布不等于有问题，只是还在测。
+标签上标 **Latest** 的是正式版，标 **Pre-release** 的是预发布。**Pre-release** 表示这个版本还没测完，测完确认没问题之后才转成正式版。预发布不等于有问题，只是还在测。
+
+只想装桌面版的话，直接去 [Latest](https://github.com/Mofan2020/ncm/releases/latest) 就行。
 
 **macOS**
 
