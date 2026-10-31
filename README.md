@@ -1,15 +1,15 @@
 # 网易云音乐歌单下载器 / NetEase Music Playlist Downloader
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)
-![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-green.svg)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Android-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-基于 **pywebview** 的桌面应用，下载和播放合一：粘贴歌单 ID（或链接）→ 勾选歌曲 → 多线程下载；
+基于 **pywebview** 的应用，下载和播放合一：粘贴歌单 ID（或链接）→ 勾选歌曲 → 多线程下载；
 也可以直接听歌，在线歌曲、账号歌单、本地音乐都在同一个播放器里。
-同一套代码同时适配 **Windows** 与 **macOS**（Apple 芯片 / Intel 都有构建产物），界面支持 **中文 / English** 实时切换。
+同一套核心代码，桌面端支持 **Windows** 与 **macOS**（Apple 芯片 / Intel 都有构建产物），界面支持 **中文 / English** 实时切换；Android 版另有一套手机界面。
 
 > 与旧版本的区别：v2.0 之前的命令行用法（以及一个 macOS 专用版本）已经废弃，
-> 现在只有这一个 GUI 版本，同时支持 Windows 和 macOS。旧脚本保留在 `legacy/` 目录，仅供参考，不再维护。
+> 现在只有这一个 GUI 版本，同时支持 Windows、macOS 和 Android。旧脚本保留在 `legacy/` 目录，仅供参考，不再维护。
 
 ## 功能
 
@@ -23,7 +23,7 @@
 - **快捷下载**：列表里每首都能直接丢进下载队列，选项沿用下载页的设置
 - **播放次数**：每首记录播放次数并显示；次数只存本地，默认不往网易云上报（想同步可在设置里打开），也能一键清空本地记录
 - **续播**：退出时记住队列、当前曲目和进度，下次打开接着放
-- **本地音乐**：添加音乐文件夹后自动扫描，认 ID3v2 / FLAC / MP4 / WAV / OGG 标签，读不到就用文件名兜底
+- **本地音乐**：添加音乐文件夹后自动扫描，认 ID3v2 / FLAC / MP4 / WAV / OGG 标签，读不到就用文件名兜底（Android 版读系统媒体库，不用手动加文件夹）
 - **外观**：自定义背景图（可模糊、压暗、从图片取主色），Apple 液态玻璃界面，玻璃效果可关
 - **播放优先级**：优先在线版本还是本地版本自己选，在线音质（标准 / 较高 / 极高 / 无损 / Hi-Res）也能选
 - **账号面板**：点头像查看当前账号的资料（等级、关注、歌单数、累计听歌、注册时间等）
@@ -55,7 +55,9 @@
 
 ## 下载安装
 
-到 [Releases](https://github.com/Mofan2020/ncm/releases/latest) 下载对应系统的产物：
+到 [Releases](https://github.com/Mofan2020/ncm/releases) 列表页挑对应系统的产物。标签上标 **Latest** 的是正式版，标 **Pre-release** 的是预发布，列表最上面一格是最新的一版。
+
+**Pre-release** 表示这个版本还没测完，测完确认没问题之后才转成正式版。预发布不等于有问题，只是还在测。
 
 **macOS**
 
@@ -79,6 +81,23 @@ xattr -dr com.apple.quarantine /Applications/NeteaseMusicDownloader.app
 
 Windows 需要 **WebView2 运行时**（Windows 11 与较新的 Windows 10 已自带；老系统请到
 [微软官网](https://developer.microsoft.com/microsoft-edge/webview2/) 安装）。
+
+**Android**
+
+| 文件 | 说明 |
+|------|------|
+| `NeteaseMusicDownloader-Android-<版本>-arm64-v8a.apk` | 只出 arm64-v8a 一个架构，需要 Android 7.0 以上 |
+
+安卓版跟桌面版一起发，装的是正式签名的包。
+
+APK 目前只在预发布标签里，Latest 指向的正式版暂时没有 APK。到
+[Releases](https://github.com/Mofan2020/ncm/releases) 列表页挑带 Pre-release 标记的标签，
+文件名带 `Android` 的那个就是。
+
+安卓版跑在系统内置的 WebView 里，老版本 WebView 上可能界面不正常，建议保持系统更新。
+
+首次进应用会问要不要读取手机上的音频。Android 10 以后应用不能直接翻 `/sdcard/Music`，
+本地音乐走系统媒体库；不给权限的话这一页是空的，不会崩。
 
 ## 从源码运行
 
