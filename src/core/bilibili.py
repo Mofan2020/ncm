@@ -191,7 +191,7 @@ def _duration_seconds(value: Any) -> int:
     """Normalise ``294``, ``"4:54"`` and ``"1:02:03"`` into seconds."""
     if isinstance(value, bool):
         return 0
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return int(value)
     text = str(value or "").strip()
     if not text:

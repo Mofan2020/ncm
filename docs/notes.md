@@ -2876,6 +2876,36 @@ eventloop → Python 线程退出 → app 退场 → 系统重建 Activity。
 子类（buildozer 的 `android.activity_class_name` 支持），在 `onDestroy()` 里
 先关 eventloop 再交给父类。
 
+### 一条容易踩的：本地绿、CI 红
+
+CI 的 lint 是 `ruff check .`（**整个仓库**），本机如果只跑
+`ruff check src tests scripts`，范围小了一截，而且两边 ruff 版本可能不同：
+
+- `requirements-dev.txt` 钉的是 `ruff>=0.12,<0.13`
+- 本机 conda 环境里装的是 0.17.0 —— **0.12 有的 UP038 规则，0.17 已经不报了**
+
+所以本地 0.17 全绿，CI 0.12 报：
+
+```
+UP038 Use `X | Y` in `isinstance` call instead of `(X, Y)`
+  --> src/core/bilibili.py:194:8
+```
+
+**本地 lint 必须用和 CI 一样的命令、一样的版本：**
+
+```bash
+ruff check .          # 不是 ruff check src tests scripts
+```
+
+版本对不上时，装一个同版本到临时目录跑：
+
+```bash
+python -m pip install --target /tmp/ruff012 'ruff>=0.12,<0.13'
+/tmp/ruff012/bin/ruff check .
+```
+
+**结论：lint 的"绿"只有在命令和版本都对齐 CI 时才算数。**
+
 ### 顺带
 
 - `evaluate_js` 的 `lock.acquire()` 原来**没有超时**。回传丢了就永久占住
