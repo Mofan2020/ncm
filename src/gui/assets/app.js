@@ -135,6 +135,7 @@ async function boot() {
         const loginStatus = await state.api.get_login_status();
         state.loggedIn = !!(loginStatus && loginStatus.is_logged_in);
         await refreshLoginStatus();
+        showHome();
         watchSystemTheme();
         initMediaSession();
         initSleepTimer();
@@ -243,6 +244,24 @@ function applyTranslations() {
     safeRender('updateModeButton', updateModeButton);
     safeRender('renderNowPlaying', renderNowPlaying);
     safeRender('renderSourceHeader', renderSourceHeader);
+    safeRender('labelHomeCards', labelHomeCards);
+}
+
+/**
+ * Give every home card a spoken label.
+ *
+ * The card shows an icon, a title and a sentence; the screen reader needs
+ * them as one string, otherwise it only reads the icon.
+ */
+function labelHomeCards() {
+    document.querySelectorAll('.home-card').forEach((card) => {
+        const title = card.querySelector('.home-card-title');
+        const desc = card.querySelector('.home-card-desc');
+        const parts = [];
+        if (title) parts.push(title.textContent);
+        if (desc) parts.push(desc.textContent);
+        if (parts.length) card.setAttribute('aria-label', parts.join('，'));
+    });
 }
 
 /**
@@ -287,6 +306,11 @@ function refreshDynamicTexts() {
     updateStatusPill();
     renderTrackList();
     renderLyricSource();
+    // The new sections build their text in JS, so they have to be drawn
+    // again when the language changes.
+    safeRender('renderCombinedRows', renderCombinedRows);
+    safeRender('renderBiliResults', renderBiliResults);
+    safeRender('updateFilterChips', updateFilterChips);
     // The idle delay is written in seconds, so the label follows the
     // language like the rest of the settings.
     updateLyricsScrollIdleLabel();
@@ -1960,7 +1984,9 @@ const audio = document.getElementById('audio');
 
 /** Switch between the download and the player view. */
 function showView(name) {
-    document.querySelectorAll('.top-tab').forEach((tab) =>
+    // Only the header tabs follow the view; the segmented control inside the
+    // search page carries the class too and must keep its own state.
+    document.querySelectorAll('#top-tabs .top-tab').forEach((tab) =>
         tab.classList.toggle('is-active', tab.dataset.view === name));
     document.querySelectorAll('.view').forEach((view) =>
         view.classList.toggle('is-active', view.id === 'view-' + name));
@@ -6756,10 +6782,14 @@ function renderAbout() {
 /* ------------------------------------------------------- static listeners */
 
 function bindStaticEvents() {
+    bindSectionEvents();
     // top level tabs
     document.getElementById('top-tabs').addEventListener('click', (event) => {
         const tab = event.target.closest('.top-tab');
-        if (tab) showView(tab.dataset.view);
+        if (!tab) return;
+        showView(tab.dataset.view);
+        // The section picker refreshes its counters every time it is opened.
+        if (tab.dataset.view === 'home') showHome();
     });
 
     // download view
@@ -7115,13 +7145,33 @@ function bindStaticEvents() {
     document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') {
             const open = document.querySelector('.modal:not([hidden])');
-            if (!open) return;
+            if (!open) {
+                // No dialog is open: Esc walks back out of a sub page.
+                const tag = (event.target.tagName || '').toLowerCase();
+                if (tag !== 'input' && tag !== 'textarea' && tag !== 'select'
+                    && sectionIsActive('search')) {
+                    backToHome();
+                } else if (tag !== 'input' && tag !== 'textarea' && tag !== 'select'
+                    && sectionIsActive('bili')) {
+                    backToHome();
+                }
+                return;
+            }
             if (open.id === 'confirm-modal') resolveConfirm(false);
             else closeModal(open.id);
             return;
         }
         const tag = (event.target.tagName || '').toLowerCase();
         if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        // Alt+Left (Windows) / Cmd+[ (macOS) leave a sub page as well.
+        if (sectionIsActive('search') || sectionIsActive('bili')) {
+            if ((event.altKey && event.key === 'ArrowLeft')
+                || (event.metaKey && event.key === '[')) {
+                event.preventDefault();
+                backToHome();
+                return;
+            }
+        }
         if (event.key === ' ') {
             event.preventDefault();
             togglePlay();
@@ -7321,4 +7371,1241 @@ function onAccountBackupProgress(payload) {
     }
     setBackupProgress(current, total);
     setBackupStatus(`${backupPhaseText(payload.phase)} ${current}/${total}`);
+}
+
+/* ==================================================================== */
+/* home · combined search · bilibili sections                            */
+/* ==================================================================== */
+
+/** Partition key -> the i18n key of its chip label. */
+const BILI_CHIP_KEYS = {
+    all: 'bili.chip_all',
+    animation: 'bili.chip_animation',
+    bangumi: 'bili.chip_bangumi',
+    music: 'bili.chip_music',
+    music_video: 'bili.chip_music_video',
+    douga: 'bili.chip_douga',
+    knowledge: 'bili.chip_knowledge',
+    game: 'bili.chip_game',
+    life: 'bili.chip_life',
+    film: 'bili.chip_film',
+    documentary: 'bili.chip_documentary'
+};
+
+/** The combined search: what is loaded, and what the filters say. */
+const combined = {
+    keyword: '',
+    source: 'all',
+    category: 'all',
+    sort: 'relevance',
+    duration: 'all',
+    rows: [],
+    neteaseOffset: 0,
+    biliPage: 1,
+    neteaseDone: false,
+    biliDone: false,
+    neteaseError: '',
+    biliError: '',
+    loading: false,
+    requestId: 0
+};
+
+/** The Bilibili section: the partition that is open and what it holds. */
+const biliSection = {
+    rid: 0,
+    page: 1,
+    items: [],
+    partitions: [],
+    error: '',
+    loading: false,
+    exhausted: false
+};
+
+/** The home card the user came from, so the way back lands on it. */
+let homeReturnEntry = '';
+
+/* ---------------------------------------------------------- small helpers */
+
+/** Whether one of the three new views is the visible one. */
+function sectionIsActive(name) {
+    const view = document.getElementById('view-' + name);
+    return !!(view && view.classList.contains('is-active'));
+}
+
+/** The offline bars are per view, so they are updated together. */
+function updateOfflineBars() {
+    const offline = navigator.onLine === false;
+    ['home-offline', 'search-offline', 'bili-offline'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.hidden = !offline;
+    });
+}
+
+/** "1.0" -> "1", "1.5" -> "1.5" (the trailing zero is noise in a count). */
+function trimDecimal(text) {
+    const parts = String(text).split('.');
+    if (parts.length > 1 && parts[1] === '0') return parts[0];
+    return String(text);
+}
+
+/** 12345 -> "1.2万" (or "12.3K" in English). */
+function formatPlayCount(value) {
+    const number = Number(value) || 0;
+    const english = !!(state.settings && state.settings.ui
+        && state.settings.ui.language === 'en_us');
+    if (english) {
+        if (number >= 1000000) return trimDecimal((number / 1000000).toFixed(1)) + 'M';
+        if (number >= 1000) return trimDecimal((number / 1000).toFixed(1)) + 'K';
+        return String(number);
+    }
+    if (number >= 100000000) return trimDecimal((number / 100000000).toFixed(1)) + '亿';
+    if (number >= 10000) return trimDecimal((number / 10000).toFixed(1)) + '万';
+    return String(number);
+}
+
+/** A block with an icon, a line of text and (optionally) one button. */
+function buildStateBlock(iconName, title, hint, actionLabel, action) {
+    const block = document.createElement('div');
+    block.className = 'state-block';
+    const icon = document.createElement('div');
+    icon.className = 'state-icon';
+    icon.setAttribute('data-icon', iconName);
+    setIcon(icon, iconName);
+    block.appendChild(icon);
+    const heading = document.createElement('div');
+    heading.className = 'state-title';
+    heading.textContent = title;
+    block.appendChild(heading);
+    if (hint) {
+        const note = document.createElement('div');
+        note.className = 'state-hint';
+        note.textContent = hint;
+        block.appendChild(note);
+    }
+    if (actionLabel && action) {
+        const button = document.createElement('button');
+        button.className = 'btn btn-sm btn-secondary';
+        button.type = 'button';
+        button.textContent = actionLabel;
+        button.addEventListener('click', action);
+        block.appendChild(button);
+    }
+    return block;
+}
+
+/* ------------------------------------------------------------------- home */
+
+/** Show the section picker and refresh its counters. */
+function showHome() {
+    updateOfflineBars();
+    updateHomeCounts();
+}
+
+/**
+ * The counters under the home cards.
+ *
+ * A card without a number is still a card: a failing count hides its line
+ * instead of putting an error on the page.
+ */
+async function updateHomeCounts() {
+    const neteaseLine = document.getElementById('home-count-netease');
+    const biliLine = document.getElementById('home-count-bili');
+    const foot = document.getElementById('home-foot');
+    if (neteaseLine) {
+        neteaseLine.textContent = '--';
+        neteaseLine.classList.remove('is-empty');
+    }
+    if (biliLine) {
+        biliLine.textContent = '--';
+        biliLine.classList.remove('is-empty');
+    }
+    if (foot) foot.hidden = true;
+    let failed = false;
+
+    if (!state.loggedIn) {
+        if (neteaseLine) neteaseLine.textContent = t('home.count_signed_out');
+    } else {
+        try {
+            const result = await state.api.get_playlists(false);
+            if (result && result.success) {
+                const count = (result.playlists || []).length;
+                if (neteaseLine) neteaseLine.textContent = t('home.count_playlists', { count });
+            } else {
+                failed = true;
+                if (neteaseLine) neteaseLine.classList.add('is-empty');
+            }
+        } catch (err) {
+            failed = true;
+            if (neteaseLine) neteaseLine.classList.add('is-empty');
+        }
+    }
+
+    try {
+        if (!bridgeHas('get_bilibili_popular')) {
+            failed = true;
+            if (biliLine) biliLine.classList.add('is-empty');
+            if (foot) foot.hidden = false;
+            return;
+        }
+        const result = await state.api.get_bilibili_popular(0, 1, 50);
+        if (result && result.success) {
+            const count = (result.tracks || result.items || []).length;
+            if (biliLine) biliLine.textContent = t('home.count_trending', { count });
+        } else {
+            failed = true;
+            if (biliLine) biliLine.classList.add('is-empty');
+        }
+    } catch (err) {
+        failed = true;
+        if (biliLine) biliLine.classList.add('is-empty');
+    }
+
+    if (failed && foot) foot.hidden = false;
+}
+
+/** Mark the card the user came from, so the way back is obvious. */
+function markHomeEntry(entry) {
+    document.querySelectorAll('.home-card').forEach((card) => {
+        const current = card.dataset.entry === entry;
+        card.classList.toggle('is-current', current);
+        if (current) card.setAttribute('aria-current', 'true');
+        else card.removeAttribute('aria-current');
+    });
+}
+
+/** Enter one of the four home cards. */
+function openHomeEntry(entry, byKeyboard) {
+    homeReturnEntry = entry;
+    markHomeEntry(entry);
+    if (entry === 'netease') {
+        player.sourceTab = 'playlists';
+        showView('player');
+        return;
+    }
+    if (entry === 'bili') {
+        showSection('bili');
+        renderBili(0);
+        focusPageTitle('bili-title');
+        return;
+    }
+    if (entry === 'search') {
+        showSection('search');
+        if (byKeyboard) {
+            const input = document.getElementById('aggr-input');
+            if (input) input.focus();
+        } else {
+            focusPageTitle('search-title');
+        }
+        return;
+    }
+    if (entry === 'settings') {
+        openModal('settings-modal');
+        updateLocalStatsText();
+        updatePlayStatsText();
+        refreshCacheStats();
+    }
+}
+
+/**
+ * Put the focus on the title of the page that was just opened.
+ *
+ * The keyboard user must not lose the place: without this the focus stays
+ * on the home card that is now hidden.
+ */
+function focusPageTitle(id) {
+    const title = document.getElementById(id);
+    if (title) title.focus();
+}
+
+/** Show a sub view; the "home" tab stays lit because it is its parent. */
+function showSection(name) {
+    document.querySelectorAll('.view').forEach((view) => {
+        view.classList.toggle('is-active', view.id === 'view-' + name);
+    });
+    document.querySelectorAll('#top-tabs .top-tab').forEach((tab) => {
+        tab.classList.toggle('is-active', tab.dataset.view === 'home');
+    });
+    updateOfflineBars();
+}
+
+/** Back to the section picker, with the focus on the card we left. */
+function backToHome() {
+    showView('home');
+    const card = homeReturnEntry
+        ? document.querySelector('.home-card[data-entry="' + homeReturnEntry + '"]')
+        : null;
+    if (card) card.focus();
+}
+
+/* -------------------------------------------------------- combined search */
+
+/** The four filters, read from the form. */
+function combinedFilters() {
+    const category = document.getElementById('aggr-category');
+    const sort = document.getElementById('aggr-sort');
+    const duration = document.getElementById('aggr-duration');
+    return {
+        source: combinedSourceValue(),
+        category: category ? category.value : 'all',
+        sort: sort ? sort.value : 'relevance',
+        duration: duration ? duration.value : 'all'
+    };
+}
+
+/** The source is a segmented control, so its value is the checked button. */
+function combinedSourceValue() {
+    const active = document.querySelector('#aggr-source .top-tab.is-active');
+    return active ? active.dataset.value : 'all';
+}
+
+/** Put the source segmented control on one of its three values. */
+function setCombinedSource(value) {
+    document.querySelectorAll('#aggr-source .top-tab').forEach((tab) => {
+        const on = tab.dataset.value === value;
+        tab.classList.toggle('is-active', on);
+        tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+}
+
+function setFilterValue(id, value) {
+    if (id === 'aggr-source') {
+        setCombinedSource(value);
+        return;
+    }
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+}
+
+function combinedSourceLabel() {
+    if (combined.source === 'netease') return t('search.source_netease');
+    if (combined.source === 'bilibili') return t('search.source_bili');
+    return t('search.source_all');
+}
+
+function combinedCategoryLabel() {
+    if (combined.category === 'song') return t('search.category_song');
+    if (combined.category === 'playlist') return t('search.category_playlist');
+    if (combined.category === 'video') return t('search.category_video');
+    return t('search.category_all');
+}
+
+function combinedSortLabel() {
+    if (combined.sort === 'plays') return t('search.sort_plays');
+    if (combined.sort === 'newest') return t('search.sort_newest');
+    if (combined.sort === 'duration') return t('search.sort_duration');
+    return t('search.sort_relevance');
+}
+
+function combinedDurationLabel() {
+    if (combined.duration === 'short') return t('search.duration_short');
+    if (combined.duration === 'mid') return t('search.duration_mid');
+    if (combined.duration === 'long') return t('search.duration_long');
+    if (combined.duration === 'xlong') return t('search.duration_xlong');
+    return t('search.duration_all');
+}
+
+/** Mark the filters that are not on their default value. */
+function updateFilterSelects() {
+    // The source is a segmented control: its active button already shows
+    // that a filter is on, so only the three selects need the accent.
+    const marks = [
+        ['aggr-category', combined.category !== 'all'],
+        ['aggr-sort', combined.sort !== 'relevance'],
+        ['aggr-duration', combined.duration !== 'all']
+    ];
+    marks.forEach((mark) => {
+        const el = document.getElementById(mark[0]);
+        if (el) el.classList.toggle('is-set', mark[1]);
+    });
+}
+
+/**
+ * The reason a bridge call failed, in words.
+ *
+ * The bridge answers with an ``error_key`` (an i18n key) and sometimes a
+ * free text ``message``.  The key wins, because it is translated; the text
+ * is the fallback for a reason the backend does not know a key for.
+ */
+function bridgeFailure(result, fallbackKey) {
+    if (!result) return t(fallbackKey || 'error.unknown');
+    const key = result.error_key;
+    if (key) {
+        const text = t(key);
+        return text === key ? (result.message || t('error.unknown')) : text;
+    }
+    return result.message || t('error.unknown');
+}
+
+/**
+ * Is the bridge able to do this at all?
+ *
+ * A half installed bridge (an older backend without the Bilibili methods)
+ * must not throw a JavaScript error into the page: the caller gets a
+ * readable reason instead.
+ */
+function bridgeHas(method) {
+    return !!(state.api && typeof state.api[method] === 'function');
+}
+
+/** One chip per active filter, so it is visible what narrowed the list. */
+function updateFilterChips() {
+    const row = document.getElementById('aggr-chips');
+    if (!row) return;
+    // The label stays, the chips are rebuilt.
+    const label = row.querySelector('.filter-chips-label');
+    row.innerHTML = '';
+    if (label) row.appendChild(label);
+    const entries = [];
+    if (combined.source !== 'all') {
+        entries.push({
+            label: combinedSourceLabel(),
+            reset: () => { setFilterValue('aggr-source', 'all'); applyCombinedFilters(true); }
+        });
+    }
+    if (combined.category !== 'all') {
+        entries.push({
+            label: combinedCategoryLabel(),
+            reset: () => { setFilterValue('aggr-category', 'all'); applyCombinedFilters(false); }
+        });
+    }
+    if (combined.sort !== 'relevance') {
+        entries.push({
+            label: combinedSortLabel(),
+            reset: () => { setFilterValue('aggr-sort', 'relevance'); applyCombinedFilters(false); }
+        });
+    }
+    if (combined.duration !== 'all') {
+        entries.push({
+            label: combinedDurationLabel(),
+            reset: () => { setFilterValue('aggr-duration', 'all'); applyCombinedFilters(false); }
+        });
+    }
+    entries.forEach((entry) => {
+        const chip = document.createElement('button');
+        chip.className = 'chip is-active';
+        chip.type = 'button';
+        const text = document.createElement('span');
+        text.textContent = entry.label;
+        chip.appendChild(text);
+        const close = document.createElement('span');
+        close.setAttribute('data-icon', 'close');
+        setIcon(close, 'close');
+        chip.appendChild(close);
+        chip.addEventListener('click', entry.reset);
+        row.appendChild(chip);
+    });
+    if (entries.length) {
+        const clear = document.createElement('button');
+        clear.className = 'btn btn-link';
+        clear.type = 'button';
+        clear.textContent = t('search.clear_filters');
+        clear.addEventListener('click', clearCombinedFilters);
+        row.appendChild(clear);
+    }
+    row.classList.toggle('is-open', entries.length > 0);
+    row.setAttribute('aria-hidden', entries.length ? 'false' : 'true');
+}
+
+/** Put every filter back to its default. */
+function clearCombinedFilters() {
+    setFilterValue('aggr-source', 'all');
+    setFilterValue('aggr-category', 'all');
+    setFilterValue('aggr-sort', 'relevance');
+    setFilterValue('aggr-duration', 'all');
+    applyCombinedFilters(true);
+}
+
+/** The Bilibili sort order that matches the chosen sort. */
+function biliOrderFor(sort) {
+    if (sort === 'plays') return 'play';
+    if (sort === 'newest') return 'date';
+    return 'default';
+}
+
+/**
+ * Read the filters and render what they allow.
+ *
+ * The source and the sort decide which rows are asked for: the sort is a
+ * request parameter of the Bilibili search.  The category and the length
+ * work on the rows that are already loaded, so they cost no request.
+ */
+function applyCombinedFilters(needsRefetch) {
+    const filters = combinedFilters();
+    combined.source = filters.source;
+    combined.category = filters.category;
+    combined.sort = filters.sort;
+    combined.duration = filters.duration;
+    updateFilterSelects();
+    updateFilterChips();
+    if (needsRefetch) {
+        renderCombinedSearch(combined.keyword, combinedFilters());
+        return;
+    }
+    renderCombinedRows();
+}
+
+/** One result row, in the shape of the result list. */
+function combinedRowElement(row) {
+    const element = document.createElement('div');
+    element.className = 'result-row';
+    element.dataset.src = row.source;
+    element.setAttribute('role', 'button');
+    element.tabIndex = 0;
+    element.setAttribute('aria-label', row.name);
+
+    if (row.cover) {
+        const thumb = document.createElement('img');
+        thumb.className = 'result-thumb';
+        thumb.src = row.cover;
+        thumb.alt = '';
+        thumb.loading = 'lazy';
+        thumb.addEventListener('error', () => { thumb.style.visibility = 'hidden'; });
+        element.appendChild(thumb);
+    } else {
+        const thumb = document.createElement('div');
+        thumb.className = 'result-thumb is-empty';
+        thumb.setAttribute('data-icon', 'music');
+        setIcon(thumb, 'music');
+        element.appendChild(thumb);
+    }
+
+    const main = document.createElement('div');
+    main.className = 'result-main';
+    const nameLine = document.createElement('div');
+    nameLine.className = 'result-name-line';
+    const name = document.createElement('span');
+    name.className = 'result-name';
+    name.textContent = row.name;
+    nameLine.appendChild(name);
+    const badge = document.createElement('span');
+    badge.className = row.source === 'bilibili' ? 'source-badge is-bili' : 'source-badge is-netease';
+    badge.textContent = row.source === 'bilibili'
+        ? t('search.source_bili') : t('search.source_netease');
+    nameLine.appendChild(badge);
+    main.appendChild(nameLine);
+    const sub = document.createElement('div');
+    sub.className = 'result-sub';
+    sub.textContent = row.source === 'bilibili'
+        ? t('search.sub_bili', { uploader: row.artists, plays: formatPlayCount(row.plays) })
+        : t('search.sub_netease', { artist: row.artists, album: row.album });
+    main.appendChild(sub);
+    element.appendChild(main);
+
+    const duration = document.createElement('span');
+    duration.className = 'result-dur';
+    duration.textContent = row.durationMs ? fmtTime(row.durationMs / 1000) : '';
+    element.appendChild(duration);
+
+    element.addEventListener('click', () => openCombinedRow(row));
+    element.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            event.stopPropagation();
+            openCombinedRow(row);
+        }
+    });
+    return element;
+}
+
+/** What happens when a result row is picked. */
+function openCombinedRow(row) {
+    if (row.source === 'bilibili') {
+        const url = (row.track && row.track.url) || '';
+        if (url) state.api.open_external(url);
+        return;
+    }
+    if (row.kind === 'playlist') {
+        const playlist = {
+            id: row.id,
+            name: row.name,
+            cover_url: row.cover,
+            track_count: row.plays
+        };
+        showPlayerView();
+        openPlaylist(playlist, true);
+        return;
+    }
+    showPlayerView();
+    playAllInto([row.track], { kind: 'search', name: combined.keyword });
+}
+
+/** The player view without touching the source list behind it. */
+function showPlayerView() {
+    document.querySelectorAll('.view').forEach((view) => {
+        view.classList.toggle('is-active', view.id === 'view-player');
+    });
+    document.querySelectorAll('#top-tabs .top-tab').forEach((tab) => {
+        tab.classList.toggle('is-active', tab.dataset.view === 'player');
+    });
+}
+
+/** A song row of the NetEase source. */
+function neteaseSongRow(song) {
+    return {
+        source: 'netease',
+        kind: 'song',
+        id: song.id || '',
+        name: song.name || '',
+        artists: song.artists || '',
+        album: song.album || '',
+        cover: song.cover_url || song.picUrl || '',
+        // The bridge hands the NetEase duration over in milliseconds.
+        durationMs: Number(song.duration) || 0,
+        plays: Number(song.play_count) || 0,
+        track: song
+    };
+}
+
+/** A playlist row of the NetEase source. */
+function neteasePlaylistRow(playlist) {
+    const creator = typeof playlist.creator === 'string'
+        ? playlist.creator
+        : ((playlist.creator && (playlist.creator.nickname || playlist.creator.name)) || '');
+    return {
+        source: 'netease',
+        kind: 'playlist',
+        id: playlist.id || '',
+        name: playlist.name || playlist.title || '',
+        artists: creator,
+        album: '',
+        cover: playlist.cover_url || playlist.picUrl || playlist.coverImgUrl || '',
+        durationMs: 0,
+        // A playlist carries the number of its tracks, not a play count.
+        plays: Number(playlist.track_count || playlist.play_count) || 0,
+        track: playlist
+    };
+}
+
+/** A video row of the Bilibili source. */
+function biliTrackRow(track) {
+    return {
+        source: 'bilibili',
+        kind: 'video',
+        id: track.id || track.bvid || '',
+        name: track.name || track.title || '',
+        artists: track.artists || track.author || '',
+        album: track.album || track.category || '',
+        cover: track.cover_url || track.cover || '',
+        // The Bilibili payload counts in seconds.
+        durationMs: (Number(track.duration) || 0) * 1000,
+        plays: Number(track.play_count) || 0,
+        track: track
+    };
+}
+
+/** Does a row pass the length filter? */
+function combinedMatchesDuration(row, duration) {
+    if (duration === 'all') return true;
+    if (!row.durationMs) return true;
+    const seconds = row.durationMs / 1000;
+    if (duration === 'short') return seconds < 60;
+    if (duration === 'mid') return seconds < 300;
+    if (duration === 'long') return seconds < 900;
+    return seconds >= 900;
+}
+
+/** The most rows the merged list ever holds (the cap of the paging). */
+const COMBINED_MAX_ROWS = 200;
+
+/** The merged list.
+ *
+ * Each source keeps its own order and the two are interleaved: a "plays"
+ * sort only means something inside one source, so the ranking is done per
+ * source and then alternated.
+ */
+function combinedVisibleRows() {
+    const category = combined.category;
+    const duration = combined.duration;
+    const rows = combined.rows.filter((row) => {
+        if (category === 'song' && row.kind !== 'song') return false;
+        if (category === 'playlist' && row.kind !== 'playlist') return false;
+        if (category === 'video' && row.kind !== 'video') return false;
+        return combinedMatchesDuration(row, duration);
+    });
+    const netease = rows.filter((row) => row.source === 'netease');
+    const bili = rows.filter((row) => row.source === 'bilibili');
+    sortCombinedRows(netease);
+    sortCombinedRows(bili);
+    const merged = [];
+    const count = Math.max(netease.length, bili.length);
+    for (let i = 0; i < count; i += 1) {
+        if (netease[i]) merged.push(netease[i]);
+        if (bili[i]) merged.push(bili[i]);
+    }
+    return merged.slice(0, COMBINED_MAX_ROWS);
+}
+
+/** Sort the rows of one source. */
+function sortCombinedRows(rows) {
+    if (combined.sort === 'plays') {
+        rows.sort((a, b) => b.plays - a.plays);
+    } else if (combined.sort === 'duration') {
+        rows.sort((a, b) => b.durationMs - a.durationMs);
+    } else if (combined.sort === 'newest') {
+        // Only the Bilibili payload carries a publish time; the NetEase rows
+        // keep the order the source returned them in.
+        rows.sort((a, b) => (Number(b.track && b.track.publish_time) || 0)
+            - (Number(a.track && a.track.publish_time) || 0));
+    }
+}
+
+/** The "找到 N 条" line. */
+function updateCombinedMeta(rows) {
+    const meta = document.getElementById('aggr-meta');
+    if (!meta) return;
+    let neteaseCount = 0;
+    let biliCount = 0;
+    rows.forEach((row) => {
+        if (row.source === 'bilibili') biliCount += 1;
+        else neteaseCount += 1;
+    });
+    let text = t('search.result_count', { count: rows.length }) + ' · '
+        + t('search.result_split', { netease: neteaseCount, bili: biliCount });
+    if (combined.neteaseError || combined.biliError) {
+        // One source failed: the other one still counts, the broken one is named.
+        const okSource = combined.neteaseError ? t('search.source_bili') : t('search.source_netease');
+        const okCount = combined.neteaseError ? biliCount : neteaseCount;
+        const badSource = combined.neteaseError ? t('search.source_netease') : t('search.source_bili');
+        text = t('search.result_partial', { ok: okSource + ' ' + okCount, failed: badSource });
+    }
+    meta.textContent = text;
+}
+
+/** The empty, failed and offline blocks of the result page. */
+function updateCombinedState(rows) {
+    const box = document.getElementById('aggr-state');
+    const errorBox = document.getElementById('aggr-error');
+    if (!box) return;
+    box.innerHTML = '';
+    if (errorBox) {
+        errorBox.innerHTML = '';
+        errorBox.hidden = true;
+    }
+    const failed = combined.neteaseError || combined.biliError;
+    if (failed && errorBox) {
+        const bothFailed = combined.neteaseError && combined.biliError;
+        const source = bothFailed
+            ? t('search.source_all')
+            : (combined.neteaseError ? t('search.source_netease') : t('search.source_bili'));
+        const message = combined.neteaseError || combined.biliError;
+        const text = document.createElement('span');
+        text.textContent = t('search.error_source', { source: source, message: message });
+        errorBox.appendChild(text);
+        const retry = document.createElement('button');
+        retry.className = 'btn btn-link';
+        retry.type = 'button';
+        retry.textContent = t('common.retry');
+        retry.addEventListener('click', () => {
+            renderCombinedSearch(combined.keyword, combinedFilters());
+        });
+        errorBox.appendChild(retry);
+        errorBox.hidden = false;
+    }
+    if (combined.loading) return;
+    if (rows.length) return;
+    if (navigator.onLine === false) {
+        box.appendChild(buildStateBlock('close', t('search.offline_title'),
+            t('search.offline_hint')));
+        return;
+    }
+    if (combined.neteaseError && combined.biliError) {
+        box.appendChild(buildStateBlock('close', t('search.error_title'),
+            t('search.error_source', {
+                source: t('search.source_all'),
+                message: combined.neteaseError || combined.biliError
+            }), t('common.retry'), () => {
+                renderCombinedSearch(combined.keyword, combinedFilters());
+            }));
+        return;
+    }
+    box.appendChild(buildStateBlock('list', t('search.empty_title'),
+        t('search.empty_hint'),
+        combined.source !== 'all' || combined.category !== 'all'
+            || combined.duration !== 'all' ? t('search.clear_filters') : '',
+        () => { clearCombinedFilters(); }));
+}
+
+/** Draw the merged list. */
+function renderCombinedRows() {
+    const list = document.getElementById('search-results');
+    if (!list) return;
+    const rows = combinedVisibleRows();
+    list.innerHTML = '';
+    if (combined.loading && !rows.length) {
+        for (let i = 0; i < 5; i += 1) {
+            const skeleton = document.createElement('div');
+            skeleton.className = 'skeleton-row';
+            list.appendChild(skeleton);
+        }
+    } else {
+        rows.forEach((row) => list.appendChild(combinedRowElement(row)));
+        list.classList.toggle('is-stale', combined.loading);
+    }
+    updateCombinedMeta(rows);
+    updateCombinedState(rows);
+    const more = document.getElementById('btn-aggr-more');
+    const end = document.getElementById('aggr-end');
+    if (more) {
+        const exhausted = combined.neteaseDone && combined.biliDone;
+        more.hidden = exhausted || combined.loading;
+        more.textContent = combined.loading ? t('common.loading') : t('search.load_more');
+        more.disabled = combined.loading;
+    }
+    if (end) {
+        // The button gives way to a line of text: "no more" or "too many".
+        // It only appears when there is a list to look at.
+        const exhausted = combined.neteaseDone && combined.biliDone;
+        const capped = rows.length >= COMBINED_MAX_ROWS;
+        end.hidden = combined.loading || !rows.length || (!exhausted && !capped);
+        end.textContent = capped ? t('search.cap_hint') : t('search.no_more');
+    }
+}
+
+/** Ask one source for the next page. */
+async function loadCombinedNetease(requestId) {
+    if (combined.neteaseDone) return;
+    try {
+        if (!bridgeHas('search_multi')) {
+            combined.neteaseError = t('error.unknown');
+            combined.neteaseDone = true;
+            return;
+        }
+        const result = await state.api.search_multi(combined.keyword, 20, combined.neteaseOffset);
+        if (requestId !== combined.requestId) return;
+        if (!result || !result.success) {
+            combined.neteaseError = bridgeFailure(result, 'error.network');
+            combined.neteaseDone = true;
+            return;
+        }
+        const results = result.results || {};
+        const songs = results.songs || [];
+        const playlists = results.playlists || [];
+        songs.forEach((song) => combined.rows.push(neteaseSongRow(song)));
+        playlists.forEach((playlist) => combined.rows.push(neteasePlaylistRow(playlist)));
+        combined.neteaseOffset += songs.length;
+        if (!songs.length) combined.neteaseDone = true;
+    } catch (err) {
+        if (requestId !== combined.requestId) return;
+        combined.neteaseError = t('error.network');
+        combined.neteaseDone = true;
+    }
+}
+
+/** Ask the Bilibili source for the next page. */
+async function loadCombinedBili(requestId) {
+    if (combined.biliDone) return;
+    try {
+        if (!bridgeHas('search_bilibili_tracks')) {
+            combined.biliError = t('error.unknown');
+            combined.biliDone = true;
+            return;
+        }
+        const result = await state.api.search_bilibili_tracks(
+            combined.keyword, 'all', biliOrderFor(combined.sort), combined.biliPage, 20);
+        if (requestId !== combined.requestId) return;
+        if (!result || !result.success) {
+            combined.biliError = bridgeFailure(result, 'error.network');
+            combined.biliDone = true;
+            return;
+        }
+        const tracks = result.tracks || [];
+        tracks.forEach((track) => combined.rows.push(biliTrackRow(track)));
+        combined.biliPage += 1;
+        if (!tracks.length) combined.biliDone = true;
+    } catch (err) {
+        if (requestId !== combined.requestId) return;
+        combined.biliError = t('error.network');
+        combined.biliDone = true;
+    }
+}
+
+/** Fetch the next page of every source that has one. */
+async function loadCombinedPage() {
+    const requestId = combined.requestId + 1;
+    combined.requestId = requestId;
+    combined.loading = true;
+    renderCombinedRows();
+    const wanted = [];
+    if (combined.source !== 'bilibili') wanted.push(loadCombinedNetease(requestId));
+    if (combined.source !== 'netease') wanted.push(loadCombinedBili(requestId));
+    await Promise.all(wanted);
+    if (requestId !== combined.requestId) return;
+    combined.loading = false;
+    renderCombinedRows();
+}
+
+/**
+ * Search both sources for a keyword.
+ *
+ * The two sources are asked separately on purpose: one of them failing
+ * must not empty the page.
+ */
+async function renderCombinedSearch(keyword, filters) {
+    const text = (keyword || '').trim();
+    const options = filters || combinedFilters();
+    combined.source = options.source;
+    combined.category = options.category;
+    combined.sort = options.sort;
+    combined.duration = options.duration;
+    combined.keyword = text;
+    combined.rows = [];
+    combined.neteaseOffset = 0;
+    combined.biliPage = 1;
+    combined.neteaseDone = false;
+    combined.biliDone = false;
+    combined.neteaseError = '';
+    combined.biliError = '';
+    // A source that is filtered out is finished by definition: without this
+    // the "no more" line would never show when only one source is asked.
+    if (combined.source === 'bilibili') combined.neteaseDone = true;
+    if (combined.source === 'netease') combined.biliDone = true;
+    updateFilterSelects();
+    updateFilterChips();
+    if (!text) {
+        combined.loading = false;
+        renderCombinedRows();
+        return;
+    }
+    await loadCombinedPage();
+}
+
+/* ------------------------------------------------------------- bilibili */
+
+/** One chip of the partition row. */
+function biliChipElement(label, rid, active) {
+    const chip = document.createElement('button');
+    chip.className = active ? 'chip is-active' : 'chip';
+    chip.type = 'button';
+    chip.dataset.rid = rid;
+    chip.setAttribute('aria-pressed', active ? 'true' : 'false');
+    chip.textContent = label;
+    chip.addEventListener('click', () => renderBili(rid));
+    return chip;
+}
+
+/** The partition row: the hot list first, then the partitions. */
+function renderBiliChips() {
+    const row = document.getElementById('bili-chips');
+    if (!row) return;
+    row.innerHTML = '';
+    row.appendChild(biliChipElement(t('bili.chip_trending'), 0, biliSection.rid === 0));
+    biliSection.partitions.forEach((partition) => {
+        if (!partition || partition.rid === 0) return;
+        const key = BILI_CHIP_KEYS[partition.key];
+        const label = key ? t(key) : (partition.name || String(partition.rid));
+        row.appendChild(biliChipElement(label, partition.rid, biliSection.rid === partition.rid));
+    });
+}
+
+/** One video card. */
+function biliCardElement(track) {
+    const card = document.createElement('button');
+    card.className = 'video-card';
+    card.type = 'button';
+    card.setAttribute('aria-label', track.name || '');
+    const thumb = document.createElement('div');
+    thumb.className = 'vc-thumb';
+    if (track.cover_url) {
+        const image = document.createElement('img');
+        image.src = track.cover_url;
+        image.alt = '';
+        image.loading = 'lazy';
+        image.addEventListener('error', () => { image.remove(); });
+        thumb.appendChild(image);
+    }
+    const duration = document.createElement('span');
+    duration.className = 'vc-dur';
+    duration.textContent = track.duration ? fmtTime(track.duration) : '';
+    thumb.appendChild(duration);
+    card.appendChild(thumb);
+    const title = document.createElement('span');
+    title.className = 'vc-title';
+    title.textContent = track.name || '';
+    card.appendChild(title);
+    const sub = document.createElement('span');
+    sub.className = 'vc-sub';
+    const up = document.createElement('span');
+    up.className = 'vc-up';
+    up.textContent = t('bili.by', { name: track.artists || '' });
+    const plays = document.createElement('span');
+    plays.className = 'vc-plays';
+    plays.textContent = t('bili.plays', { count: formatPlayCount(track.play_count) });
+    sub.appendChild(up);
+    sub.appendChild(plays);
+    card.appendChild(sub);
+    card.addEventListener('click', () => {
+        const url = track.url || '';
+        if (url) state.api.open_external(url);
+    });
+    return card;
+}
+
+/** Draw the grid, its skeleton and its states. */
+function renderBiliResults() {
+    const grid = document.getElementById('bili-results');
+    const box = document.getElementById('bili-state');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (box) box.innerHTML = '';
+    if (biliSection.loading && !biliSection.items.length) {
+        for (let i = 0; i < 6; i += 1) {
+            const skeleton = document.createElement('div');
+            skeleton.className = 'skeleton-card';
+            const thumb = document.createElement('div');
+            thumb.className = 'skeleton sk-thumb';
+            skeleton.appendChild(thumb);
+            const line = document.createElement('div');
+            line.className = 'skeleton sk-line';
+            skeleton.appendChild(line);
+            const short = document.createElement('div');
+            short.className = 'skeleton sk-line short';
+            skeleton.appendChild(short);
+            grid.appendChild(skeleton);
+        }
+    } else {
+        biliSection.items.forEach((track) => grid.appendChild(biliCardElement(track)));
+    }
+    if (biliSection.loading) return;
+    if (biliSection.error && box) {
+        box.appendChild(buildStateBlock('close', t('bili.error_title'),
+            t('bili.error_hint', { message: biliSection.error }),
+            t('common.retry'), () => renderBili(biliSection.rid)));
+        return;
+    }
+    if (!biliSection.items.length && box) {
+        if (navigator.onLine === false) {
+            box.appendChild(buildStateBlock('close', t('bili.offline_title'),
+                t('bili.offline_hint')));
+            return;
+        }
+        box.appendChild(buildStateBlock('list', t('bili.empty_title'),
+            t('bili.empty_hint'), t('bili.refresh'), () => renderBili(biliSection.rid)));
+    }
+    const more = document.getElementById('btn-bili-more');
+    if (more) {
+        more.hidden = biliSection.exhausted || biliSection.loading;
+        more.textContent = biliSection.loading ? t('common.loading') : t('bili.load_more');
+        more.disabled = biliSection.loading;
+    }
+    const end = document.getElementById('bili-end');
+    if (end) {
+        // The button gives way to a line of text when the list is done.
+        end.hidden = biliSection.loading || !biliSection.items.length || !biliSection.exhausted;
+        end.textContent = t('bili.no_more');
+    }
+}
+
+/** Read the partitions once; they do not change while the app runs. */
+async function loadBiliPartitions() {
+    if (biliSection.partitions.length) return;
+    try {
+        if (!bridgeHas('get_bilibili_partitions')) {
+            biliSection.partitions = [];
+            renderBiliChips();
+            return;
+        }
+        const result = await state.api.get_bilibili_partitions();
+        if (result && result.success) {
+            biliSection.partitions = result.partitions || [];
+        }
+    } catch (err) {
+        biliSection.partitions = [];
+    }
+    renderBiliChips();
+}
+
+/**
+ * Show one partition of the Bilibili source.
+ *
+ * ``rid`` 0 is the site wide hot list; every other id is a partition.
+ */
+async function renderBili(rid) {
+    biliSection.rid = rid;
+    biliSection.page = 1;
+    biliSection.items = [];
+    biliSection.error = '';
+    biliSection.loading = true;
+    biliSection.exhausted = false;
+    updateOfflineBars();
+    renderBiliChips();
+    renderBiliResults();
+    loadBiliPartitions();
+    try {
+        if (!bridgeHas('get_bilibili_popular')) {
+            biliSection.error = t('error.unknown');
+            biliSection.loading = false;
+            renderBiliResults();
+            return;
+        }
+        const result = await state.api.get_bilibili_popular(rid, 1, 30);
+        if (biliSection.rid !== rid) return;
+        if (!result || !result.success) {
+            biliSection.error = bridgeFailure(result, 'error.network');
+            biliSection.loading = false;
+            renderBiliResults();
+            return;
+        }
+        const tracks = result.tracks || result.items || [];
+        biliSection.items = tracks;
+        biliSection.exhausted = tracks.length < 30;
+        biliSection.loading = false;
+        renderBiliResults();
+    } catch (err) {
+        if (biliSection.rid !== rid) return;
+        biliSection.error = t('error.network');
+        biliSection.loading = false;
+        renderBiliResults();
+    }
+}
+
+/** The next page of the open partition. */
+async function loadMoreBili() {
+    if (biliSection.loading || biliSection.exhausted) return;
+    biliSection.loading = true;
+    renderBiliResults();
+    try {
+        if (!bridgeHas('get_bilibili_popular')) {
+            biliSection.error = t('error.unknown');
+            biliSection.loading = false;
+            renderBiliResults();
+            return;
+        }
+        const result = await state.api.get_bilibili_popular(
+            biliSection.rid, biliSection.page + 1, 30);
+        if (!result || !result.success) {
+            biliSection.error = bridgeFailure(result, 'error.network');
+            biliSection.loading = false;
+            renderBiliResults();
+            return;
+        }
+        biliSection.page += 1;
+        const tracks = result.tracks || result.items || [];
+        tracks.forEach((track) => biliSection.items.push(track));
+        biliSection.exhausted = tracks.length < 30;
+        biliSection.loading = false;
+        renderBiliResults();
+    } catch (err) {
+        biliSection.error = t('error.network');
+        biliSection.loading = false;
+        renderBiliResults();
+    }
+}
+
+/* --------------------------------------------------------------- wiring */
+
+/** The events of the three new views. */
+function bindSectionEvents() {
+    const grid = document.getElementById('home-grid');
+    if (grid) {
+        grid.addEventListener('click', (event) => {
+            const card = event.target.closest('.home-card');
+            if (!card) return;
+            // detail 0 means the click came from the keyboard.
+            openHomeEntry(card.dataset.entry, event.detail === 0);
+        });
+        grid.addEventListener('keydown', (event) => {
+            const cards = Array.prototype.slice.call(grid.querySelectorAll('.home-card'));
+            const index = cards.indexOf(document.activeElement);
+            if (index < 0) return;
+            const columns = window.getComputedStyle(grid).gridTemplateColumns.split(' ').length;
+            let next = -1;
+            if (event.key === 'ArrowRight') next = index % columns === columns - 1 ? index : index + 1;
+            else if (event.key === 'ArrowLeft') next = index % columns === 0 ? index : index - 1;
+            else if (event.key === 'ArrowDown') next = index + columns;
+            else if (event.key === 'ArrowUp') next = index - columns;
+            else if (event.key === 'Home') next = 0;
+            else if (event.key === 'End') next = cards.length - 1;
+            else if (event.key === ' ') {
+                event.preventDefault();
+                event.stopPropagation();
+                cards[index].click();
+                return;
+            } else {
+                return;
+            }
+            if (next < 0 || next >= cards.length) {
+                event.preventDefault();
+                return;
+            }
+            event.preventDefault();
+            cards[next].focus();
+        });
+    }
+
+    const retry = document.getElementById('btn-home-retry');
+    if (retry) retry.addEventListener('click', () => showHome());
+
+    const searchBack = document.getElementById('btn-search-back');
+    if (searchBack) searchBack.addEventListener('click', () => backToHome());
+    const biliBack = document.getElementById('btn-bili-back');
+    if (biliBack) biliBack.addEventListener('click', () => backToHome());
+
+    const form = document.getElementById('aggr-form');
+    if (form) {
+        form.addEventListener('submit', (event) => {
+            event.preventDefault();
+            runCombinedSearch();
+        });
+    }
+    const input = document.getElementById('aggr-input');
+    if (input) {
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                runCombinedSearch();
+            }
+        });
+        input.addEventListener('input', () => updateSearchButton());
+    }
+
+    const sourceSeg = document.getElementById('aggr-source');
+    if (sourceSeg) {
+        sourceSeg.addEventListener('click', (event) => {
+            const tab = event.target.closest('.top-tab');
+            if (!tab) return;
+            setCombinedSource(tab.dataset.value);
+            // The source decides which source is asked, so it needs a new
+            // request; the other filters work on the rows already on screen.
+            applyCombinedFilters(true);
+        });
+    }
+
+    ['aggr-category', 'aggr-sort', 'aggr-duration'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', () => {
+            // The sort is a request parameter of the Bilibili search, the
+            // category and the length are applied to the loaded rows.
+            applyCombinedFilters(id === 'aggr-sort');
+        });
+    });
+
+    const more = document.getElementById('btn-aggr-more');
+    if (more) more.addEventListener('click', () => loadCombinedPage());
+
+    const refresh = document.getElementById('btn-bili-refresh');
+    if (refresh) refresh.addEventListener('click', () => renderBili(biliSection.rid));
+    const biliMore = document.getElementById('btn-bili-more');
+    if (biliMore) biliMore.addEventListener('click', () => loadMoreBili());
+}
+
+/** Run the search the user asked for. */
+function runCombinedSearch() {
+    const input = document.getElementById('aggr-input');
+    const keyword = input ? (input.value || '').trim() : '';
+    updateSearchButton();
+    if (!keyword) {
+        showToast('warning', t('player.search_empty'));
+        return;
+    }
+    renderCombinedSearch(keyword, combinedFilters());
+}
+
+/** The search button is disabled while there is nothing to search for. */
+function updateSearchButton() {
+    const input = document.getElementById('aggr-input');
+    const button = document.getElementById('btn-aggr-search');
+    if (!input || !button) return;
+    button.disabled = !(input.value || '').trim();
+    button.textContent = combined.loading ? t('search.loading') : t('search.btn');
 }

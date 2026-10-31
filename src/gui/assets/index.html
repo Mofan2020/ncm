@@ -41,7 +41,9 @@
         </div>
 
         <nav class="top-tabs" id="top-tabs" role="tablist">
-            <button class="top-tab is-active" type="button" data-view="download"
+            <button class="top-tab is-active" type="button" data-view="home"
+                    data-i18n="tabs.home"></button>
+            <button class="top-tab" type="button" data-view="download"
                     data-i18n="tabs.download"></button>
             <button class="top-tab" type="button" data-view="player"
                     data-i18n="tabs.player"></button>
@@ -59,8 +61,51 @@
     </header>
 
     <main class="app-main">
+        <!-- ======================== home view ======================== -->
+        <section class="view is-active" id="view-home">
+            <div class="home-wrap">
+                <div class="offline-bar" id="home-offline" hidden data-i18n="home.offline"></div>
+                <header class="home-head">
+                    <h1 class="home-title" id="home-title" tabindex="-1" data-i18n="home.title"></h1>
+                    <p class="home-sub muted" data-i18n="home.subtitle"></p>
+                </header>
+                <div class="home-grid" id="home-grid" aria-labelledby="home-title">
+                    <button class="home-card" type="button" data-entry="netease" id="home-entry-netease">
+                        <span class="home-card-icon" data-entry="netease" data-icon="music" aria-hidden="true"></span>
+                        <span class="home-card-title" data-i18n="home.entry_netease"></span>
+                        <span class="home-card-desc" data-i18n="home.entry_netease_desc"></span>
+                        <span class="home-card-count" id="home-count-netease"></span>
+                    </button>
+                    <button class="home-card" type="button" data-entry="bili" id="home-entry-bili">
+                        <span class="home-card-icon" data-entry="bili" data-icon="play" aria-hidden="true"></span>
+                        <span class="home-card-title" data-i18n="home.entry_bili"></span>
+                        <span class="home-card-desc" data-i18n="home.entry_bili_desc"></span>
+                        <span class="home-card-count" id="home-count-bili"></span>
+                    </button>
+                    <button class="home-card" type="button" data-entry="search" id="home-entry-search">
+                        <span class="home-card-icon" data-entry="search" data-icon="list" aria-hidden="true"></span>
+                        <span class="home-card-title" data-i18n="home.entry_search"></span>
+                        <span class="home-card-desc" data-i18n="home.entry_search_desc"></span>
+                        <span class="home-card-count" id="home-count-search" data-i18n="home.count_sources"></span>
+                    </button>
+                    <button class="home-card" type="button" data-entry="settings" id="home-entry-settings">
+                        <span class="home-card-icon" data-entry="settings" data-icon="settings" aria-hidden="true"></span>
+                        <span class="home-card-title" data-i18n="home.entry_settings"></span>
+                        <span class="home-card-desc" data-i18n="home.entry_settings_desc"></span>
+                    </button>
+                </div>
+                <div class="home-foot" id="home-foot" hidden>
+                    <span class="home-foot-text" data-i18n="home.partial_unavailable"></span>
+                    <button class="btn btn-link" id="btn-home-retry" type="button">
+                        <span class="home-foot-icon" data-icon="refresh" aria-hidden="true"></span>
+                        <span data-i18n="common.retry"></span>
+                    </button>
+                </div>
+            </div>
+        </section>
+
         <!-- ======================= download view ======================= -->
-        <section class="view is-active" id="view-download">
+        <section class="view" id="view-download">
             <div class="layout">
                 <div class="column-main">
                     <section class="card glass">
@@ -168,6 +213,97 @@
                         </div>
                     </section>
                 </aside>
+            </div>
+        </section>
+
+        <!-- ======================= search view ======================= -->
+        <section class="view" id="view-search">
+            <div class="search-page">
+                <div class="offline-bar" id="search-offline" hidden data-i18n="home.offline"></div>
+                <div class="page-head">
+                    <button class="btn btn-icon" id="btn-search-back" type="button"
+                            data-icon="back" data-i18n-title="home.back_home" aria-label="back"></button>
+                    <h1 class="page-title" id="search-title" tabindex="-1" data-i18n="search.title"></h1>
+                </div>
+
+                <form class="inline-form aggr-bar" id="aggr-form">
+                    <div class="search-wrapper">
+                        <input type="search" id="aggr-input" autocomplete="off" spellcheck="false"
+                               data-i18n-placeholder="search.placeholder">
+                    </div>
+                    <button class="btn btn-primary" id="btn-aggr-search" type="submit" data-i18n="search.btn"></button>
+                </form>
+
+                <div class="filter-bar">
+                    <span class="sr-only" id="aggr-source-label" data-i18n="search.filter_source"></span>
+                    <div class="top-tabs filter-seg" id="aggr-source" role="tablist"
+                         aria-labelledby="aggr-source-label">
+                        <button class="top-tab is-compact is-active" type="button" role="tab"
+                                aria-selected="true" data-value="all"
+                                data-i18n="search.source_all"></button>
+                        <button class="top-tab is-compact" type="button" role="tab"
+                                aria-selected="false" data-value="netease"
+                                data-i18n="search.source_netease"></button>
+                        <button class="top-tab is-compact" type="button" role="tab"
+                                aria-selected="false" data-value="bilibili"
+                                data-i18n="search.source_bili"></button>
+                    </div>
+                    <label class="sr-only" for="aggr-category" data-i18n="search.filter_category"></label>
+                    <select class="filter-select" id="aggr-category">
+                        <option value="all" data-i18n="search.category_all"></option>
+                        <option value="song" data-i18n="search.category_song"></option>
+                        <option value="playlist" data-i18n="search.category_playlist"></option>
+                        <option value="video" data-i18n="search.category_video"></option>
+                    </select>
+                    <label class="sr-only" for="aggr-sort" data-i18n="search.filter_sort"></label>
+                    <select class="filter-select" id="aggr-sort">
+                        <option value="relevance" data-i18n="search.sort_relevance"></option>
+                        <option value="plays" data-i18n="search.sort_plays"></option>
+                        <option value="newest" data-i18n="search.sort_newest"></option>
+                        <option value="duration" data-i18n="search.sort_duration"></option>
+                    </select>
+                    <label class="sr-only" for="aggr-duration" data-i18n="search.filter_duration"></label>
+                    <select class="filter-select" id="aggr-duration">
+                        <option value="all" data-i18n="search.duration_all"></option>
+                        <option value="short" data-i18n="search.duration_short"></option>
+                        <option value="mid" data-i18n="search.duration_mid"></option>
+                        <option value="long" data-i18n="search.duration_long"></option>
+                        <option value="xlong" data-i18n="search.duration_xlong"></option>
+                    </select>
+                </div>
+
+                <div class="filter-chips" id="aggr-chips" aria-hidden="true">
+                    <span class="filter-chips-label" data-i18n="search.active_filters"></span>
+                </div>
+                <div class="result-meta" id="aggr-meta"></div>
+                <div class="inline-error" id="aggr-error" hidden></div>
+                <div class="result-list" id="search-results"></div>
+                <div id="aggr-state"></div>
+                <button class="btn btn-sm btn-block" id="btn-aggr-more" type="button" hidden
+                        data-i18n="search.load_more"></button>
+                <div class="result-end" id="aggr-end" hidden></div>
+            </div>
+        </section>
+
+        <!-- ========================= bili view ========================= -->
+        <section class="view" id="view-bili">
+            <div class="bili-page">
+                <div class="offline-bar" id="bili-offline" hidden data-i18n="home.offline"></div>
+                <div class="page-head">
+                    <button class="btn btn-icon" id="btn-bili-back" type="button"
+                            data-icon="back" data-i18n-title="home.back_home" aria-label="back"></button>
+                    <h1 class="page-title" id="bili-title" tabindex="-1" data-i18n="bili.title"></h1>
+                    <div class="page-actions">
+                        <button class="btn btn-icon" id="btn-bili-refresh" type="button"
+                                data-icon="refresh" data-i18n-title="bili.refresh" aria-label="refresh"></button>
+                    </div>
+                </div>
+                <div class="chip-row" id="bili-chips"></div>
+                <div class="bili-grid" id="bili-results"></div>
+                <div id="bili-state"></div>
+                <button class="btn btn-sm btn-block" id="btn-bili-more" type="button" hidden
+                        data-i18n="bili.load_more"></button>
+                <div class="result-end" id="bili-end" hidden></div>
             </div>
         </section>
 
@@ -1123,8 +1259,6 @@
             <button id="btn-playlist-ie-confirm" class="btn btn-primary" type="button" data-i18n="common.ok"></button>
         </footer>
     </div>
-</div>
-
 </div>
 
 <!-- ============ lyrics editor modal ============ -->
