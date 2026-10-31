@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller build description.
 
-Windows -> ``dist/NeteaseMusicDownloader.exe`` (single file)
-macOS   -> ``dist/NeteaseMusicDownloader.app`` (bundled, for both arm64 and x64)
+Windows -> ``dist/SkycMedia.exe`` (single file)
+macOS   -> ``dist/SkycMedia.app`` (bundled, for both arm64 and x64)
 
 Build with::
 

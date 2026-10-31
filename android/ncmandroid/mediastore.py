@@ -106,6 +106,29 @@ class MediaStoreLibrary:
         return int(value or 0)
 
     # ------------------------------------------------------------ the library
+    def is_media_store(self) -> bool:
+        """Marks this library as the phone's one (see the bridge)."""
+        return True
+
+    def stats(self) -> dict[str, Any]:
+        """How much the library holds; the settings page shows it."""
+        with self._lock:
+            tracks = len(self._tracks)
+            error = self._error
+        return {
+            "tracks": tracks,
+            "directories": [],
+            "error": error,
+            "scanned": tracks,
+        }
+
+    def clear(self) -> None:
+        """Forget everything that was read; the next refresh starts over."""
+        with self._lock:
+            self._tracks = []
+            self._loaded = False
+            self._error = ""
+
     def refresh(self, directories: list[str] | None = None, *,
                 force: bool = False) -> int:
         """Read the library.  Returns how many tracks were found.

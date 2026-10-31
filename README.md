@@ -65,21 +65,21 @@
 
 | 机型 | 文件 |
 |------|------|
-| Apple 芯片（M 系列） | `NeteaseMusicDownloader-macOS-arm64.dmg` / `.zip` |
-| Intel 芯片 | `NeteaseMusicDownloader-macOS-x64.dmg` / `.zip` |
+| Apple 芯片（M 系列） | `SkycMedia-macOS-arm64.dmg` / `.zip` |
+| Intel 芯片 | `SkycMedia-macOS-x64.dmg` / `.zip` |
 
 构建产物**未做代码签名**（没有 Apple 开发者账号），首次打开请**右键 → 打开**，或执行：
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/NeteaseMusicDownloader.app
+xattr -dr com.apple.quarantine /Applications/SkycMedia.app
 ```
 
 **Windows**
 
 | 文件 | 说明 |
 |------|------|
-| `NeteaseMusicDownloader.exe` | 单文件免安装，直接运行 |
-| `NeteaseMusicDownloader-Windows-x64.zip` | 同上，压缩包形式 |
+| `SkycMedia.exe` | 单文件免安装，直接运行 |
+| `SkycMedia-Windows-x64.zip` | 同上，压缩包形式 |
 
 Windows 需要 **WebView2 运行时**（Windows 11 与较新的 Windows 10 已自带；老系统请到
 [微软官网](https://developer.microsoft.com/microsoft-edge/webview2/) 安装）。
@@ -88,7 +88,7 @@ Windows 需要 **WebView2 运行时**（Windows 11 与较新的 Windows 10 已�
 
 | 文件 | 说明 |
 |------|------|
-| `NeteaseMusicDownloader-Android-<版本>-arm64-v8a.apk` | 只出 arm64-v8a 一个架构，需要 Android 7.0 以上 |
+| `SkycMedia-Android-<版本>-arm64-v8a.apk` | 只出 arm64-v8a 一个架构，需要 Android 7.0 以上 |
 
 安卓版跟桌面版一起发，装的是正式签名的包。
 
@@ -134,19 +134,20 @@ python3 main.py
 7. 设置 → 通用里可以换背景图、调模糊与暗度、开关液态玻璃效果
 
 默认下载目录为 `~/Music/Downloads`（Windows 为 `%USERPROFILE%\Music\Downloads`），可在设置里修改。
-配置与日志位于 `~/Library/Application Support/NeteaseMusicDownloader/`（macOS）
-或 `%APPDATA%\NeteaseMusicDownloader\`（Windows）。
+配置与日志位于 `~/Library/Application Support/SkycMedia/`（macOS）
+或 `%APPDATA%\SkycMedia\`（Windows）。
+从旧版本升级上来的，配置仍在原来的 `NeteaseMusicDownloader` 目录里，登录状态和设置都不会丢。
 
 ## 自行打包
 
 ```bash
 pip3 install -r requirements-dev.txt
 pyinstaller --clean --noconfirm main.spec
-# macOS: dist/NeteaseMusicDownloader.app
-# Windows: dist/NeteaseMusicDownloader.exe
+# macOS: dist/SkycMedia.app
+# Windows: dist/SkycMedia.exe
 
 # 冒烟自检（不需要图形界面，检查打包后资源是否可用）
-dist/NeteaseMusicDownloader.app/Contents/MacOS/NeteaseMusicDownloader --self-test
+dist/SkycMedia.app/Contents/MacOS/SkycMedia --self-test
 ```
 
 图标由 `python3 scripts/make_icon.py` 生成（`assets/icon.{png,ico,icns}`）。
@@ -172,8 +173,8 @@ Windows x64、macOS arm64、macOS x64 三份产物并自动发布 Release。
 
 1. 确认手机弹窗里点了「确认登录」；二维码约 2 分钟不确认就会过期，点「刷新二维码」重扫一次。
 2. 应用会把每一次登录交互写进配置目录里的 `login-debug.log`
-   （macOS：`~/Library/Application Support/NeteaseMusicDownloader/login-debug.log`，
-   Windows：`%APPDATA%\NeteaseMusicDownloader\login-debug.log`）。
+   （macOS：`~/Library/Application Support/SkycMedia/login-debug.log`，
+   Windows：`%APPDATA%\SkycMedia\login-debug.log`）。
    里面有轮询到的**服务器状态码与原文**，卡住时把这个文件发出来就能定位。
 3. 「验证码发送过于频繁」是网易云自己的限制（同一号码每分钟一条），**不要连点**：
    发送按钮会进入倒计时锁定；被限制后请等几分钟，或直接用扫码登录。

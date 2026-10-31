@@ -102,7 +102,17 @@ async function api(name, ...args) {
     try {
         return await state.api[name](...args);
     } catch (err) {
-        return { success: false, message: String((err && err.message) || err) };
+        /* The bridge call itself failed -- it timed out, or the WebView
+           never handed the result back.  ``error_key`` is what the pages
+           look at to tell "there is nothing here" from "this could not be
+           read", so it has to be set even on the failure path.  Without
+           it the page renders an empty list and claims the playlist has
+           no songs, which is a lie. */
+        return {
+            success: false,
+            error_key: 'bridge.call_failed',
+            message: String((err && err.message) || err),
+        };
     }
 }
 
@@ -620,9 +630,52 @@ async function loadLibrary() {
         const result = await api('get_liked_tracks');
         renderTracks(host, (result && result.tracks) || [], '还没有收藏的歌');
     } else {
-        const result = await api('get_local_tracks', '', 200, 0);
-        renderTracks(host, (result && result.tracks) || [], '手机里没有找到歌曲');
+        await renderLocalMusic(host);
     }
+}
+
+/**
+ * The songs on the phone.
+ *
+ * The phone keeps its music in the system media library, so the app has
+ * to ask for the audio permission before it can see anything.  Without
+ * that permission the list is empty -- and the user is told why, with a
+ * button that asks for it.
+ */
+async function renderLocalMusic(host) {
+    const result = await api('get_local_tracks', '', 200, 0);
+    const tracks = (result && result.tracks) || [];
+
+    if (!tracks.length) {
+        const box = el('div', 'stack');
+        showEmpty(box, '手机里没有找到歌曲',
+            '先允许读取音频文件，再点下面的按钮重新找一次');
+        const ask = el('button', 'btn btn-primary', '允许读取音频文件');
+        ask.type = 'button';
+        ask.addEventListener('click', async () => {
+            const granted = await api('request_audio_permission');
+            if (!granted || granted.success === false) {
+                showToast('没有权限就读不到歌曲');
+            }
+            await api('scan_local_music', true);
+            showSpinner(host);
+            await renderLocalMusic(host);
+        });
+        box.appendChild(ask);
+
+        const again = el('button', 'btn btn-ghost', '重新找一次');
+        again.type = 'button';
+        again.addEventListener('click', async () => {
+            showSpinner(host);
+            await api('scan_local_music', true);
+            await renderLocalMusic(host);
+        });
+        box.appendChild(again);
+        clear(host).appendChild(box);
+        return;
+    }
+
+    renderTracks(host, tracks, '手机里没有找到歌曲');
 }
 
 /* -------------------------------------------------------------- downloads */
@@ -838,12 +891,22 @@ async function openDetail(kind, item) {
         /* The bridge puts the hot songs next to the artist, not inside
            it, so they are read from the top level. */
         const tracks = result.hot_songs || artist.hot_songs || [];
+        if (!tracks.length && result && result.error_key) {
+            clear(body);
+            showEmpty(body, '读不出来', errorText(result, '这个歌手暂时读不到'));
+            return;
+        }
         renderTracks(body, tracks, '这个歌手还没有热门歌曲');
         playAll.addEventListener('click', () => playTracks(tracks, 0));
     } else if (kind === 'album') {
         const result = await api('get_album_detail', String(item.id || ''));
         const album = (result && result.album) || {};
         const tracks = result.tracks || album.tracks || [];
+        if (!tracks.length && result && result.error_key) {
+            clear(body);
+            showEmpty(body, '读不出来', errorText(result, '这张专辑暂时读不到'));
+            return;
+        }
         renderTracks(body, tracks, '这张专辑还没有歌');
         playAll.addEventListener('click', () => playTracks(tracks, 0));
     }
@@ -898,6 +961,172 @@ async function openFollowedArtists() {
  * Everything here comes from the bridge: the values it reports and the
  * values it accepts.  Nothing is invented on the phone side.
  */
+
+/** The quality levels the API understands, in the order they are shown. */
+const QUALITY_LEVELS = [
+    ['standard', '标准'],
+    ['higher', '较高'],
+    ['exhigh', '极高'],
+    ['lossless', '无损'],
+    ['hires', 'Hi-Res'],
+];
+
+/** The theme modes, with the label the phone shows for each. */
+const THEME_MODES = [
+    ['system', '跟随系统'],
+    ['light', '浅色'],
+    ['dark', '深色'],
+];
+
+/**
+ * Show the theme the user picked.
+ *
+ * "Follow the system" is not a colour of its own: the stylesheet asks
+ * the system through ``prefers-color-scheme``, so the attribute is left
+ * off and the phone's own setting decides.  The other two set it, and
+ * the stylesheet's explicit rules win over the media query.
+ */
+function applyTheme(mode) {
+    const theme = mode === 'light' || mode === 'dark' ? mode : 'system';
+    if (theme === 'system') {
+        delete document.documentElement.dataset.theme;
+    } else {
+        document.documentElement.dataset.theme = theme;
+    }
+}
+
+/**
+ * Save the theme and show it.
+ *
+ * The bridge is told as well, so the choice survives a restart and the
+ * native window chrome (the status bar) matches the page.
+ */
+async function saveTheme(mode) {
+    applyTheme(mode);
+    if (!state.api || typeof state.api.set_theme !== 'function') return true;
+    const result = await state.api.set_theme(mode);
+    return !!(result && result.success !== false);
+}
+
+/**
+ * A row that opens a list of choices and writes the picked one back.
+ *
+ * A chip row rather than a dropdown: on a phone a dropdown is a small
+ * target and the system picker looks foreign, while the chips are the
+ * same control the rest of the interface already uses.
+ *
+ * @param {object} host    where the row is appended
+ * @param {string} label   what the row is about
+ * @param {string} group   the settings group the bridge wants
+ * @param {string} key     the field inside that group
+ * @param {Array}  options [[value, label], ...]
+ * @param {string} current the value the bridge reported
+ * @param {string} hint    the small line under the label
+ * @param {Function} save  optional custom writer; returns true when the
+ *                         value stuck
+ */
+function choiceRow(host, label, group, key, options, current, hint, save) {
+    const row = el('div', 'list-row');
+    const text = el('div', 'grow');
+    text.appendChild(el('div', '', label));
+    if (hint) text.appendChild(el('div', 'small text-3', hint));
+    row.appendChild(text);
+
+    const chips = el('div', 'chiprow');
+    chips.style.marginTop = '8px';
+    chips.appendChild(el('div', 'small text-3', '当前'));
+    for (const [value, text_label] of options) {
+        const chip = el('button', 'chip', text_label);
+        chip.type = 'button';
+        if (value === current) chip.classList.add('is-on');
+        chip.addEventListener('click', async () => {
+            if (value === current) return;
+            for (const other of chips.querySelectorAll('.chip')) {
+                other.classList.remove('is-on');
+            }
+            chip.classList.add('is-on');
+            let ok = true;
+            if (save) {
+                ok = await save(value);
+            } else {
+                const payload = {};
+                payload[key] = value;
+                const result = await api('update_settings', group, payload);
+                ok = !!(result && result.success !== false);
+            }
+            if (!ok) {
+                // Put the old value back: the change did not stick.
+                for (const other of chips.querySelectorAll('.chip')) {
+                    other.classList.remove('is-on');
+                }
+                for (const [v, l] of options) {
+                    if (v === current) {
+                        const back = Array.from(chips.querySelectorAll('.chip'))
+                            .find((c) => c.textContent === l);
+                        if (back) back.classList.add('is-on');
+                    }
+                }
+                showToast('保存不了');
+                return;
+            }
+            showToast('已保存');
+        });
+        chips.appendChild(chip);
+    }
+    row.appendChild(chips);
+    host.appendChild(row);
+}
+
+/**
+ * A row with a number field: the value is typed, not picked.
+ *
+ * @param {object} host    where the row is appended
+ * @param {string} label   what the row is about
+ * @param {string} group   the settings group the bridge wants
+ * @param {string} key     the field inside that group
+ * @param {number} current the value the bridge reported
+ * @param {string} unit    the unit shown after the number
+ * @param {string} hint    the small line under the label
+ * @param {Function} save  optional custom writer; returns true when the
+ *                         value stuck
+ */
+function numberRow(host, label, group, key, current, unit, hint, save) {
+    const row = el('div', 'list-row');
+    const text = el('div', 'grow');
+    text.appendChild(el('div', '', label));
+    if (hint) text.appendChild(el('div', 'small text-3', hint));
+    row.appendChild(text);
+
+    const input = el('input', 'text-input');
+    input.type = 'number';
+    input.min = '0';
+    input.step = '1';
+    input.value = String(Number(current) || 0);
+    input.style.width = '96px';
+    input.addEventListener('change', async () => {
+        const value = Math.max(0, Number(input.value) || 0);
+        input.value = String(value);
+        let ok = true;
+        if (save) {
+            ok = await save(value);
+        } else {
+            const payload = {};
+            payload[key] = value;
+            const result = await api('update_settings', group, payload);
+            ok = !!(result && result.success !== false);
+        }
+        if (!ok) {
+            input.value = String(Number(current) || 0);
+            showToast('保存不了');
+            return;
+        }
+        showToast('已保存');
+    });
+    row.appendChild(input);
+    if (unit) row.appendChild(el('span', 'value', unit));
+    host.appendChild(row);
+}
+
 async function openSettings() {
     const body = el('div', 'stack');
     openSheet('设置', body);
@@ -912,6 +1141,11 @@ async function openSettings() {
         showEmpty(body, '读不到设置', errorText(settings, '请稍后再试'));
         return;
     }
+
+    const playback = settings.playback || {};
+    const download = settings.download || {};
+    const ui = settings.ui || {};
+    const auth = settings.auth || {};
 
     const list = el('div', 'list');
 
@@ -952,26 +1186,258 @@ async function openSettings() {
     switchRow('记住登录', 'auth', 'remember_login', '下次打开不用重新登录');
     switchRow('显示歌词翻译', 'playback', 'show_translation', '有翻译时一起显示');
     switchRow('优先在线播放', 'playback', 'prefer_online', '没有下载的歌走在线');
+    switchRow('播放次数同步到网易云', 'playback', 'report_play_count',
+        '每首歌听完会上报一次');
+    switchRow('下载歌词', 'download', 'download_lyrics', '下载时把歌词一起存下来');
+    switchRow('下载时覆盖已有文件', 'download', 'overwrite', '同名文件直接盖掉');
     body.appendChild(list);
 
     body.appendChild(el('div', 'section-title', '播放'));
-    const playback = el('div', 'list');
-    const modeRow = el('div', 'list-row');
-    modeRow.appendChild(el('span', 'grow', '播放模式'));
-    const modes = { sequence: '顺序', loop: '循环', shuffle: '随机' };
-    modeRow.appendChild(el('span', 'value',
-        modes[(settings && settings.playback && settings.playback.play_mode)]
-        || '顺序'));
-    playback.appendChild(modeRow);
-    const qualityRow = el('div', 'list-row');
-    qualityRow.appendChild(el('span', 'grow', '在线音质'));
-    qualityRow.appendChild(el('span', 'value',
-        (settings && settings.playback && settings.playback.online_quality) || ''));
-    playback.appendChild(qualityRow);
-    body.appendChild(playback);
+    const playbackBox = el('div', 'list');
+    choiceRow(playbackBox, '在线播放音质', 'playback', 'online_quality',
+        QUALITY_LEVELS, playback.online_quality || 'standard',
+        '网络不够时自动降档');
+    choiceRow(playbackBox, '下载音质', 'download', 'quality',
+        QUALITY_LEVELS, download.quality || 'standard',
+        '下载下来的文件用这一档');
+    choiceRow(playbackBox, '播放模式', 'playback', 'play_mode',
+        [['sequence', '顺序'], ['loop', '循环'], ['shuffle', '随机']],
+        playback.play_mode || 'sequence');
+    numberRow(playbackBox, '淡入淡出时长', 'playback', 'crossfade_duration',
+        Number(playback.crossfade_duration) || 0, '秒', '两首歌之间交叉淡化的秒数',
+        async (value) => {
+            // The crossfade is not only a stored number: the media server
+            // has to know it too, so this goes through the bridge method
+            // that does both.
+            const result = await api('set_crossfade_duration', value);
+            if (!result || result.success === false) {
+                showToast('保存不了');
+                return false;
+            }
+            return true;
+        });
+    body.appendChild(playbackBox);
+
+    body.appendChild(el('div', 'section-title', '外观'));
+    const uiBox = el('div', 'list');
+    choiceRow(uiBox, '主题', 'ui', 'theme', THEME_MODES, ui.theme || 'system',
+        '跟随系统会跟着手机的深浅色走', async (value) => {
+            const ok = await saveTheme(value);
+            if (!ok) showToast('保存不了');
+            return ok;
+        });
+    body.appendChild(uiBox);
+
+    await renderBackgroundSetting(uiBox, ui);
+
+    body.appendChild(el('div', 'section-title', '账号'));
+    const accountBox = el('div', 'list');
+    await renderAccountSettings(accountBox);
+    body.appendChild(accountBox);
 
     body.appendChild(el('div', 'section-title', '缓存'));
     body.appendChild(renderCacheStats(cache));
+}
+
+/**
+ * The wallpaper row: the current one, a button to pick a new one and a
+ * button to take the current one away.
+ *
+ * The phone has no native file dialog that the bridge can open, so the
+ * picture is picked with a plain ``<input type="file">``: the WebView
+ * hands the picked file to the page, and the page hands it to the bridge
+ * as a data url.
+ */
+async function renderBackgroundSetting(host, ui) {
+    const row = el('div', 'list-row');
+    const text = el('div', 'grow');
+    text.appendChild(el('div', '', '背景图'));
+    text.appendChild(el('div', 'small text-3',
+        ui.background_image ? '已设置一张背景图' : '没有背景图'));
+    row.appendChild(text);
+
+    const picker = el('input');
+    picker.type = 'file';
+    picker.accept = 'image/*';
+    picker.style.display = 'none';
+    picker.addEventListener('change', async () => {
+        const file = picker.files && picker.files[0];
+        if (!file) return;
+        const dataUrl = await readFileAsDataUrl(file);
+        const result = await api('set_background_image_data', dataUrl);
+        if (!result || result.success === false) {
+            showToast(errorText(result, '背景图换不了'));
+            return;
+        }
+        showToast('背景图已换');
+        openSettings();
+    });
+    host.appendChild(picker);
+
+    const pick = el('button', 'btn btn-ghost', '换一张');
+    pick.type = 'button';
+    pick.addEventListener('click', () => picker.click());
+    row.appendChild(pick);
+
+    if (ui.background_image) {
+        const clear = el('button', 'btn btn-ghost', '去掉');
+        clear.type = 'button';
+        clear.addEventListener('click', async () => {
+            const result = await api('clear_background_image');
+            if (!result || result.success === false) {
+                showToast(errorText(result, '去不掉'));
+                return;
+            }
+            showToast('背景图已去掉');
+            openSettings();
+        });
+        row.appendChild(clear);
+    }
+    host.appendChild(row);
+}
+
+/** A picked image as a data url, so it can be handed to the bridge. */
+function readFileAsDataUrl(file) {
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+    });
+}
+
+/**
+ * The account rows: paste a cookie to sign in, and import a saved
+ * account file.
+ */
+async function renderAccountSettings(host) {
+    const cookieRow = el('div', 'list-row');
+    cookieRow.appendChild(el('span', 'grow', '用 cookie 登录'));
+    const cookieInput = el('input', 'text-input');
+    cookieInput.type = 'text';
+    cookieInput.placeholder = 'MUSIC_U=...';
+    cookieInput.style.flex = '1 1 160px';
+    cookieRow.appendChild(cookieInput);
+    const cookieButton = el('button', 'btn btn-primary', '登录');
+    cookieButton.type = 'button';
+    cookieButton.addEventListener('click', async () => {
+        const value = cookieInput.value.trim();
+        if (!value) {
+            showToast('先把 cookie 贴进来');
+            return;
+        }
+        cookieButton.disabled = true;
+        const result = await api('login_cookie', value);
+        cookieButton.disabled = false;
+        if (!result || result.success === false) {
+            showToast(errorText(result, '登录失败'));
+            return;
+        }
+        showToast('登录成功');
+        cookieInput.value = '';
+    });
+    cookieRow.appendChild(cookieButton);
+    host.appendChild(cookieRow);
+
+    const importRow = el('div', 'list-row');
+    importRow.appendChild(el('span', 'grow', '导入账号数据'));
+    const picker = el('input');
+    picker.type = 'file';
+    picker.accept = '.ncmbk,.json,application/json';
+    picker.style.display = 'none';
+    picker.addEventListener('change', async () => {
+        const file = picker.files && picker.files[0];
+        if (!file) return;
+        const dataUrl = await readFileAsDataUrl(file);
+        const plan = await api('import_account_data', dataUrl);
+        if (!plan || plan.success === false) {
+            showToast(errorText(plan, '导入失败'));
+            return;
+        }
+        await resolveBackupConflicts(plan);
+    });
+    host.appendChild(picker);
+    const importButton = el('button', 'btn btn-ghost', '选文件');
+    importButton.type = 'button';
+    importButton.addEventListener('click', () => picker.click());
+    importRow.appendChild(importButton);
+    host.appendChild(importRow);
+}
+
+/**
+ * The playlists that already exist on both sides, and what to do with
+ * them.
+ *
+ * Nothing is written until the user decides: the bridge holds the plan
+ * until ``apply_account_backup`` is called with the decisions.
+ */
+async function resolveBackupConflicts(plan) {
+    const conflicts = (plan && plan.conflicts) || [];
+    if (!conflicts.length) {
+        const result = await api('apply_account_backup', {});
+        if (!result || result.success === false) {
+            showToast(errorText(result, '导入失败'));
+            return;
+        }
+        showToast('账号数据已导入');
+        return;
+    }
+
+    const body = el('div', 'stack');
+    openSheet('导入账号数据', body);
+    const summary = (plan && plan.summary) || {};
+    body.appendChild(el('div', 'small text-3',
+        `要新建 ${summary.playlists_to_create || 0} 个歌单，`
+        + `有 ${conflicts.length} 个歌单两边都有，需要你选一下`));
+
+    const decisions = { playlists: {} };
+    const list = el('div', 'list');
+    for (const item of conflicts) {
+        const row = el('div', 'list-row');
+        const text = el('div', 'grow');
+        text.appendChild(el('div', '', item.name || item.id || ''));
+        row.appendChild(text);
+
+        const chips = el('div', 'chiprow');
+        for (const [action, label] of [['skip', '跳过'], ['merge', '合并']]) {
+            const chip = el('button', 'chip', label);
+            chip.type = 'button';
+            chip.addEventListener('click', () => {
+                for (const other of chips.querySelectorAll('.chip')) {
+                    other.classList.remove('is-on');
+                }
+                chip.classList.add('is-on');
+                decisions.playlists[String(item.id)] = { action };
+            });
+            chips.appendChild(chip);
+        }
+        row.appendChild(chips);
+        list.appendChild(row);
+    }
+    body.appendChild(list);
+
+    const actions = el('div', 'chiprow');
+    const go = el('button', 'btn btn-primary', '导入');
+    go.type = 'button';
+    go.addEventListener('click', async () => {
+        go.disabled = true;
+        const result = await api('apply_account_backup', decisions);
+        go.disabled = false;
+        closeSheet();
+        if (!result || result.success === false) {
+            showToast(errorText(result, '导入失败'));
+            return;
+        }
+        showToast('账号数据已导入');
+    });
+    const cancel = el('button', 'btn btn-ghost', '取消');
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => {
+        closeSheet();
+    });
+    actions.appendChild(go);
+    actions.appendChild(cancel);
+    body.appendChild(actions);
 }
 
 /** The cache size and a button to clear it. */
@@ -1190,14 +1656,79 @@ async function openLogin() {
 }
 
 /* --------------------------------------------------------------- downloads */
+/**
+ * Download the given tracks.
+ *
+ * The options (lyrics, overwriting) are asked for first: they are the two
+ * choices that change what lands on the disk, and the user should not
+ * have to dig them out of the settings to get a download they expected.
+ */
 async function downloadTracks(tracks) {
     if (!tracks || !tracks.length) { showToast('没有要下载的歌'); return; }
-    const result = await api('download_tracks', tracks);
+    const options = await askDownloadOptions();
+    if (!options) return;
+    const result = await api('download_tracks', tracks, options);
     if (result && result.success) {
         showToast(`开始下载 ${tracks.length} 首`);
     } else {
         showToast(errorText(result, '下载没能开始'));
     }
+}
+
+/**
+ * The download options, asked for in a sheet.
+ *
+ * Returns the options, or ``null`` when the user backed out.
+ */
+function askDownloadOptions() {
+    return new Promise((resolve) => {
+        const body = el('div', 'stack');
+        openSheet('下载选项', body);
+
+        const settings = { download_lyrics: true, overwrite: false };
+        const list = el('div', 'list');
+
+        const toggleRow = (label, key, hint) => {
+            const row = el('div', 'list-row');
+            const text = el('div', 'grow');
+            text.appendChild(el('div', '', label));
+            if (hint) text.appendChild(el('div', 'small text-3', hint));
+            row.appendChild(text);
+            const toggle = el('button', 'switch');
+            toggle.type = 'button';
+            toggle.classList.toggle('is-on', settings[key]);
+            toggle.setAttribute('aria-checked', settings[key] ? 'true' : 'false');
+            toggle.setAttribute('aria-label', label);
+            toggle.addEventListener('click', () => {
+                settings[key] = !settings[key];
+                toggle.classList.toggle('is-on', settings[key]);
+                toggle.setAttribute('aria-checked', settings[key] ? 'true' : 'false');
+            });
+            row.appendChild(toggle);
+            list.appendChild(row);
+        };
+
+        toggleRow('下载歌词', 'download_lyrics', '把歌词一起存下来');
+        toggleRow('覆盖已有文件', 'overwrite', '同名文件直接盖掉，不盖就跳过');
+        body.appendChild(list);
+
+        const actions = el('div', 'chiprow');
+        const go = el('button', 'btn btn-primary', '开始下载');
+        go.type = 'button';
+        go.addEventListener('click', () => {
+            closeSheet();
+            resolve(settings);
+        });
+        const cancel = el('button', 'btn btn-ghost', '取消');
+        cancel.type = 'button';
+        cancel.addEventListener('click', () => {
+            closeSheet();
+            resolve(null);
+        });
+        actions.appendChild(go);
+        actions.appendChild(cancel);
+        body.appendChild(actions);
+    });
 }
 
 /* ------------------------------------------------------------ track menu */
@@ -1451,10 +1982,7 @@ async function boot() {
     }
 
     const settings = await api('get_settings');
-    if (settings && settings.ui && settings.ui.theme) {
-        document.documentElement.dataset.theme =
-            settings.ui.theme === 'light' ? 'light' : 'dark';
-    }
+    applyTheme(settings && settings.ui ? settings.ui.theme : 'system');
     const status = await api('get_login_status');
     state.login = status || {};
 

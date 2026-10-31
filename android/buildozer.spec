@@ -1,10 +1,17 @@
 [app]
 
 # The Android bundle id follows the project rule: com.skyc8266.<project>.
+#
+# The package name stays what it was when the project was called
+# NeteaseMusicDownloader: changing it would make this a different app,
+# and the people who already have it installed would have to install it
+# again -- losing their login, their settings and their download history
+# for the sake of a name.  The name on the launcher is SkycMedia; only
+# the id under which Android stores the app is left alone.
 package.domain = com.skyc8266
 package.name = neteasemusic
 
-title = NetEase Music
+title = SkycMedia
 source.dir = .
 source.include_exts = py,png,jpg,json,ttf,html,css,js
 source.include_patterns = ncmandroid/*.py,src/*.py,src/**/*.py,web/*.html,web/*.js,web/*.css,webview/*.py,webview/**/*.py,proxy_tools.py,bottle.py,typing_extensions.py,yaml/*.py

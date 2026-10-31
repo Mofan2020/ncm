@@ -1,7 +1,7 @@
 import json
 import logging
 from http.cookies import SimpleCookie
-from threading import Semaphore
+from threading import Semaphore, Timer
 from urllib.parse import urlparse
 
 from android.activity import _activity as activity  # noqa
@@ -39,6 +39,14 @@ logger = logging.getLogger('pywebview')
 
 renderer = 'android-webkit'
 app = None
+
+#: How long ``evaluate_js`` waits for the WebView to hand back the result
+#: of a script.  The wait is bounded on purpose: the WebView delivers it
+#: through its own message loop, and that loop can be busy or gone (the
+#: Activity was destroyed while the call was in flight).  Waiting for it
+#: forever parks the calling thread and every later bridge call queues up
+#: behind it, which the user sees as a spinner that never resolves.
+EVALUATE_JS_TIMEOUT = 20.0
 
 
 class BrowserView:
@@ -334,31 +342,184 @@ class AndroidApp(App):
         self.view = BrowserView(self.window)
         return self.view
 
-    def on_pause(self, _):
-        self.view.webview.pauseTimers()
-        self.view.webview.onPause()
+    def on_pause(self, activity=None):
+        # The WebView is deliberately left alone.
+        #
+        # ``pauseTimers()`` freezes every JavaScript timer in the WebView,
+        # and the bridge's results travel through the WebView's message
+        # loop: a call that is in flight when the app goes to the
+        # background then waits for a loop that will never run again,
+        # and every later call queues up behind it -- the UI comes back
+        # to a spinner that never resolves.
+        #
+        # ``onPause()`` is left out as well.  It stops the WebView from
+        # rendering, and the Activity that hosts it does not always come
+        # back from the background (see ``on_start``): when it does not,
+        # a paused WebView never draws its first frame again.
+        logger.info('pausing initiated')
 
-        logger.debug('pausing initiated')
+    def on_resume(self, activity=None):
+        # The WebView is resumed here -- see ``on_pause`` for why the
+        # pair is needed.
+        #
+        # Note that this event is NOT the reliable one: ``p4a`` calls
+        # ``Activity.onResume()`` by hand from ``onNewIntent()``, and
+        # that bypasses the ``performResumeActivity`` step where Android
+        # dispatches ``onActivityResumed``.  The Activity is then never
+        # resumed by the system, so this callback does not arrive at all
+        # on the way back from the background.  ``on_start`` is the hook
+        # that does arrive, so the work is done there too.
+        self._resume_webview()
 
-    def on_resume(self, _):
-        self.view.webview.onResume()
-        self.view.webview.resumeTimers()
+    def _resume_webview(self):
+        """Bring the WebView's rendering back after the app was stopped.
 
-    def on_create(self, activity, saved_instance_state):
+        Android tears the WebView's surface down when the Activity is
+        stopped, and only ``WebView.onResume()`` puts it back.  Without
+        it the app comes back with a window that never draws its first
+        frame: the splash screen stays on top and the user sees a blank
+        page.
+
+        The call is repeated after a short delay because the first one
+        can land while the system is still bringing the window back.
+        """
+        view = getattr(self, "view", None)
+        webview = getattr(view, "webview", None) if view is not None else None
+        if webview is None:
+            logger.info('resuming: no webview yet')
+            return
+
+        self._dump_threads('resuming')
+
+        def _restore():
+            # Every WebView method has to run on the UI thread -- Android
+            # throws otherwise ("A WebView method was called on thread
+            # ...").  The lifecycle callbacks arrive on the UI thread
+            # already, but the delayed retries below do not.
+            @run_on_ui_thread
+            def _on_ui_thread():
+                try:
+                    webview.onResume()
+                    webview.requestLayout()
+                    logger.info('resuming: webview resumed')
+                except Exception as exc:
+                    logger.warning('cannot resume the webview: %s', exc)
+
+            _on_ui_thread()
+
+        _restore()
+        Timer(0.5, _restore).start()
+        Timer(1.5, _restore).start()
+
+    @staticmethod
+    def _dump_threads(when):
+        """Write the Python thread stacks to the log.
+
+        A thread that is parked forever is the reason a page stops
+        updating, and the log is the only place that shows it.
+        """
+        import sys
+        import threading
+        import traceback
+
+        frames = sys._current_frames()
+        for thread in threading.enumerate():
+            frame = frames.get(thread.ident)
+            if frame is None:
+                continue
+            stack = traceback.format_stack(frame)
+            logger.info('thread %s (%s) at %s: %s',
+                        thread.name, thread.ident, when, ''.join(stack[-4:]).strip())
+
+    def on_create(self, activity=None, saved_instance_state=None):
         """Event handler for the `on_create` event which is fired after
         initialization (after build() has been called) but before the
         application has started running.
         """
+        self._confirm_app_active(activity)
 
-    def on_destroy(self, _):
-        self.view.dismiss()
+    def _confirm_app_active(self, activity):
+        """Tell ``p4a`` that the app is running, so the loading screen goes.
 
-    def on_start(self, activity):
+        ``p4a`` removes the loading screen only once ``appConfirmedActive()``
+        has been called, and it calls that from the native side when the
+        Python main loop starts.  The flag lives on the Activity
+        instance, so an Activity that was destroyed and recreated -- which
+        is what happens when the app goes to the background and comes back
+        -- starts with the flag unset and nothing ever calls it again.
+        The result is a window that never draws its first frame, with the
+        loading screen still on top of it: the app looks blank.
+
+        Calling it here restores the flag for a recreated Activity.
+        """
+        confirm = getattr(activity, 'appConfirmedActive', None)
+        if confirm is None:
+            return
+        try:
+            confirm()
+            logger.info('app confirmed active (loading screen can go)')
+        except Exception as exc:
+            logger.warning('cannot confirm the app as active: %s', exc)
+
+    def on_pre_destroy(self, activity=None):
+        """The Activity is about to be destroyed -- let the app go with it.
+
+        ``p4a``'s ``SDLActivity.onDestroy()`` waits for the Python thread
+        to finish (``Thread.join()``) before it calls ``super.onDestroy()``.
+        That thread is the one running the app, and it only ends when the
+        event loop is closed -- so without this the main thread stays
+        blocked in that join for good.  The Activity's teardown never
+        completes, the system still counts it as alive, and bringing the
+        app back finds a task with no Activity in it: the splash screen
+        goes up, no frame is ever drawn, and the user looks at a blank
+        window.
+
+        This callback arrives just before ``onDestroy()`` (Android 10
+        and up), which is early enough to close the loop in time and
+        late enough that the Activity is really going away.
+        """
+        if getattr(self, '_pre_destroyed', False):
+            return
+        self._pre_destroyed = True
+        logger.info('activity is going away, closing the event loop')
+        try:
+            app.stop()
+        except Exception as exc:
+            logger.warning('cannot stop the app: %s', exc)
+
+    def on_destroy(self, activity=None):
+        # The Activity is going away.  ``p4a``'s ``SDLActivity.onDestroy()``
+        # waits for the Python thread to finish (``Thread.join()``), and
+        # that thread only ends when the event loop is closed -- so the
+        # loop is closed here.  Without it the main thread stays blocked
+        # in that join for good, and the Activity never finishes being
+        # destroyed.
+        #
+        # This runs more than once on some paths, so it has to be safe to
+        # call again: ``dismiss()`` clears the webview, and a second call
+        # must not trip over that.
+        if getattr(self, '_destroyed', False):
+            return
+        self._destroyed = True
+        try:
+            self.view.dismiss()
+        except Exception as exc:
+            logger.warning('cannot dismiss the view: %s', exc)
+
+    def on_start(self, activity=None):
         """Event handler for the `on_start` event which is fired when the
         application is becoming visible to the user.
         """
+        # This is the hook that always arrives when the app comes back
+        # from the background: the Activity is restarted, and the restart
+        # goes through ``performStartActivity`` -- which is a different
+        # code path from the resume that ``p4a`` short-circuits.  The
+        # WebView is put back here so the window can draw its first frame
+        # again.
+        self._resume_webview()
+        self._confirm_app_active(activity)
 
-    def on_stop(self, activity):
+    def on_stop(self, activity=None):
         """Event handler for the `on_stop` event which is fired when the
         application is no longer visible to the user.
         """
@@ -423,7 +584,16 @@ def evaluate_js(js_code, _, parse_json=True):
     value_callback = None
 
     _evaluate_js()
-    lock.acquire()
+    # A bounded wait.  The WebView delivers the result through its own
+    # message loop; if that loop is busy, stopped, or the Activity went
+    # away while the call was in flight, the callback never arrives.
+    # Waiting for it forever would park this thread for good and every
+    # later bridge call would pile up behind it -- the UI would come back
+    # to a spinner that never resolves.
+    if not lock.acquire(timeout=EVALUATE_JS_TIMEOUT):
+        logger.error('evaluate_js timed out waiting for the WebView result')
+        value_callback = None
+        return None
     return js_result
 
 

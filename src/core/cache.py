@@ -66,6 +66,99 @@ NEXT_COVER_BYTES = 8 * 1024 * 1024  # 8 MB
 log = logging.getLogger("ncm.cache")
 
 
+class _AudioWriter:
+    """Streaming writer for one cached audio file.
+
+    The bytes land in a ``.part`` file next to the target and are moved
+    into place by :meth:`close` once the stream completed.  An aborted
+    stream leaves the ``.part`` file behind and removes it, so a half
+    song is never served as if it were the whole one.
+
+    Used as a context manager is not required -- :meth:`close` is
+    idempotent and the caller may simply forget it (the ``__del__``
+    fallback then discards the partial file).
+    """
+
+    def __init__(self, cache: MediaCache, target: Path) -> None:
+        self._cache = cache
+        self._target = target
+        self._part = target.with_suffix(target.suffix + ".part")
+        self._handle = None
+        self._written = 0
+        self._closed = False
+        try:
+            self._handle = open(self._part, "wb")
+        except OSError as exc:
+            log.debug("audio cache open failed for %s: %s", target, exc)
+            self._handle = None
+
+    @property
+    def usable(self) -> bool:
+        """Whether the writer actually has a file to write to."""
+        return self._handle is not None
+
+    @property
+    def written(self) -> int:
+        """Bytes handed to the writer so far."""
+        return self._written
+
+    def write(self, chunk: bytes) -> None:
+        """Append one chunk; a failure disables the cache, not the stream."""
+        if self._handle is None or not chunk:
+            return
+        try:
+            self._handle.write(chunk)
+            self._written += len(chunk)
+        except OSError as exc:
+            log.debug("audio cache write failed for %s: %s", self._target, exc)
+            self._close_handle()
+
+    def close(self, complete: bool = True) -> None:
+        """Finish the file.
+
+        ``complete=False`` means the stream was cut short: the partial file
+        is thrown away instead of being served later as a broken song.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self._handle is None:
+            return
+        self._close_handle()
+        if not complete or self._written < 1024:
+            self._discard()
+            return
+        try:
+            self._part.replace(self._target)
+        except OSError as exc:
+            log.debug("audio cache rename failed for %s: %s", self._target, exc)
+            self._discard()
+            return
+        with self._cache._lock:
+            self._cache._evict_audio(self._target)
+
+    def _close_handle(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle is None:
+            return
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+    def _discard(self) -> None:
+        try:
+            self._part.unlink()
+        except OSError:
+            pass
+
+    def __del__(self) -> None:  # pragma: no cover - best effort cleanup
+        try:
+            self.close(complete=False)
+        except Exception:
+            pass
+
+
 class MediaCache:
     """Persistent cache of streamed media, with a soft byte budget per kind."""
 
@@ -167,6 +260,28 @@ class MediaCache:
         with self._lock:
             self._evict_audio(target)
         return target
+
+    def audio_writer(self, song_id: str, quality: str,
+                     ext: str = "mp3") -> _AudioWriter | None:
+        """Open a streaming writer for the audio file of ``song_id``.
+
+        The bytes are written to a ``.part`` file and moved into place when
+        the stream completes, exactly like :meth:`write_audio`, but the
+        caller never has to hold the song in memory: the writer is fed one
+        chunk at a time.  That is what keeps the phone player alive -- a
+        whole FLAC in RAM is enough for the system to kill the app.
+
+        Returns ``None`` when the cache cannot be written to; the caller
+        then just streams the bytes to the client without caching them.
+        """
+        target = self.audio_path(song_id, quality, ext)
+        try:
+            self._ensure_root()
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.debug("audio cache open failed for %s: %s", song_id, exc)
+            return None
+        return _AudioWriter(self, target)
 
     def forget_audio(self, song_id: str | None = None) -> int:
         """Drop one song's audio or the whole audio cache.  Returns entries removed."""

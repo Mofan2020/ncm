@@ -57,7 +57,7 @@
 | 顺序下载 1 并发 | 4 首 / 12.8 MB / 2.06 s（≈6.2 MiB/s 合计） |
 | 并列 3 并发 | 4 首 / 12.8 MB / 2.49 s → **0.83×（没有提速）** |
 | 跳过已存在 | 第二次运行 4 首全部 `skipped`，未重复下载 |
-| 打包产物 | `NeteaseMusicDownloader.app` 50 MB / arm64 / bundle id `com.skyc8266.neteasemusicdownloader` |
+| 打包产物 | `SkycMedia.app` 50 MB / arm64 / bundle id `com.skyc8266.skycmedia` |
 | 打包后自检 | 9 项（资源、翻译、eapi 签名、下载器、设置、桥接、pywebview、qrcode）**全部 PASS** |
 | 单元测试 | 131 passed / 1 skipped（真实接口用例需 `NCM_LIVE=1`） |
 | ruff | All checks passed |
@@ -131,7 +131,7 @@ pytest -q                                     # 131 个单元测试，不联网
 NCM_LIVE=1 pytest tests/test_live_api.py -q    # 真实接口/真实下载冒烟
 python3 main.py --self-test                    # 资源与依赖自检
 pyinstaller --clean --noconfirm main.spec      # 打包
-dist/NeteaseMusicDownloader.app/Contents/MacOS/NeteaseMusicDownloader --self-test
+dist/SkycMedia.app/Contents/MacOS/SkycMedia --self-test
 ```
 
 ## 7. CI 首轮失败与修复（首次推送后由"打包产物自检"抓出）
@@ -351,7 +351,7 @@ dist/NeteaseMusicDownloader.app/Contents/MacOS/NeteaseMusicDownloader --self-tes
 * **播放上报的语义**：网易云那边只接受 weblog，不是完整的听歌记录（没有播放完成度），
   所以「云端次数」和本地次数不会完全一致。
 * **应用名与 bundle id 没改**：现在它不只是下载器，但改名会挪配置目录、让已装的版本失效，
-  所以仓库名、产物名、`com.skyc8266.neteasemusicdownloader` 都保持原样。
+  所以仓库名、产物名、`com.skyc8266.skycmedia` 都保持原样。
 * **`/api/song/like` 的返回没有再次校验**：只按 code 判定成功，没有回查一次收藏列表。
 
 ### 复核方式
@@ -682,7 +682,7 @@ Windows 上多次启动后，**播放页面**的排版突然异常。窗口是�
 需要一个能复现的抓手，否则改什么都是猜。三个方向，按性价比排：
 
 1. **先分辨是哪一类排版异常。** 文字重叠？行高塌陷？列宽错位？还是整个播放页布局散架？截图比描述有用得多 —— 让星空喵下次遇到时截一张。
-2. **跨启动状态的嫌疑最大** → 让用户试一次：删掉 config 目录（`~/Library/Application Support/NeteaseMusicDownloader` 或 Windows 上的对应路径）再启动。如果不再出现，就是持久化状态的问题，不是渲染的问题。这个测试成本最低、结论最硬。
+2. **跨启动状态的嫌疑最大** → 让用户试一次：删掉 config 目录（`~/Library/Application Support/SkycMedia` 或 Windows 上的对应路径）再启动。如果不再出现，就是持久化状态的问题，不是渲染的问题。这个测试成本最低、结论最硬。
 3. **如果和 session resume 有关** → 启动后立刻切换到别的 tab 再切回播放页。如果复现，就和 restoreSession 的时序有关（队列灌回来和虚拟列表 mount 的先后）。
 
 在拿到 (1) 或 (2) 之前不动代码 —— 这个项目刚发完正式版，没有复现路径的改动就是在猜。
@@ -769,7 +769,7 @@ WebView 是另一个进程（WKWebView / WebView2），不在这 52.5 MB 里。
 
 ### 怎么测的
 
-- 先 `pyinstaller --clean --noconfirm main.spec` 重新打包（`dist/NeteaseMusicDownloader.app`，38 MB），
+- 先 `pyinstaller --clean --noconfirm main.spec` 重新打包（`dist/SkycMedia.app`，38 MB），
   `--self-test` 16 项全 PASS。
 - 启动的是**打包后的 `.app`**，不是源码。
 - **进程树怎么找**：macOS 会把 WebKit 的辅助进程 re-parent 给 launchd（ppid 变成 1），
@@ -782,7 +782,7 @@ WebView 是另一个进程（WKWebView / WebView2），不在这 52.5 MB 里。
 
 ### 结果
 
-单个实例（`dist/NeteaseMusicDownloader.app`，本机 M2 / 8GB）：
+单个实例（`dist/SkycMedia.app`，本机 M2 / 8GB）：
 
 | 指标 | 实测 |
 |---|---|
@@ -798,7 +798,7 @@ WebView 是另一个进程（WKWebView / WebView2），不在这 52.5 MB 里。
 
 | 进程 | 内存 |
 |---|---|
-| NeteaseMusicDownloader（Python） | 19–50 MB |
+| SkycMedia（Python） | 19–50 MB |
 | com.apple.WebKit.WebContent | 40–49 MB |
 | com.apple.WebKit.GPU | 22–33 MB |
 | com.apple.WebKit.Networking | 6–12 MB |
@@ -810,7 +810,7 @@ WebView 是另一个进程（WKWebView / WebView2），不在这 52.5 MB 里。
 
 ### 启动那 13.7 s 是什么
 
-Little Snitch 弹出了「Terminal via NeteaseMusicDownloader wants to connect to
+Little Snitch 弹出了「Terminal via SkycMedia wants to connect to
 music.163.com」的授权框，等它超时了 5 s 才继续。**这是本机的网络拦截，不是应用慢。**
 正常的机器上窗口 565 ms 就出来了。
 
@@ -868,7 +868,7 @@ WebView 的 WebContent 进程（那不是我们能控制的）。
 
 ### 内存：实测结论是「没什么可省」
 
-用**编译版**（`dist/NeteaseMusicDownloader.app`）跑完整进程树，交错 A/B 三轮：
+用**编译版**（`dist/SkycMedia.app`）跑完整进程树，交错 A/B 三轮：
 
 | 变体 | 峰值中位数 | 稳定态中位数 |
 |---|---|---|
@@ -1921,7 +1921,7 @@ libjpeg / libpng / libwebp* / libfreetype ...）。PIL 在运行时只干三件�
 
 ### 验证
 
-- `du -sh dist/NeteaseMusicDownloader.app`：**38 MB → 26 MB**（−12 MB，−32%）。
+- `du -sh dist/SkycMedia.app`：**38 MB → 26 MB**（−12 MB，−32%）。
   包里 `find -iname "*PIL*"` 为空；libjpeg/libwebp/libavif/libfreetype 也都不在了。
 - 体积是在 **venv 里装着 pillow** 的情况下量出来的（CI 就是这条路径：requirements-dev
   装了 pillow 再打包），说明 main.spec 的 excludes 真拦住了，不是靠卸包凑出来的。
@@ -2668,7 +2668,7 @@ $ adb shell cat /proc/<pid>/environ | tr ' ' '
 `/data/user/0/<pkg>/files`，正是应用唯一能写的地方。
 
 **关键约束**：`XDG_CONFIG_HOME` 必须仍然指向 `<私有目录>/.config`。配置文件
-实际落在 `files/.config/NeteaseMusicDownloader/`，改路径等于让升级过的用户
+实际落在 `files/.config/SkycMedia/`，改路径等于让升级过的用户
 「登录态和缓存消失」。
 
 ### 踩到的坑
@@ -2729,6 +2729,185 @@ bridge 一致**，否则测的是一个不存在的世界。改完桩数据要�
 - 完整套件 `826 passed, 6 skipped`（用 conda `xijianBase` 的 Python 3.11）。
   注意：系统 python3.9 跑会有一片 `unsupported operand type(s) for |` 的
   失败，那是 `X | Y` 类型语法要 3.10+，**不是真失败**。
+
+## 51. 切后台再回来，整个界面是白的（2026-10-31）
+
+上一条说闪退复现不了，只能开日志。这次日志开了，用户又报「切到后台再返回，
+15 秒左右闪退」——**真实故障终于复现了**，而且比闪退更早一步：界面先没了。
+
+### 复现与判决性证据
+
+模拟器 Android 14 / WebView 113，debug 版：
+
+| 步骤 | 截图大小 | 桥调用数 |
+|---|---|---|
+| 首次启动 | 445 KB（首页、新歌速递、推荐歌单、底部标签栏都在） | 36 |
+| HOME 切后台 → 返回 → 等 8 秒 | **24 KB（纯白，只有状态栏）** | **36（一个都没多）** |
+
+截图大小从 445 KB 掉到 24 KB 是判据：页面不是「没内容」，是**没画**。同时桥
+调用数一个没涨，说明 JS 也停了——不是界面渲染坏了，是 WebView 整个不动了。
+
+### 根因：Activity 被销毁，而销毁流程卡在半路
+
+`dumpsys window windows` 显示切后台返回后：
+
+```
+Window #9  Splash Screen com.skyc8266.neteasemusic   ← 盖在上面，没撤
+Window #10 PythonActivity
+    mViewVisibility=0x8 (GONE)   mHasSurface=false
+    mDrawState=NO_SURFACE        isOnScreen=false
+```
+
+`mCurrentFocus=null` —— 没有任何 window 持有焦点。
+
+`logcat` 的因果链（一次完整的切后台 → 返回）：
+
+```
+21:11:40.575  V/PythonActivity: onPause()
+21:11:42.406  V/SDL: onStop()
+21:11:42.724  V/SDL: onDestroy()                ← Activity 死了
+21:11:47.672  START ... result code=2           ← 任务还在，但里面没有 Activity
+（之后没有 onCreate / onStart / onResume）
+```
+
+**返回后系统把任务带到前台，却没有 Activity 实例可显示** —— 启动图照常弹出来，
+首帧永远不来，于是启动图一直盖着。用户看到的是一片白。
+
+**「Activity 被销毁后没有重建」这一条是关键。** 原因在
+`SDLActivity.onDestroy()`（`org/libsdl/app/SDLActivity.java:605-616`）：
+
+```java
+SDLActivity.nativeSendQuit();
+// Wait for "SDLThread" thread to end
+try {
+    SDLActivity.mSDLThread.join();   // ← 616
+} catch (Exception e) { ... }
+SDLActivity.nativeQuit();
+super.onDestroy();                    // ← 永远执行不到
+```
+
+`mSDLThread` 就是跑 Python 的那个线程，它跑在 pywebview 的 EventLoop 死循环里，
+**不会自己结束**。于是：
+
+1. `join()` 永久阻塞主线程
+2. `super.onDestroy()` 永远不执行 → Activity 的销毁流程没走完
+3. 系统仍然认为这个 Activity 活着 → 回来时**不重建**
+4. 任务里于是有一个空壳 → 启动图等首帧 → **白屏**
+
+主线程栈（`adb shell kill -3 <pid>`，root 后可读 `/data/anr/trace_00`）能直接看到
+这个 join：
+
+```
+at java.lang.Thread.join(Thread.java:1523)
+at org.libsdl.app.SDLActivity.onDestroy(SDLActivity.java:616)
+at android.app.Activity.performDestroy(Activity.java:8876)
+```
+
+### 改法
+
+`android/webview/platforms/android/__init__.py` 与 `base.py`：
+
+- **注册 `onActivityPreDestroyed`**，在 `AndroidApp.on_pre_destroy()` 里调
+  `app.stop()` 关掉 eventloop。Android 10+ 会在 `onDestroy()` **之前** dispatch
+  这个回调 —— 那正是还来得及让 Python 线程退出的时刻。Python 线程一退出，
+  `join()` 就返回，销毁流程走完，app 干净退场，回来时是全新启动。
+- `EventLoop.mainloop()` 里 `lock.acquire()` **加了 1 秒超时**：帧回调是 post 到
+  UI 线程再走 WebView 的消息循环回来的，UI 线程漏掉一次回调时，无限等待会把
+  跑 app 的那个线程永久parked —— 桥不再应答，页面一直转圈。
+- `on_pause` **不碰 WebView**：`pauseTimers()` 会冻结所有 JS 定时器，桥的回传
+  全断（**「永远转圈」的机制**）；`onPause()` 会停渲染，而这个 Activity 回来时
+  不一定还活着。
+- `on_start` 里恢复 WebView（`webview.onResume()` + `requestLayout()`），
+  **必须走 `run_on_ui_thread`** —— Android 规定所有 WebView 方法只能在 UI 线程
+  调用，否则抛 `A WebView method was called on thread 'Thread-N'`。
+  **注意：恢复不能挂在 `on_resume` 上** —— `p4a` 的 `onNewIntent()` 手工调
+  `this.onResume()`，绕开了 `performResumeActivity()`，而 `onActivityResumed`
+  正是在那里 dispatch 的，所以那个回调在回前台的路上根本不来。
+- `on_create` 里补 `activity.appConfirmedActive()`：p4a 撤启动图的条件是这个
+  标志，而它是 **Activity 实例字段**，重建后为 false 就再也没人置位。
+- `on_destroy` 加幂等保护 —— `app.stop()` 会 dispatch `on_destroy`，而
+  `dismiss()` 里又会调 `app.stop()`。
+- **所有 `on_*` 回调的参数都要有默认值。** 这是个很隐蔽的坑：同一个方法会被
+  两种方式调用 —— 生命周期回调会带 activity 参数，而 `EventDispatcher.dispatch()`
+  **一个参数都不传**。签名写成 `def on_destroy(self, _)` 时，`dispatch('on_destroy')`
+  会抛 `TypeError: on_destroy() missing 1 required positional argument`，eventloop
+  于是没被关掉，Python 线程继续活着，`join()` 继续卡死 —— **整个修复静默失效，
+  而且只在 logcat 里留下一行 warning**。
+
+### 实测结果
+
+修完之后（`android/check_background_return.sh` 一条命令跑完整个场景）：
+
+```
+first start:  445569 bytes
+after return: 445470 bytes   ← 界面完整画出来了
+```
+
+日志里的完整链路：
+
+```
+21:27:41.923  activity is going away, closing the event loop
+21:27:41.972  V/SDL: onDestroy()
+21:27:48.071  PythonActivity onCreate running
+21:27:48.159  V/SDL: onStart()
+```
+
+连续切后台三次，截图分别是 452 KB / 452 KB / 1.37 MB —— **每一次都画出来了**。
+之前是 24 KB 的纯白。
+
+### 现在的行为与它的代价
+
+**切后台时 app 会退出，回来时全新启动。** 界面正常、功能正常，但**播放会断**。
+
+原因：Activity 被系统回收 → 我们在 `onActivityPreDestroyed` 里干净地关掉
+eventloop → Python 线程退出 → app 退场 → 系统重建 Activity。
+
+**这个回收是模拟器内存太小造成的**（AVD 只有 1536 MB，进程稍重就被系统杀）。
+真机内存大时可能不会发生，那时 app 会继续在后台跑。
+
+**要彻底做到「切后台不中断播放」，得给 app 一个前台服务**（通知栏 + 常驻），
+那是另一个功能，不在这次修复范围内。
+
+### 一个已知限制
+
+`onActivityPreDestroyed` 是 **Android 10（API 29）** 才有的回调。
+`buildozer.spec` 里 `android.minapi = 24` —— **API 24 到 28 的设备上这个回调
+不来，白屏还在**。要覆盖那些系统，得给 `PythonActivity` 换成一个自己的
+子类（buildozer 的 `android.activity_class_name` 支持），在 `onDestroy()` 里
+先关 eventloop 再交给父类。
+
+### 顺带
+
+- `evaluate_js` 的 `lock.acquire()` 原来**没有超时**。回传丢了就永久占住
+  一个线程，后面所有桥调用排队。加了 20 秒上限（`EVALUATE_JS_TIMEOUT`）。
+- `js_bridge_call` 现在打一行 `bridge call <名字> took N ms`。**一个永远
+  转圈的页面，就是某个调用没有回来**，而之前日志里对此一无所知。
+- 媒体服务器代理在线播放时，原来把**整首歌攒进 `bytearray`** 再落盘，峰值
+  内存是文件大小的两倍。30 MB 的 FLAC 就是 60 MB——手机上直接被系统杀。
+  改成流式写盘（`cache._AudioWriter`，`.part` 临时文件 + 完成才 rename）。
+- 前端 `api()` 的 catch 分支原来不设 `error_key`，于是桥调用超时时页面显示
+  「这个歌单还没有歌」——**那是假的**。现在失败也带 `error_key`，页面显示
+  「读不出来」。
+
+### 三条教训
+
+1. **同名不等于成对。** `onPause()` 和 `resumeTimers()` 看起来是一对，实际是
+   两个维度：前者管渲染，后者管 JS 定时器。配错的表现是「白屏」和「永远
+   转圈」两种完全不同的症状，而它们其实同源。
+2. **工具链里的手工生命周期调用要绕着走。** p4a 的 `onNewIntent()` 调
+   `this.onResume()` 是它自己的历史包袱，改不了（工具链目录），只能在
+   pywebview 这边兜住。
+3. **「首帧画不出来」和「页面没内容」是两回事。** 截图从 445 KB 掉到 24 KB
+   就能分开这两种情况 —— 前者查 surface 和启动图，后者查数据。
+
+### 怎么判断白屏在哪一层
+
+- 截图大小：445 KB → 24 KB = 首帧没画出来（不是内容空）
+- `mHasSurface=false` / `mDrawState=NO_SURFACE` = WebView 没有 surface
+- `mCurrentFocus=null` = 没有 window 持有焦点
+- `SplashScreenView: Build` 出现在返回之后 = 系统重新 show 了启动图
+- 桥调用数不变 = JS 还在跑，WebView 进程活着，**问题不在桥**
+- 主线程栈：`adb shell kill -3 <pid>`（需 root），栈在 `/data/anr/trace_00`
 
 
 

@@ -74,7 +74,7 @@ jobs:
 
       - name: Smoke test the bundled app
         run: |
-          BIN="dist/NeteaseMusicDownloader.app/Contents/MacOS/NeteaseMusicDownloader"
+          BIN="dist/SkycMedia.app/Contents/MacOS/SkycMedia"
           test -x "$BIN" || { echo "::error::the executable is missing from the bundle"; exit 1; }
           "$BIN" --self-test --report dist/selftest-${{ matrix.arch }}.txt
           cat dist/selftest-${{ matrix.arch }}.txt
@@ -82,18 +82,18 @@ jobs:
       - name: Package (zip + dmg)
         run: |
           set -euo pipefail
-          APP="dist/NeteaseMusicDownloader.app"
-          NAME="NeteaseMusicDownloader-macOS-${{ matrix.arch }}"
+          APP="dist/SkycMedia.app"
+          NAME="SkycMedia-macOS-${{ matrix.arch }}"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/$NAME.zip"
-          hdiutil create -volname "NeteaseMusicDownloader" -srcfolder "$APP" \
+          hdiutil create -volname "SkycMedia" -srcfolder "$APP" \
             -ov -format UDZO "dist/$NAME.dmg"
           ls -lh dist/
 
       - name: Verify the artifacts are real
         run: |
           set -euo pipefail
-          for f in dist/NeteaseMusicDownloader-macOS-${{ matrix.arch }}.zip \
-                   dist/NeteaseMusicDownloader-macOS-${{ matrix.arch }}.dmg; do
+          for f in dist/SkycMedia-macOS-${{ matrix.arch }}.zip \
+                   dist/SkycMedia-macOS-${{ matrix.arch }}.dmg; do
             size=$(stat -f%z "$f")
             echo "$f -> $size bytes"
             # a real bundle is tens of MB; anything tiny means the build broke
@@ -104,8 +104,8 @@ jobs:
         with:
           name: macos-${{ matrix.arch }}
           path: |
-            dist/NeteaseMusicDownloader-macOS-${{ matrix.arch }}.zip
-            dist/NeteaseMusicDownloader-macOS-${{ matrix.arch }}.dmg
+            dist/SkycMedia-macOS-${{ matrix.arch }}.zip
+            dist/SkycMedia-macOS-${{ matrix.arch }}.dmg
             dist/selftest-${{ matrix.arch }}.txt
           if-no-files-found: error
           retention-days: 14
@@ -135,7 +135,7 @@ jobs:
       - name: Smoke test the .exe
         shell: pwsh
         run: |
-          $exe = "dist/NeteaseMusicDownloader.exe"
+          $exe = "dist/SkycMedia.exe"
           if (-not (Test-Path $exe)) { Write-Error "the executable was not produced"; exit 1 }
           # The .exe is a GUI-subsystem binary, so PowerShell neither waits for
           # it nor sets $LASTEXITCODE -- Start-Process -Wait -PassThru is the
@@ -191,16 +191,16 @@ jobs:
           # directory.  Run from a copy so the extracted resources travel with it.
           $cn = Join-Path $PWD "dist\下载测试"
           New-Item -ItemType Directory -Force -Path $cn | Out-Null
-          Copy-Item "dist\NeteaseMusicDownloader.exe" $cn
+          Copy-Item "dist\SkycMedia.exe" $cn
           if (Test-Path "dist\_resources") {
             Copy-Item "dist\_resources" $cn -Recurse -Force
           }
-          $exe = Join-Path $cn "NeteaseMusicDownloader.exe"
+          $exe = Join-Path $cn "SkycMedia.exe"
           # The diagnostics file goes to the settings directory, never into
           # the app folder: a file added to a signed bundle breaks the code
           # signature.  Remove the previous run's file first so this step
           # cannot pass on a stale report.
-          $log = Join-Path $env:APPDATA "NeteaseMusicDownloader\ncm-startup.log"
+          $log = Join-Path $env:APPDATA "SkycMedia\ncm-startup.log"
           Remove-Item $log -ErrorAction SilentlyContinue
           $proc = Start-Process -FilePath $exe -ArgumentList "--self-test" `
             -WorkingDirectory $cn -PassThru
@@ -228,14 +228,14 @@ jobs:
       - name: Package (zip)
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist/NeteaseMusicDownloader.exe" `
-            -DestinationPath "dist/NeteaseMusicDownloader-Windows-x64.zip" -Force
+          Compress-Archive -Path "dist/SkycMedia.exe" `
+            -DestinationPath "dist/SkycMedia-Windows-x64.zip" -Force
           Get-ChildItem dist | Select-Object Name, Length
 
       - name: Verify the artifacts are real
         shell: pwsh
         run: |
-          $zip = Get-Item "dist/NeteaseMusicDownloader-Windows-x64.zip"
+          $zip = Get-Item "dist/SkycMedia-Windows-x64.zip"
           Write-Host "$($zip.Name) -> $($zip.Length) bytes"
           if ($zip.Length -lt 5000000) { Write-Error "the zip looks truncated"; exit 1 }
 
@@ -243,8 +243,8 @@ jobs:
         with:
           name: windows-x64
           path: |
-            dist/NeteaseMusicDownloader.exe
-            dist/NeteaseMusicDownloader-Windows-x64.zip
+            dist/SkycMedia.exe
+            dist/SkycMedia-Windows-x64.zip
             dist/selftest-windows.txt
           if-no-files-found: error
           retention-days: 14
@@ -270,12 +270,12 @@ jobs:
           set -euo pipefail
           ls -lh artifacts
           expected="
-          NeteaseMusicDownloader-Windows-x64.zip
-          NeteaseMusicDownloader-macOS-arm64.zip
-          NeteaseMusicDownloader-macOS-arm64.dmg
-          NeteaseMusicDownloader-macOS-x64.zip
-          NeteaseMusicDownloader-macOS-x64.dmg
-          NeteaseMusicDownloader.exe
+          SkycMedia-Windows-x64.zip
+          SkycMedia-macOS-arm64.zip
+          SkycMedia-macOS-arm64.dmg
+          SkycMedia-macOS-x64.zip
+          SkycMedia-macOS-x64.dmg
+          SkycMedia.exe
           "
           missing=0
           for name in $expected; do
@@ -309,15 +309,15 @@ jobs:
             # after the release has been tested.  Without the flag the release
             # lands as stable and "/releases/latest" points at it.
             gh release create "$tag" \
-              --title "NeteaseMusicDownloader $tag" \
+              --title "SkycMedia $tag" \
               --prerelease \
               --notes-file release-notes.md \
-              artifacts/NeteaseMusicDownloader.exe \
-              artifacts/NeteaseMusicDownloader-Windows-x64.zip \
-              artifacts/NeteaseMusicDownloader-macOS-arm64.zip \
-              artifacts/NeteaseMusicDownloader-macOS-arm64.dmg \
-              artifacts/NeteaseMusicDownloader-macOS-x64.zip \
-              artifacts/NeteaseMusicDownloader-macOS-x64.dmg
+              artifacts/SkycMedia.exe \
+              artifacts/SkycMedia-Windows-x64.zip \
+              artifacts/SkycMedia-macOS-arm64.zip \
+              artifacts/SkycMedia-macOS-arm64.dmg \
+              artifacts/SkycMedia-macOS-x64.zip \
+              artifacts/SkycMedia-macOS-x64.dmg
           fi
 
       - name: Verify the release

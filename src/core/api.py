@@ -289,6 +289,10 @@ class NeteaseAPI:
         self._host_index = 0
         self._request_lock = threading.Lock()
         self._last_request_ts = 0.0
+        #: Why the last eapi attempt failed.  Kept so the retry loop can
+        #: say what went wrong once every host has been tried -- a silent
+        #: failure is impossible to diagnose from the outside.
+        self._last_error = ""
 
         #: Held while a write is in flight, so two writes never overlap.
         self._write_lock = threading.Lock()
@@ -444,22 +448,26 @@ class NeteaseAPI:
             resp = self._post(url, body, cookies=cookies)
         except requests.exceptions.RequestException as exc:
             self._log(f"eapi transport error {path}: {exc}", "warning")
+            self._last_error = f"{type(exc).__name__}: {exc}"
             return None
 
         if resp.status_code != 200:
             self._log(f"eapi HTTP {resp.status_code} on {path}", "warning")
+            self._last_error = f"HTTP {resp.status_code}"
             return None
 
         text = resp.text.strip()
         if not text:
             # Same signature as the weapi blackhole -> treat as "host unusable".
             self._log(f"eapi returned an empty body for {path}", "warning")
+            self._last_error = "empty body"
             return None
 
         try:
             return resp.json()
         except ValueError:
             self._log(f"eapi returned non-JSON for {path}: {text[:120]!r}", "warning")
+            self._last_error = f"non-JSON body: {text[:80]!r}"
             return None
 
     def _scope_for(self, path: str, data: dict[str, Any] | None) -> str:
@@ -700,6 +708,7 @@ class NeteaseAPI:
         The server counts the requests per route, so a read route being
         throttled says nothing about the write routes.
         """
+        last_error = ""
         for attempt in range(self.MAX_RETRIES):
             result = self._eapi_once(path, data)
             if result is not None:
@@ -719,6 +728,17 @@ class NeteaseAPI:
             if attempt < self.MAX_RETRIES - 1:
                 self._switch_host()
                 time.sleep(0.4 * (attempt + 1) + random.uniform(0.1, 0.4))
+            else:
+                # The last attempt failed as well.  Say so out loud: a silent
+                # failure here is what turns a network problem into a
+                # spinner that never resolves, with nothing in the log to
+                # point at the cause.
+                last_error = self._last_error
+                self._log(
+                    f"eapi {path} failed on every host after "
+                    f"{self.MAX_RETRIES} attempts ({last_error or 'no answer'})",
+                    "warning",
+                )
         return None
 
     def _eapi_write(self, path: str, data: dict[str, Any] | None) -> dict[str, Any] | None:

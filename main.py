@@ -123,7 +123,7 @@ def _initial_geometry(width: int, height: int,
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="NeteaseMusicDownloader",
+        prog="SkycMedia",
         description=f"{APP_DISPLAY_NAME} / NetEase Music Playlist Downloader",
     )
     parser.add_argument("--debug", action="store_true", help="verbose logging and dev tools")

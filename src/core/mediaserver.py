@@ -150,6 +150,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._online(song_id, query.get("q", ["standard"])[0], send_body)
             elif route == "file":
                 self._local(query.get("p", [""])[0], send_body)
+            elif route == "content":
+                # A MediaStore entry on a phone: the song is not a file on
+                # disk but a row in the system media library, reached
+                # through its content:// uri.
+                self._content(query.get("u", [""])[0], send_body)
             elif route == "art":
                 self._art(query.get("p", [""])[0], send_body)
             elif route == "cover":
@@ -293,6 +298,51 @@ class _Handler(BaseHTTPRequestHandler):
         if send_body:
             self.wfile.write(data)
 
+    def _content(self, uri: str, send_body: bool) -> None:
+        """Stream a song the phone keeps in its media library.
+
+        The song is not a file: it is a row in MediaStore, reached
+        through a ``content://`` uri.  Only the audio collection is
+        allowed -- a uri that points anywhere else would turn the
+        loopback server into a reader for the whole file system.
+        """
+        if not self.media.is_media_uri(uri):
+            self._error(403, "uri not allowed")
+            return
+        try:
+            size, mime = self.media.content_size_and_type(uri)
+        except Exception as exc:
+            log.warning("cannot open the media entry: %s", exc)
+            self._error(404, "no such media")
+            return
+        if size is None:
+            self._error(404, "no such media")
+            return
+        extra = {"Accept-Ranges": "bytes", "Cache-Control": "no-store"}
+        self._send_headers(200, mime or "audio/mpeg", int(size), extra)
+        if not send_body:
+            return
+        try:
+            stream = self.media.open_content(uri)
+        except Exception as exc:
+            log.warning("cannot stream the media entry: %s", exc)
+            return
+        if stream is None:
+            return
+        try:
+            while True:
+                chunk = stream.read(CHUNK)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
     def _cover(self, url: str, ext: str, send_body: bool) -> None:
         # Remote cover proxy.  The persistent cache keeps a copy on disk so
         # scrolling through a long list of albums does not slam the CDN.
@@ -423,19 +473,33 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             if cacheable:
-                # Tee into a BytesIO that is handed off to the cache writer
-                # after the bytes hit the wire.  The user pays no latency for
-                # the disk write because the chunk is already in memory.
-                buffer = bytearray()
-                for chunk in response.iter_content(CHUNK):
-                    if not chunk:
-                        continue
-                    self.wfile.write(chunk)
-                    buffer.extend(chunk)
-                if len(buffer) >= 1024:  # ignore empty / aborted responses
-                    ext = cache_ext or _ext_from_url(url)
-                    self.media.write_audio_cache(cache_song_id, quality,
-                                                 bytes(buffer), ext)
+                # Stream the bytes to disk *while* they go to the wire.
+                #
+                # The obvious implementation -- accumulate the whole song in
+                # a bytearray and hand it to the cache writer afterwards --
+                # costs the song's full size in RAM twice (the buffer and
+                # the bytes() copy of it).  A 30 MB FLAC peaks at 60 MB, and
+                # on a phone that is enough for the system to kill the app:
+                # the player dies mid-song instead of playing it.  Writing
+                # the chunks to the cache file as they arrive keeps the
+                # memory flat and the latency the same.
+                ext = cache_ext or _ext_from_url(url)
+                writer = self.media.audio_cache_writer(
+                    cache_song_id or "", quality, ext)
+                written = 0
+                try:
+                    for chunk in response.iter_content(CHUNK):
+                        if not chunk:
+                            continue
+                        self.wfile.write(chunk)
+                        if writer is not None:
+                            writer.write(chunk)
+                        written += len(chunk)
+                finally:
+                    if writer is not None:
+                        # An aborted stream leaves a partial file behind;
+                        # it must not be served as if it were the song.
+                        writer.close(complete=written >= 1024)
             else:
                 for chunk in response.iter_content(CHUNK):
                     if chunk:
@@ -646,6 +710,67 @@ class MediaServer:
 
     def url_for_cover(self, path: str | Path) -> str:
         return f"{self.base_url}/art?p={quote(str(path), safe='')}"
+
+    def url_for_content(self, uri: str) -> str:
+        """The media-server url for a song in the phone's media library."""
+        return f"{self.base_url}/content?u={quote(str(uri), safe='')}"
+
+    def is_media_uri(self, uri: str) -> bool:
+        """Whether ``uri`` is an audio entry of the system media library.
+
+        Only one collection is allowed: the external audio media store.
+        A uri that points anywhere else -- a document, another app's
+        provider, a file -- would turn this loopback server into a
+        reader for the whole phone.
+        """
+        text = str(uri or "")
+        prefix = "content://media/external/audio/media/"
+        if not text.startswith(prefix):
+            return False
+        # The id is the row number in the collection: digits only.
+        tail = text[len(prefix):]
+        return bool(tail) and tail.isdigit()
+
+    def content_size_and_type(self, uri: str) -> tuple[int | None, str]:
+        """The size and the mime type of a media library entry.
+
+        Returns ``(None, "")`` when the entry cannot be opened.
+        """
+        try:
+            from jnius import autoclass
+
+            Uri = autoclass("android.net.Uri")
+            from android import activity
+
+            resolver = activity.getActivity().getContentResolver()
+            stream = resolver.openAssetFileDescriptor(Uri.parse(uri))
+            if stream is None:
+                return None, ""
+            try:
+                size = int(stream.getLength())
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            return (size if size >= 0 else None), "audio/mpeg"
+        except Exception as exc:
+            log.debug("cannot read the media entry %s: %s", uri, exc)
+            return None, ""
+
+    def open_content(self, uri: str) -> Any:
+        """Open a media library entry for reading."""
+        try:
+            from jnius import autoclass
+
+            Uri = autoclass("android.net.Uri")
+            from android import activity
+
+            resolver = activity.getActivity().getContentResolver()
+            return resolver.openInputStream(Uri.parse(uri))
+        except Exception as exc:
+            log.debug("cannot open the media entry %s: %s", uri, exc)
+            return None
 
     def url_for_remote_cover(self, url: str, ext: str = "jpg") -> str | None:
         """Proxy a remote NetEase cover URL through the loopback server.
@@ -859,6 +984,19 @@ class MediaServer:
                           ext: str = "mp3") -> Path | None:
         """Persist ``data`` to the cache so the next play is offline."""
         return self._media_cache.write_audio(song_id, quality, data, ext)
+
+    def audio_cache_writer(self, song_id: str, quality: str,
+                           ext: str = "mp3") -> Any:
+        """Open a streaming writer for the audio cache.
+
+        The caller writes the chunks as they arrive, so a song never has to
+        fit in memory.  See :meth:`src.core.cache.MediaCache.audio_writer`.
+        """
+        try:
+            return self._media_cache.audio_writer(song_id, quality, ext)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("audio cache writer failed for %s: %s", song_id, exc)
+            return None
 
     def cached_cover(self, url: str, ext: str = "jpg") -> tuple[bytes, str] | None:
         """Return (bytes, mime) for a cached remote cover image, or ``None``."""

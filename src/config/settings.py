@@ -237,8 +237,43 @@ class Settings:
             base = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
         return base / APP_NAME
 
+    @staticmethod
+    def _legacy_config_dir() -> Path | None:
+        """The config directory of the name the project had before."""
+        try:
+            from src.version import LEGACY_APP_NAME
+        except Exception:
+            return None
+        if not LEGACY_APP_NAME or LEGACY_APP_NAME == APP_NAME:
+            return None
+        if os.name == "nt":
+            base = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+        elif sys.platform == "darwin":
+            base = Path.home() / "Library" / "Application Support"
+        else:
+            base = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+        return base / LEGACY_APP_NAME
+
     def _config_path_for_platform(self) -> Path:
         directory = self._config_dir()
+        # The project was renamed, so the config directory moved with it --
+        # except on the machines that already used the old name.  Those
+        # keep their old directory: it holds the saved login, the settings
+        # and the cache, and moving it would ask the user to sign in again
+        # for nothing.  A machine that has never run the old version gets
+        # the new directory.
+        legacy = self._legacy_config_dir()
+        if legacy is not None and legacy.is_dir():
+            current_has_settings = any(
+                (directory / name).is_file()
+                for name in ("settings.yaml", "settings.json")
+            )
+            legacy_has_settings = any(
+                (legacy / name).is_file()
+                for name in ("settings.yaml", "settings.json")
+            )
+            if legacy_has_settings and not current_has_settings:
+                directory = legacy
         try:
             directory.mkdir(parents=True, exist_ok=True)
         except OSError as exc:

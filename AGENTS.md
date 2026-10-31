@@ -36,8 +36,8 @@ node scripts/check-player-js.mjs          # play-mode statistics (needs node, no
 NCM_LIVE=1 pytest tests/test_live_api.py  # optional: hits the real API
 
 pyinstaller --clean --noconfirm main.spec # package
-#  Windows -> dist/NeteaseMusicDownloader.exe
-#  macOS   -> dist/NeteaseMusicDownloader.app
+#  Windows -> dist/SkycMedia.exe
+#  macOS   -> dist/SkycMedia.app
 python3 scripts/make_icon.py              # regenerate assets/icon.{png,ico,icns}
 ```
 
@@ -244,13 +244,14 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
 - Settings: unknown YAML keys are **ignored** (never crash on an older config file);
   `max_concurrent` is clamped to 1–3.
 - Version lives only in `src/version.py`; `main.spec` and the UI read it from there.
-- The macOS bundle id is `com.skyc8266.neteasemusicdownloader` — never use a reverse-DNS
+- The macOS bundle id is `com.skyc8266.skycmedia` — never use a reverse-DNS
   name under someone else's domain.
 - Comments explain *why*; no development notes in user-visible strings.
 - Player settings live in the `playback:` block of `settings.yaml`; unknown keys are
   ignored and out-of-range values are clamped (`play_mode` falls back to `list`).
 - `report_play_count` is **off** by default. The local counter is the record of truth;
   the `/api/feedback/weblog` report only runs when the user opts in *and* is signed in.
-- The app name and bundle id stay `NeteaseMusicDownloader` / `com.skyc8266.neteasemusicdownloader`
-  even though the app now plays music too: renaming would move the config directory and
-  invalidate existing installs.
+- The app name and bundle id are `SkycMedia` / `com.skyc8266.skycmedia`.
+  The project was renamed from `NeteaseMusicDownloader`; the config directory
+  keeps the old name on machines that already used it (`src/config/settings.py`
+  falls back to it), so an upgrade does not ask the user to sign in again.

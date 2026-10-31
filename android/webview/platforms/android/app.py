@@ -30,29 +30,37 @@ class App(EventDispatcher):
     def set_content_view(self, root):
         act.setContentView(root)
 
-    def on_create(self, activity, saved_instance_state):
+    def on_create(self, activity=None, saved_instance_state=None):
         """Event handler for the `on_create` event which is fired after
         initialization (after build() has been called) but before the
         application has started running.
         """
 
-    def on_pause(self, activity):
+    def on_pause(self, activity=None):
         """Event handler called when Pause mode is requested"""
 
-    def on_destroy(self, activity):
+    def on_destroy(self, activity=None):
         """Event handler for the `on_destroy` event which is fired when the
         application has finished running (i.e. the window is about to be
         closed).
         """
 
-    def on_resume(self, activity):
+    def on_resume(self, activity=None):
         pass
 
-    def on_start(self, activity):
+    def on_start(self, activity=None):
         pass
 
-    def on_stop(self, activity):
+    def on_stop(self, activity=None):
         pass
+
+    def on_pre_destroy(self, activity=None):
+        """Event handler called just before the Activity is destroyed.
+
+        Android 10 and up.  This is the last callback that still runs
+        while the Activity is alive, so it is the place to let the app
+        shut itself down cleanly.
+        """
 
     def run(self):
         self.build_view()

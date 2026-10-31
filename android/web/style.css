@@ -8,7 +8,12 @@
    ========================================================================== */
 
 :root {
-    /* --- colours (dark is the default; the light set is below) --------- */
+    /* --- colours (dark is the default; the light set is below) ---------
+       The dark set is what the phone shows when the system is dark, and
+       the light set when the system is light -- that is what "follow the
+       system" means, and the media query at the bottom of this block is
+       what makes it true.  The two explicit themes (data-theme="dark" /
+       "light") override it. */
     --bg: #14100F;
     --surface: #1D1817;
     --surface-2: #26201E;
@@ -34,6 +39,24 @@
 
     --safe-top: env(safe-area-inset-top, 0px);
     --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* The light set, for a phone whose system is in light mode. */
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+        --bg: #F7F2F1;
+        --surface: #FFFFFF;
+        --surface-2: #F1E9E7;
+        --surface-3: #E7DCDA;
+        --text: #221B19;
+        --text-2: #5E514E;
+        --text-3: #8B7B77;
+        --brand: #C4302B;
+        --brand-soft: #FBE4E2;
+        --accent: #B3251F;
+        --line: #E2D7D5;
+        --shadow: 0 8px 24px rgba(60, 30, 25, .12);
+    }
 }
 
 html[data-theme="light"] {
@@ -634,6 +657,21 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
     outline: none;
 }
 .field input:focus { border-color: var(--brand); }
+
+/* A single-line text field that sits inside a list row (the cookie
+   login, for instance).  The row lays the fields out in a line, so this
+   one does not stretch the way a .field input does. */
+.text-input {
+    height: 38px;
+    min-width: 0;
+    padding: 0 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    outline: none;
+}
+.text-input:focus { border-color: var(--brand); }
+.text-input::placeholder { color: var(--text-3); }
 
 .qrbox {
     display: flex;

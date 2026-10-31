@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import struct
+import sys
 import threading
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -872,10 +873,33 @@ _local_music: LocalMusicLibrary | None = None
 _local_music_lock = threading.Lock()
 
 
-def get_local_music() -> LocalMusicLibrary:
-    """Return the process-wide local music library."""
+def _android_media_library() -> Any | None:
+    """The phone's music library, or ``None`` when this is not a phone.
+
+    On Android the music lives in MediaStore, not in folders the app can
+    walk: from Android 10 on, ``/sdcard/Music`` is not readable by path
+    any more, so the directory scan finds nothing.  MediaStore is the
+    only way to see the songs, and it needs the audio permission.
+    """
+    if not hasattr(sys, "getandroidapilevel"):
+        return None
+    try:
+        # Imported by name: the module only exists inside the Android
+        # build, and a static import would fail to resolve on the desktop.
+        module = __import__("ncmandroid.mediastore", fromlist=["MediaStoreLibrary"])
+    except Exception:
+        return None
+    return module.MediaStoreLibrary()
+
+
+def get_local_music() -> Any:
+    """Return the process-wide local music library.
+
+    On a phone this is the MediaStore-backed library (the songs the user
+    actually has); everywhere else it is the folder scanner.
+    """
     global _local_music
     with _local_music_lock:
         if _local_music is None:
-            _local_music = LocalMusicLibrary()
+            _local_music = _android_media_library() or LocalMusicLibrary()
         return _local_music

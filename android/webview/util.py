@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sys
+import time
 import traceback
 import urllib.parse
 from collections import UserDict
@@ -251,6 +252,7 @@ def js_bridge_call(window: Window, func_name: str, param: Any, value_id: str) ->
     """
 
     def _call():
+        started = time.monotonic()
         try:
             result = func(*func_params)
             result = json.dumps(result).replace('\\', '\\\\').replace("'", "\\'")
@@ -261,6 +263,14 @@ def js_bridge_call(window: Window, func_name: str, param: Any, value_id: str) ->
             result = json.dumps(error).replace('\\', '\\\\').replace("'", "\\'")
             retval = f"{{isError: true, value: '{result}'}}"
 
+        # The round trip is logged: it is the only place where a call that
+        # never comes back shows up.  A page that waits forever on a
+        # spinner is exactly this call not returning, and without this
+        # line there is nothing in the log to point at it.
+        logger.info(
+            'bridge call %s took %.0f ms', func_name,
+            (time.monotonic() - started) * 1000,
+        )
         window.evaluate_js(
             f'window.pywebview._returnValuesCallbacks["{func_name}"]["{value_id}"]({retval})'
         )

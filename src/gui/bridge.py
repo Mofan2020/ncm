@@ -41,6 +41,7 @@ from src.core.localmusic import (
 from src.core.lyrics import build_timed_lyrics
 from src.core.mediaserver import get_media_server
 from src.core.metacache import get_meta_cache
+from src.gui.bilibili_bridge import BilibiliBridge
 from src.gui.theme import effective_theme, normalize_theme, system_theme
 from src.i18n import get_i18n, t
 from src.version import (
@@ -91,6 +92,25 @@ def _ext_from_cover_url(url: str) -> str:
         if f".{ext}" in text:
             return "jpg" if ext == "jpeg" else ext
     return "jpg"
+
+
+def _decode_data_url(data_url: str) -> bytes:
+    """The bytes behind a ``data:`` url, or empty when there are none.
+
+    The phone has no native file dialog the bridge can open, so a picked
+    file travels through the page as a data url.  Only the base64 form is
+    accepted; a plain-text url is not a file.
+    """
+    raw = str(data_url or "").strip()
+    if not raw.startswith("data:"):
+        return b""
+    _, _, payload = raw.partition(",")
+    if not payload:
+        return b""
+    try:
+        return base64.b64decode(payload, validate=False)
+    except (ValueError, TypeError):
+        return b""
 
 
 def _purge_directory(directory: Any) -> int:
@@ -145,6 +165,10 @@ class GuiBridge:
         #: 上一次导入算出来的计划和备份内容：确认冲突要用，写入的时候才有。
         self._backup_plan: dict[str, Any] | None = None
         self._backup_payload: dict[str, Any] | None = None
+        #: The Bilibili music source.  Composed, not inherited: the bridge
+        #: layer knows how to talk to the frontend, the source knows how to
+        #: talk to Bilibili.
+        self.bilibili = BilibiliBridge()
 
         self.login_manager.on("status_change", self._on_login_status_change)
         self.login_manager.on("qrcode_update", self._on_qrcode_update)
@@ -252,6 +276,10 @@ class GuiBridge:
                 "scan_depth": self.settings.playback.scan_depth,
                 "show_translation": self.settings.playback.show_translation,
                 "lyrics_scroll_idle_seconds": self.settings.playback.lyrics_scroll_idle_seconds,
+                # The crossfade length is a playback setting, so the phone
+                # can show it next to the other playback settings instead of
+                # hiding it behind a control that only the desktop has.
+                "crossfade_duration": self.settings.playback.crossfade_duration,
             },
             "ui": {
                 "language": self.settings.ui.language,
@@ -1134,6 +1162,11 @@ class GuiBridge:
             return None
         return self._match_index.get(f"{title}|{artist}") or self._match_index.get(title)
 
+    @staticmethod
+    def _is_media_uri(path: str) -> bool:
+        """Whether the path is a media library uri rather than a file."""
+        return str(path or "").startswith("content://media/external/audio/media/")
+
     # -- resolving a playable url ---------------------------------------------
     def resolve_track(self, track: dict[str, Any]) -> dict[str, Any]:
         """Pick a source for ``track`` and return a media-server url.
@@ -1167,7 +1200,24 @@ class GuiBridge:
                 errors.append(str(getattr(self.api, "last_url_error", None) or "no_url"))
             else:
                 local = self._local_track_for(track)
-                path = Path(str((local or {}).get("path") or ""))
+                raw_path = str((local or {}).get("path") or "")
+                if local and self._is_media_uri(raw_path):
+                    # A song in the phone's media library: not a file, but
+                    # a row in MediaStore, reached through its uri.
+                    return {
+                        "success": True,
+                        "kind": "local",
+                        "url": self.media.url_for_content(raw_path),
+                        "path": raw_path,
+                        "matched_local": track.get("source") == "online",
+                        "cover_url": "",
+                        "name": local.get("name"),
+                        "artists": local.get("artists"),
+                        "album": local.get("album"),
+                        "duration": local.get("duration") or track.get("duration") or 0,
+                        "has_lyrics": bool(local.get("has_lyrics")),
+                    }
+                path = Path(raw_path)
                 if local and path.is_file():
                     return {
                         "success": True,
@@ -1812,6 +1862,58 @@ class GuiBridge:
             },
         }
 
+    # -- bilibili source -------------------------------------------------------
+    def search_bilibili_tracks(self, keyword: str, category: str = "all",
+                               order: str = "default", page: int = 1,
+                               page_size: int = 30) -> dict[str, Any]:
+        """Search the Bilibili music source by keyword.
+
+        ``category`` is a partition name (``music``) or a partition id
+        (``28``); ``order`` is a friendly sort name (``play``, ``date``).
+        The answer carries the items of the source and the tracks in the
+        shape the player list expects.
+        """
+        result = self.bilibili.search(keyword, category=category, order=order,
+                                      page=page, page_size=page_size)
+        items = result.get("items") or []
+        result["tracks"] = [self._bilibili_track_payload(item) for item in items]
+        return result
+
+    def get_bilibili_partitions(self) -> dict[str, Any]:
+        """The Bilibili partitions, with the id and the name of each one."""
+        return self.bilibili.partitions()
+
+    def get_bilibili_popular(self, rid: int = 28, page: int = 1,
+                              page_size: int = 30) -> dict[str, Any]:
+        """The hot list of a Bilibili partition."""
+        result = self.bilibili.popular(rid=rid, page=page, page_size=page_size)
+        items = result.get("items") or []
+        result["tracks"] = [self._bilibili_track_payload(item) for item in items]
+        return result
+
+    def get_bilibili_audio_url(self, bvid: str, quality: int = 0) -> dict[str, Any]:
+        """Resolve the audio stream of one Bilibili video."""
+        return self.bilibili.audio_url(bvid, quality=quality)
+
+    @staticmethod
+    def _bilibili_track_payload(item: dict[str, Any]) -> dict[str, Any]:
+        """One Bilibili item, in the shape the player list renders."""
+        item = item or {}
+        bvid = str(item.get("bvid") or item.get("id") or "")
+        return {
+            "id": bvid,
+            "key": track_key("bilibili", bvid),
+            "source": "bilibili",
+            "name": item.get("title") or "",
+            "artists": item.get("author") or "",
+            "album": item.get("category") or "",
+            "cover_url": item.get("cover") or "",
+            "duration": int(item.get("duration") or 0),
+            "play_count": int(item.get("play_count") or 0),
+            "url": item.get("url") or "",
+            "bvid": bvid,
+        }
+
     # -- playlist management ---------------------------------------------------
     def create_playlist(self, name: str, privacy: int = 0, description: str = "") -> dict[str, Any]:
         """Create a new playlist."""
@@ -2136,7 +2238,19 @@ class GuiBridge:
         return {"success": True, "directories": directories}
 
     def scan_local_music(self, rescan: bool = False) -> dict[str, Any]:
-        """Scan every configured folder; ``rescan`` re-reads the tag cache from disk."""
+        """Scan every configured folder; ``rescan`` re-reads the tag cache from disk.
+
+        On a phone there are no folders to configure: the songs live in
+        MediaStore, so the scan asks the system for them instead of
+        walking a directory list that would always be empty.
+        """
+        if self._library_is_media_store():
+            if rescan:
+                self.local_music.clear()
+            found = self.local_music.refresh()
+            self._match_index_token = None
+            return {"success": True, "tracks": found, "scanned": found,
+                    "directories": [], "stats": self.local_music.stats()}
         directories = list(self.settings.playback.local_dirs)
         if not directories:
             return {"success": True, "tracks": 0, "directories": [], "scanned": 0}
@@ -2148,10 +2262,48 @@ class GuiBridge:
         self.refresh_allowed_roots()
         return {"success": True, **summary, "stats": self.local_music.stats()}
 
+    def _library_is_media_store(self) -> bool:
+        """Whether the local library is the phone's MediaStore one."""
+        return hasattr(self.local_music, "is_media_store")
+
     def get_local_stats(self) -> dict[str, Any]:
         return {"success": True, "stats": self.local_music.stats(),
                 "directories": list(self.settings.playback.local_dirs),
                 "media": self.media.stats()}
+
+    def request_audio_permission(self) -> dict[str, Any]:
+        """Ask the phone for the permission to read the media library.
+
+        Only meaningful on Android; everywhere else it answers that the
+        library is already readable, because a desktop reads its folders
+        without asking anyone.
+
+        The Android answer arrives asynchronously (the system shows a
+        dialog), so this waits for it -- with a timeout, because a dialog
+        the user walks away from never answers.
+        """
+        if not self._library_is_media_store():
+            return {"success": True, "granted": True, "state": "granted"}
+        try:
+            module = __import__("ncmandroid.permissions",
+                                fromlist=["request_audio_permission"])
+        except Exception as exc:
+            self.logger.debug("no permission module: %s", exc)
+            return {"success": False, "granted": False, "state": "unavailable"}
+        done = threading.Event()
+        state = {"value": "denied"}
+
+        def _answered(result: str) -> None:
+            state["value"] = result
+            done.set()
+
+        module.request_audio_permission(_answered)
+        # The permission may already be granted, in which case the
+        # callback ran before this line and the event is set already.
+        if not done.wait(timeout=60):
+            return {"success": False, "granted": False, "state": "timeout"}
+        granted = state["value"] == module.ALREADY_GRANTED
+        return {"success": granted, "granted": granted, "state": state["value"]}
 
     # -- appearance ------------------------------------------------------------
     def pick_background_image(self) -> dict[str, Any]:
@@ -2176,6 +2328,62 @@ class GuiBridge:
     def clear_background_image(self) -> dict[str, Any]:
         self.settings.clear_background_image()
         return {"success": True, "background_url": "", "settings": self.get_settings()}
+
+    def set_background_image_data(self, data_url: str) -> dict[str, Any]:
+        """Store a wallpaper that the page picked.
+
+        The phone has no native file dialog the bridge can open, so the
+        picture arrives as a data url and is written out first.  The rest
+        is the same path the desktop takes: the file is copied into the
+        config directory, downscaled and remembered by name.
+        """
+        raw = _decode_data_url(str(data_url or ""))
+        if not raw:
+            return {"success": False, "error_key": "settings.background_failed"}
+        try:
+            target = self.settings.config_path.parent / "wallpaper-picked.tmp"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        except OSError as exc:
+            self.logger.warning("cannot store the picked wallpaper: %s", exc)
+            return {"success": False, "error_key": "settings.background_failed"}
+        try:
+            name = self.settings.set_background_image(target)
+        finally:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+        if not name:
+            return {"success": False, "error_key": "settings.background_failed"}
+        return {"success": True, "background_url": self.background_url(),
+                "settings": self.get_settings()}
+
+    def import_account_data(self, data_url: str) -> dict[str, Any]:
+        """Import an account backup the page picked.
+
+        The backup file travels as a data url (the phone has no native
+        open dialog), is written to disk, and then goes through the same
+        two steps the desktop does: plan the import, let the user decide
+        about the conflicts, then apply it.
+        """
+        raw = _decode_data_url(str(data_url or ""))
+        if not raw:
+            return {"success": False, "error_key": "backup.invalid_file"}
+        try:
+            target = self.settings.config_path.parent / "account-picked.ncmbk"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        except OSError as exc:
+            self.logger.warning("cannot store the picked backup: %s", exc)
+            return {"success": False, "error_key": "backup.read_failed"}
+        try:
+            return self.import_account_backup(str(target))
+        finally:
+            try:
+                target.unlink()
+            except OSError:
+                pass
 
     # -- quick download from the player ---------------------------------------
     def download_tracks(self, tracks: list[dict[str, Any]] | None = None,
