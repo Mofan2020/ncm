@@ -83,6 +83,22 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
 .app {
     display: flex;
     flex-direction: column;
+    /* The shell is the viewport, whatever the engine calls it.
+       ``100dvh`` is Chrome 108+ (2022).  On an older Android WebView the
+       declaration is dropped, the column falls back to its content
+       height, and the content area collapses to nothing -- the page then
+       shows the title and the tab bar and nothing else.  Fixed
+       positioning with explicit offsets fills the viewport on every
+       engine, and the two heights below are only refinements: ``100%``
+       for the engines that predate ``dvh``, ``100dvh`` for the ones
+       that know it (the keyboard and the system bars move the
+       viewport). */
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 100%;
     height: 100dvh;
     /* No min-height: 100dvh here.  The shell is exactly the viewport, and
        the content area scrolls inside it.  A min-height lets the whole
@@ -125,13 +141,18 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
 .views { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
 
 /* The pages fill the area and scroll inside it.  position: absolute with
-   inset: 0 rather than height: 100%, because a percentage height here
-   depends on the parent's height, and the parent's height is exactly what
-   this rule is trying to establish. */
+   the four offsets rather than height: 100%, because a percentage height
+   here depends on the parent's height, and the parent's height is exactly
+   what this rule is trying to establish.  The offsets are spelled out
+   instead of using the ``inset`` shorthand, which is Chrome 87+ -- the
+   same vintage as the WebView this interface has to survive. */
 .view {
     display: none;
     position: absolute;
-    inset: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
 }
@@ -275,6 +296,14 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
     background: var(--surface-2) center/cover no-repeat;
     box-shadow: var(--shadow);
     overflow: hidden;
+}
+/* ``aspect-ratio`` is Chrome 88+.  Where it is unknown the cover
+   collapses to nothing.  The cover is as wide as its parent (width:
+   100%), so the square is built from a padding there: a padding
+   percentage resolves against the containing block, which is exactly
+   the width the cover wants. */
+@supports not (aspect-ratio: 1 / 1) {
+    .card-cover { height: 0; padding-bottom: 100%; }
 }
 .card-cover.is-empty { background: linear-gradient(140deg, var(--surface-3), var(--surface-2)); }
 .card-name {
@@ -447,7 +476,10 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
 /* ------------------------------------------------------------- the player */
 .view-player {
     position: fixed;
-    inset: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
     z-index: 60;
     background: var(--bg);
     display: none;
@@ -461,7 +493,13 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
                 color: var(--text-2); white-space: nowrap; overflow: hidden;
                 text-overflow: ellipsis; }
 .player-cover {
+    width: 78vw;
     width: min(78vw, 340px);
+    /* The square comes from the same expression as the width, because a
+       padding percentage would resolve against the parent's width and
+       the cover is not as wide as its parent. */
+    height: 78vw;
+    height: min(78vw, 340px);
     aspect-ratio: 1 / 1;
     margin: 26px auto 22px;
     border-radius: 18px;
@@ -505,6 +543,7 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
     display: flex;
     align-items: center;
     gap: 12px;
+    max-width: 88vw;
     max-width: min(88vw, 420px);
     padding: 11px 14px;
     border-radius: 12px;
@@ -531,12 +570,18 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* ---------------------------------------------------------------- sheets */
-.sheet-host { position: fixed; inset: 0; z-index: 90; }
+/* The four offsets rather than the ``inset`` shorthand, which is
+   Chrome 87+ -- an engine this interface has to survive may not know
+   it, and then the overlay would size itself to its content instead of
+   covering the screen. */
+.sheet-host { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 90; }
 .sheet-host[hidden] { display: none; }
-.sheet-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .5); }
+.sheet-backdrop { position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+                background: rgba(0, 0, 0, .5); }
 .sheet {
     position: absolute;
     left: 0; right: 0; bottom: 0;
+    max-height: 78vh;
     max-height: 78dvh;
     display: flex;
     flex-direction: column;
@@ -552,13 +597,18 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
 .sheet-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
 /* ---------------------------------------------------------------- modals */
-.modal-host { position: fixed; inset: 0; z-index: 95; display: flex;
+.modal-host { position: fixed; top: 0; right: 0; bottom: 0; left: 0;
+               z-index: 95; display: flex;
                align-items: center; justify-content: center; padding: 24px; }
 .modal-host[hidden] { display: none; }
-.modal-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .55); }
+.modal-backdrop { position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+                  background: rgba(0, 0, 0, .55); }
 .modal {
     position: relative;
+    width: 380px;
+    max-width: 100%;
     width: min(100%, 380px);
+    max-height: 80vh;
     max-height: 80dvh;
     display: flex;
     flex-direction: column;

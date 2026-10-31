@@ -2552,3 +2552,53 @@ pywebview 的校验是 `^#(?:[0-9a-fA-F]{3}){1,2}$`——**只认 3 位或 6 位
 Python 用 `ast` 拿字典的键。写完还得做变异测试——把实现改坏一次，看测试
 会不会红。这次 12 个变异全部被杀才算数。
 
+## 49. 安卓界面在旧 WebView 上整个塌掉（2026-10-31）
+
+用户报：安卓版打开只有首页大标题和底部菜单栏，菜单栏紧跟着标题而不是在
+屏幕底部，切换功能只换标题、没有任何内容。
+
+**根因**：`100dvh` 是 Chrome 108+（2022）。旧版 Android System WebView 不认
+这个单位，**整条声明被丢掉**——不是回退到 `vh`，是这条高度直接没了。
+于是 `.app` 从「视口高」退化成「内容高」：
+
+```
+old-css (dvh ok)   app height 891, views 783, tabbar 贴在底部（间距 0）
+old-css (no dvh)   app height 108, views 0,    tabbar 贴在标题下面（离底 783px）
+```
+
+`views` 高度 0 → `.view` 虽然 `position: absolute` 也撑不出内容 → 页面空白；
+`.tabbar` 是 flex item，被顶到标题下面。**切换只换标题**是因为 `go()` 照常
+执行（`appbar-title` 的 `textContent` 变了），只是下面的页面没有高度。
+
+**修法**：不依赖任何新单位。`.app` 用 `position: fixed` + 四边 `0` 撑满
+视口，`height: 100%` 兜底、`height: 100dvh` 只作为支持它的引擎上的细化。
+同批改掉的还有 `inset` 简写（Chrome 87+）、`aspect-ratio`（Chrome 88+）、
+`min()`/`max()` 函数、`vh` 兜底。
+
+**踩到的坑**：
+
+1. **不能用 padding 百分比做正方形封面**。`.player-cover` 的宽度是
+   `min(78vw, 340px)`，比父容器窄；`padding-bottom: 100%` 是按**父容器**
+   的宽度算的，做出来的不是正方形。宽度和高度必须用同一个表达式。
+   `.card-cover` 是 `width: 100%`，和父容器同宽，才能用 padding 百分比。
+2. **模拟旧引擎不能只删 `dvh`**。`inset` / `aspect-ratio` / `min()` 得一起
+   删掉才接近真实。而且**光删属性不够**：`@supports not (...)` 那条在真
+   浏览器里是成立的，所以模拟时要把属性本身删掉才会走 fallback 分支。
+3. **Playwright 里没有 pywebview 桥，页面看起来是死的**。`waitForApi()`
+   8 秒超时后返回 null → `wire()` 根本不执行 → 标签栏没有 click handler。
+   第一版 harness 因此报「所有标签页都不可见」，那是 harness 的问题不是
+   代码的问题。加 `addInitScript` 塞一个假桥之后才是真的在测。
+4. **断言要读解析后的结构**。第 48 节的教训在这里又应验一次：测
+   `inset` 时不能只 `assert "inset: 0" in view`——新写法是四个偏移，
+   但注释里提到 `inset` 简写也会命中。要按属性名匹配。
+
+**验证方式**：`scripts/check-android-layout.mjs` 用 Playwright 加载真实的
+`android/web/index.html`，量出 `.app` / `.views` / `.tabbar` 的几何，
+并逐个标签页点一遍确认内容真的显示。同一套脚本喂**修复前的** CSS 必须
+**红**（3 项失败：壳没撑满、内容区没高度、菜单栏不在底部）——不红就说明
+这套断言没在测东西。
+
+**遗留**：模拟器上是 WebView 113（支持 `dvh`），复现不出用户的故障；真机上
+还得让用户自己装一次确认。
+
+

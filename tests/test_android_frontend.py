@@ -107,7 +107,10 @@ def test_the_pages_scroll_inside_the_content_area():
         "a percentage height here is circular -- the page has to be "
         "positioned inside the content area instead")
     assert "position: absolute" in view, view
-    assert "inset: 0" in view, view
+    for side in ("top", "right", "bottom", "left"):
+        assert f"{side}: 0" in view, (
+            f"the page has to be pinned to the content area on the {side} "
+            f"side as well: {view}")
     assert "overflow-y: auto" in view, view
 
 
@@ -122,6 +125,96 @@ def test_the_scroll_listener_watches_the_page_not_the_container():
         "the scroll listener has to be on the pages themselves")
     assert "#views > .view').forEach((view) => {" in APP_JS, (
         "every page needs its own scroll listener")
+
+
+def test_the_shell_fills_the_viewport_without_the_dynamic_viewport_unit():
+    """The shell must reach the viewport on a WebView that has never heard
+    of ``dvh``.
+
+    ``100dvh`` is Chrome 108+ (2022).  An older Android System WebView
+    drops the declaration, the column falls back to its content height,
+    the content area collapses to nothing -- and the phone shows the
+    title and the tab bar and nothing else.  Every tab then only changes
+    the title, because the page underneath it has no height.
+
+    So the shell has to reach the viewport without that unit: fixed
+    positioning with the four offsets, and a height that the older
+    engines understand as well.
+    """
+    shell = _css_rule(STYLE_CSS, ".app")
+    assert "position: fixed" in shell, (
+        "the shell has to be pinned to the viewport, otherwise it falls "
+        f"back to its content height: {shell}")
+    for side in ("top", "right", "bottom", "left"):
+        assert f"{side}: 0" in shell, (
+            f"the shell has to reach the {side} edge of the viewport: {shell}")
+    assert "height: 100%" in shell, (
+        "the shell needs a height the older engines understand -- the "
+        f"dynamic viewport unit alone is not one: {shell}")
+
+
+def test_every_dynamic_viewport_unit_has_a_fallback():
+    """``dvh``, ``svh`` and ``lvh`` are Chrome 108+.
+
+    A declaration using one of them is dropped as a whole on an older
+    engine, so each of them needs a declaration underneath that the
+    older engine does understand -- ``100%`` or ``vh``.
+    """
+    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", STYLE_CSS):
+        selector, body = match.group(1), match.group(2)
+        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+        if not re.search(r"\b\d*\.?\d+(dvh|svh|lvh)\b", body):
+            continue
+        properties = {}
+        for declaration in body.split(";"):
+            if ":" not in declaration:
+                continue
+            name, _, value = declaration.partition(":")
+            properties.setdefault(name.strip(), []).append(value.strip())
+        for name, values in properties.items():
+            dynamic = [v for v in values if re.search(r"\b(dvh|svh|lvh)\b", v)]
+            if not dynamic:
+                continue
+            assert len(values) > len(dynamic), (
+                f"{selector.strip()} uses {dynamic[0]} without a fallback "
+                f"the older engines understand: {name}: {values}")
+
+
+def test_no_rule_uses_the_inset_shorthand():
+    """``inset`` is Chrome 87+.
+
+    Where it is unknown the declaration is dropped, and an overlay that
+    was supposed to cover the screen sizes itself to its content
+    instead.  The four offsets are spelled out everywhere.
+    """
+    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", STYLE_CSS):
+        selector, body = match.group(1), match.group(2)
+        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+        assert not re.search(r"(^|[;{\s])inset\s*:", body), (
+            f"{selector.strip()} uses the inset shorthand, which is "
+            f"Chrome 87+: {body.strip()}")
+
+
+def test_the_square_covers_do_not_need_the_aspect_ratio_property():
+    """``aspect-ratio`` is Chrome 88+.
+
+    Where it is unknown a cover collapses to nothing.  The card cover is
+    as wide as its parent, so a padding percentage gives it the square;
+    the player cover is narrower than its parent, so its height has to
+    come from the same expression as its width.
+    """
+    card = _css_rule(STYLE_CSS, ".card-cover")
+    assert "width: 100%" in card, card
+    assert "@supports not (aspect-ratio: 1 / 1)" in STYLE_CSS, (
+        "the card cover needs a square where aspect-ratio is unknown")
+
+    player = _css_rule(STYLE_CSS, ".player-cover")
+    widths = re.findall(r"(?:width|height):\s*([^;]+);", player)
+    assert widths, player
+    fallback = [v for v in widths if "vw" in v or "min(" in v]
+    assert len(fallback) >= 2, (
+        f"the player cover needs a width and a height that both survive an "
+        f"old engine: {player}")
 
 
 # ------------------------------------------------------------ the profile
