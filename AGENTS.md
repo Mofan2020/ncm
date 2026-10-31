@@ -244,6 +244,16 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
 - Settings: unknown YAML keys are **ignored** (never crash on an older config file);
   `max_concurrent` is clamped to 1–3.
 - Version lives only in `src/version.py`; `main.spec` and the UI read it from there.
+- **版本号按改动性质递增，不按提交次数。** 判据只有一个：用户能不能看出多了什么。
+  - 能 —— 加了功能、换了交互、行为变了 → **minor +1，patch 归零**（3.5.17 → 3.6.0）
+  - 不能 —— 只修错、改文档、调性能、改内部结构 → **patch +1**
+  - 一批改动里既有功能又有修复 → 按功能算，升 minor
+  - **patch 号到 9 还没升过 minor，说明这段时间的功能都被当成补丁发了，判错了。**
+    下一次改动直接按 minor 走。
+  
+  3.5.x 就是反例：从 3.5.0 一路补到 3.5.17，中间进来了 B 站支持、
+  聚合搜索、首页分区、改名和整套安卓修复——这些用户都能看出来，
+  本该进 3.6。**下一次功能更新从 3.6.0 起。**
 - The macOS bundle id is `com.skyc8266.skycmedia` — never use a reverse-DNS
   name under someone else's domain.
 - Comments explain *why*; no development notes in user-visible strings.
