@@ -96,7 +96,7 @@ APK 目前只在预发布标签里，Latest 指向的正式版暂时没有 APK�
 [Releases](https://github.com/Mofan2020/ncm/releases) 列表页挑带 Pre-release 标记的标签，
 文件名带 `Android` 的那个就是。
 
-安卓版跑在系统内置的 WebView 里，老版本 WebView 上可能界面不正常，建议保持系统更新。
+安卓版跑在系统内置的 WebView 里。早期版本在系统浏览器太老的手机上会显示异常（界面塌掉、菜单栏位置不对），v3.5.16 已经修好了，装最新那个版本就行。
 
 首次进应用会问要不要读取手机上的音频。Android 10 以后应用不能直接翻 `/sdcard/Music`，
 本地音乐走系统媒体库；不给权限的话这一页是空的，不会崩。
