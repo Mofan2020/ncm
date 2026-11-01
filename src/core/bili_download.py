@@ -220,8 +220,8 @@ class BiliDownloader:
         except OSError:
             pass
 
-    def _merge_pair(self, video: "BiliDownloadResult",
-                    audio: "BiliDownloadResult") -> str:
+    def _merge_pair(self, video: BiliDownloadResult,
+                    audio: BiliDownloadResult) -> str:
         """Put the picture and the sound back into one mp4.
 
         B站 serves high qualities as two streams, so a download without this
