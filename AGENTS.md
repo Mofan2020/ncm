@@ -1,23 +1,19 @@
-# AGENTS.md — NetEase Cloud Music Playlist Downloader
+# AGENTS.md — SkycMedia
 
 ## Project Overview
 
-A **pywebview** desktop app (HTML/CSS/JS frontend + Python backend) for NetEase Cloud
-Music (网易云音乐): it downloads playlist songs and it plays music. The window has two
-tabs — **download** and **player** — over the same backend. The player covers online
-songs, account playlists, local folders, lyrics, favourites and resume-on-start.
-One codebase targets **Windows and macOS**; the UI ships in **zh_cn + en_us**.
+A **pywebview** desktop app (HTML/CSS/JS frontend + Python backend) that is a
+third-party client for **NetEase Cloud Music (网易云音乐) and Bilibili (哔哩哔哩)**:
+it downloads music and videos, it plays them, and it keeps the account data of
+both services in one backup file. One codebase targets **Windows and macOS**;
+the UI ships in **zh_cn + en_us**.
 
-An **Android build** shares the whole business core (`src/core`, `src/auth`,
-`src/config`, `src/i18n`) behind a native Kivy UI — see `android/ARCHITECTURE.md`.
-It is a separate presentation layer, not a webview shell: the desktop HTML never
-runs on Android.
+The **Android build has been dropped** (see `docs/announcement.md`). Only the
+desktop app is maintained from now on.
 
-**Entry point:** `main.py` (desktop) · `android/main.py` (Android)
-**Bridge:** `src/gui/bridge.py` · **Frontend:** `src/gui/assets/`
-**Android UI:** `android/ncmkivy/`
-**Targets:** Windows x64, macOS arm64, macOS x64, Android arm64 (no Linux support,
-no CLI anymore)
+**Entry point:** `main.py` · **Bridge:** `src/gui/bridge.py` ·
+**Frontend:** `src/gui/assets/` · **Targets:** Windows x64, macOS arm64,
+macOS x64 (no Linux support, no CLI anymore)
 
 ---
 
@@ -41,30 +37,6 @@ pyinstaller --clean --noconfirm main.spec # package
 python3 scripts/make_icon.py              # regenerate assets/icon.{png,ico,icns}
 ```
 
-### Android
-
-The Android build needs a toolchain that the desktop build does not: JDK 17
-(python-for-android rejects 21), the Android SDK with platform 34, NDK 26.1,
-`pkgconf`, `cmake`, `autoconf`. Build with
-[p4a](https://github.com/kivy/python-for-android); `android/buildozer.spec` holds
-the packaging settings.
-
-```bash
-# headless checks (no device needed) -- run these before every build
-python3 android/main.py --self-test
-python3 android/tools/check_screens.py            # every screen at 5 widths
-python3 android/tools/check_artist_flow.py        # real API, read-only
-
-# build (needs ANDROIDSDK, JAVA_HOME, and SSL_CERT_FILE on a MITM network)
-p4a apk --sdk "$ANDROIDSDK" --ndk-dir "$ANDROIDSDK/ndk/26.1.10909125" \
-    --arch arm64-v8a --android-api 34 --requirements=python3,kivy,requests,pyyaml,qrcode \
-    --bootstrap=sdl2 --dist-name ncm android/main.py
-```
-
-`python3 android/main.py --self-test` checks the shared core, the i18n catalogue,
-the loopback media server and the player backend; it skips checks that only make
-sense on a device instead of failing them.
-
 CI: `.github/workflows/build.yml` — `test` (ruff + pytest) → `build-macos` (arm64 on
 `macos-15`, x64 on `macos-15-intel`), `build-windows` (x64) → `release` (tag `v*` only).
 Every build job runs the packaged binary's `--self-test` before uploading, so a broken
@@ -82,27 +54,28 @@ bundle can never reach a release.
 | `src/core/aes.py` | AES-128-ECB in pure Python (no native/OpenSSL dependency) |
 | `src/core/crypto.py` | eapi request signing (AES-ECB + MD5 digest) |
 | `src/core/api.py` | `NeteaseAPI` — eapi + legacy endpoints, pacing, retries, quality fallback |
+| `src/core/bilibili.py` | `BiliClient` — Bilibili web API: search, hot lists, login, favourites, play URLs |
+| `src/core/bili_favorites.py` | Writes to Bilibili: create a folder, add videos to it |
+| `src/core/bili_download.py` | Downloads a Bilibili video and its audio track |
+| `src/core/bili_danmaku.py` | Danmaku: a hand-written protobuf parser, plus sending and filtering |
+| `src/core/bili_im.py` | Private messages: conversations, history, sending |
+| `src/core/bili_upload.py` | Uploading a local video (pre-upload → file → cover → submit) |
+| `src/core/bili_cache.py` | TTL cache for the Bilibili reads (per-kind lifetimes) |
 | `src/core/mediaserver.py` | `MediaServer` — 127.0.0.1 loopback HTTP for playback (Range, cover art, CDN proxying) |
 | `src/core/library.py` | `Library` — play counts, favourites, recent list, resume session (`library.json`) |
 | `src/core/localmusic.py` | `LocalMusicLibrary` — folder scan, dependency-free tag/lyrics/art parsing, index cache |
 | `src/core/downloader.py` | `SongDownloader` — thread pool (≤3), `.part` + atomic move, pause/cancel |
-| `src/auth/login.py` | `LoginManager` — QR / phone captcha / cookie import, session + status |
+| `src/core/backup.py` | `.ncmbk` export/import of the account data of both services |
+| `src/auth/login.py` | `LoginManager` — NetEase QR / phone captcha / cookie import |
+| `src/auth/bili_login.py` | `BiliSession` — the remembered Bilibili cookie (`bilibili.json`) |
 | `src/config/settings.py` | `Settings` singleton, YAML persistence, clamping, tolerant loading |
 | `src/i18n/` | `I18n` + `zh_cn.json` / `en_us.json` |
 | `src/gui/bridge.py` | `GuiBridge` — every JS-callable method (returns JSON-safe data) |
+| `src/gui/bilibili_bridge.py` | `BilibiliBridge` — translates the Bilibili client for the frontend |
 | `src/gui/theme.py` | Native window chrome: macOS `NSAppearance`, Windows dark title bar |
-| `src/gui/assets/` | `index.html` (markup + no-flash theme bootstrap), `style.css`, `app.js` |
-| `android/main.py` | Android entry: logging, `--self-test`, Kivy app launch |
-| `android/ncmkivy/controller.py` | The **only** boundary between the Kivy UI and the shared core |
-| `android/ncmkivy/theme.py` | Material 3 palette + the three size buckets |
-| `android/ncmkivy/player.py` | Playback through `android.media.MediaPlayer` (pyjnius) |
-| `android/ncmkivy/screens.py` | One widget per page; nothing overflows, everything scrolls |
-| `android/ncmkivy/widgets.py` | Reusable controls: 48dp touch targets, shortening labels, canvas icons |
-| `android/tools/` | Headless checks: every screen at 5 widths, the artist flow against the real API |
-| `android/ARCHITECTURE.md` | Why the split works and what the Android UI must obey |
+| `src/gui/assets/` | `index.html` (markup + no-flash theme bootstrap), `style.css`, `app.js`, `bili-player.js` |
 | `tests/` | pytest suite: crypto, api, downloader, settings, i18n, theme, bridge, live, library, localmusic, mediaserver, lyrics, player bridge (`tests/audio_fixtures.py` synthesises real MP3/FLAC bytes) |
 | `scripts/check-player-js.mjs` | Statistical checks for the frontend queue logic (node, run manually) |
-| `legacy/` | The abandoned v2.0 CLI (`netease_api.py`, `cli_downloader.py`) — **not maintained** |
 
 ### Request flow
 
@@ -123,6 +96,17 @@ Playback audio never travels through the bridge: `GuiBridge.resolve_track()` ret
 <audio> ──GET (Range)──▶ MediaServer ──┬─▶ local file (whitelisted roots)
                                        └─▶ NetEase CDN (Referer: music.163.com)
 ```
+
+Bilibili goes through the same server, one route further down:
+
+```
+<video> ──GET (Range)──▶ MediaServer /bili ──▶ Bilibili CDN (Referer + cookie)
+```
+
+`/m/<token>/bili?u=<cdn url>` is the **only** way the webview reaches the Bilibili
+CDN. The proxy adds the site `Referer` and the signed-in cookie, forwards `Range`
+and **only** accepts hosts under `hdslb.com` / `bilivideo.com` / `bilibili.com` —
+without that check the loopback server would be an open proxy.
 
 ---
 
@@ -162,12 +146,47 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
 
 ---
 
+## Bilibili endpoint map
+
+Full reference: `docs/bili-notes.md`. The endpoints in use:
+
+| Need | Endpoint | Notes |
+|------|----------|-------|
+| Hot list | `/x/web-interface/popular` | site wide; ignores the partition |
+| Partition feed | `/x/web-interface/wbi/search/type` | `tids` filters the partition |
+| Ranking | `/x/web-interface/ranking/v2` | main partitions only; the music areas answer `-400` |
+| Video detail | `/x/web-interface/view` | `bvid` → `cid`, `duration`, `owner` |
+| Play URLs | `/x/player/wbi/playurl` | WBI signature, `qn`/`fnval=4048`/`fourk=1` |
+| Account state | `/x/web-interface/nav` | `isLogin`, `mid`, `uname`, `vipStatus` |
+| QR login | `passport.bilibili.com/x/passport-login/web/qrcode/generate` + `/qrcode/poll` | the cookie arrives in `Set-Cookie`, **not** in the JSON |
+| Password login | `passport.bilibili.com/x/passport-login/web/login` | needs the geetest challenge |
+| SMS login | `passport.bilibili.com/x/passport-login/web/sms/sendcode` + `/sms/login` | |
+| Register | `passport.bilibili.com/x/passport-register/web/sendcode` + `/register` | |
+| Favourite folders | `/x/v3/fav/folder/created/list-all` | `up_mid` |
+| Folder content | `/x/v3/fav/resource/list` | `media_id`, `pn`, `ps` |
+| Create a folder | `/x/v3/fav/folder/add` | write; needs `csrf` |
+| Add to a folder | `/x/v3/fav/resource/deal` | write; needs `csrf`, `add_media_ids` = `"<aid>:2"` |
+| Video counters | `/x/web-interface/archive/stat` | view / danmaku / reply / favourite / coin / like |
+| Like a video | `/x/web-interface/archive/like` | write; `like` = 1 or 2, needs `csrf` |
+| Coins | `/x/web-interface/coin/add` + `/coin/number` | write; `multiply` 1–2; the balance route is a GET |
+| Comments | `/x/v2/reply/main` + `/x/v2/reply/add` + `/x/v2/reply/action` | the two write routes need `csrf` |
+| Danmaku | `/x/v2/dm/web/seg.so` + `/x/v2/dm/post` | the read route answers **protobuf**, not JSON |
+| Watch history | `/x/web-interface/history/cursor` | WBI signed; page through `cursor.max` |
+| Uploader profile | `/x/space/wbi/acc/info` + `/x/space/wbi/arc/search` + `/x/space/upstat` | the first two are WBI signed, `upstat` is not |
+| Follow / unfollow | `/x/relation/modify` + `/x/relation` | `act` = 1 / 2 on the same route |
+| Private messages | `api.vc.bilibili.com/session_svr/v1/session/notify_fetch` + `sess_svr/v1/sess/get_messages` + `sess_svr/v1/sess/send_msg` | a **different gateway**, no WBI |
+| Uploading | `member.bilibili.com/x/vuweb/pre` + `/x/vuweb/add` | pre-upload first, then the file, then the form |
+
+---
+
 ## Behaviours that are easy to break
 
 - **Pacing.** NetEase answers `code 400` when requests are fired too fast; `NeteaseAPI`
   enforces `MIN_REQUEST_INTERVAL` and retries with backoff. Don't remove it.
 - **QR status codes.** `800` = expired, `801` = waiting for scan, `802` = scanned,
   `803` = **success**. Getting this wrong makes login impossible while looking fine.
+  Bilibili uses its own set: `0` = success, `86101` = waiting, `86090` = scanned,
+  `86038` = expired.
 - **URL resolution happens inside the download worker** (signed URLs expire); never
   pre-resolve a whole playlist on the UI thread.
 - **Extension comes from the API's `type`**, never from the requested level: asking for
@@ -185,6 +204,20 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
 - **The media server is sandboxed.** Every path goes through `MediaServer.resolve_local()`,
   which rejects anything outside the allowed roots; `x-same-origin` is not a defence and
   the token in the URL is. Keep the bind on `127.0.0.1`.
+- **The Bilibili proxy is sandboxed too.** `/bili` only fetches hosts under the
+  Bilibili domains; everything else answers 403. The cookie goes in the request
+  headers, never in the URL.
+- **A Bilibili login cookie must reach the media server.** `BiliSession.apply_to_media()`
+  hands it over; without it the CDN answers 403 and the video never starts.
+- **macOS has no `MediaSource`.** The WKWebView there cannot play the separated
+  DASH streams, so `BiliClient.video_streams()` asks for a single file
+  (`fnval=1`, up to 720P) as a fallback. Without it the player would only ever
+  play the sound on macOS. The Windows WebView2 does have `MediaSource` and
+  uses the DASH streams.
+- **The destination of a download is known before the bytes arrive.** The
+  "already downloaded, skip it" check runs against the destination path: an
+  empty path resolves to the current directory, which exists and is not
+  empty, so every file would be reported as "skipped".
 - **Shuffle must stay independent of play counts.** It picks uniformly among all tracks
   except the current one. `node scripts/check-player-js.mjs` fails if that changes.
 - **Local indexing is cache-keyed by path + mtime/size**, while the track map is keyed by
@@ -219,10 +252,67 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
 - **The follow state has its own route.** The `followed` flag on the artist payload is
   not reliable for the "am I following this" question; `/api/artist/follow/count/get`
   answers `isFollow` and is what the follow button reads.
+- **Comments, danmaku and uploading trip the risk control.** `-352` (Gaia) and
+  `-401` mean "come back later": **never retry them**, the answer will not
+  change. Send the request once and tell the user it was blocked.
+- **The danmaku feed is protobuf.** `x/v2/dm/web/seg.so` answers binary
+  `bili.community.dm.v1`; the parser in `src/core/bili_danmaku.py` is
+  hand-written on purpose (no new dependency).
+- **Private messages live on another gateway.** `api.vc.bilibili.com` does not
+  take the WBI signature, and the `content` field is a JSON **string**.
+- **Uploading is a three-step dance.** pre-upload (`/x/vuweb/pre`) → upload the
+  file to the address it returns → submit the form (`/x/vuweb/add`). The
+  addresses and the field names come out of the pre-upload answer; never hardcode
+  them, Bilibili changes them often.
 - **A write must never be sent with the real account during development.**
-  Follow/unfollow, like and the playlist writes all change the account; the tests fake
-  the transport instead, and the user verifies the real round-trip by hand. An automated
-  write probe has already put the account into a bad state once.
+  Follow/unfollow, like, the playlist writes and the Bilibili favourite writes all
+  change the account; the tests fake the transport instead, and the user verifies the
+  real round-trip by hand. An automated write probe has already put the account into a
+  bad state once.
+- **The Bilibili cache has per-kind lifetimes.** `src/core/bili_cache.py` keeps slow
+  content long (danmaku 24 h, a video 60 min) and fast content short (comments
+  5 min). Account state, watch history, private messages and the coin balance are
+  **never cached** — they change with the account, not with the clock.
+- **Invalidate a cache entry by its prefix, not by the bare id.** The comment key
+  is `"{bvid}|{page}|{sort}"` and the danmaku key is `"{bvid}|{cid}"`, so a write
+  drops the prefix `"{bvid}|"`. Dropping the bare bvid would also hit every other
+  bvid that starts with the same characters.
+- **"Clear the cache" has to reach the Bilibili entries too.** `metacache.clear()`
+  and `metacache.stats()` walk every subdirectory, otherwise the Bilibili cache
+  would survive the one button that is supposed to get rid of it.
+
+---
+
+## The `.ncmbk` backup file
+
+The extension stays `.ncmbk` — it is the compatibility promise to the users who
+already have backups. The content is JSON, version 4:
+
+```json
+{
+  "format": "ncm-account-backup",
+  "version": 4,
+  "sources": {"account": "cloud", "favorites": "cloud"},
+  "account": {...},
+  "liked_song_ids": ["1"],
+  "playlists": [{"id": "7", "song_ids": ["1"]}],
+  "followed_artists": [...],
+  "liked_albums": [...], "subscribed_djradios": [...], "liked_mvs": [...],
+  "play_record": [...],
+  "local_state": {"play_counts": {...}, "favorites": [...], "recent": [...]},
+  "bilibili": {"account": {...}, "folders": [{"id": "9", "videos": [...]}]}
+}
+```
+
+Rules:
+
+- **Export needs one of the two accounts, not both.** Signed in to NetEase only,
+  to Bilibili only, or to both — the export always works, and the file says which
+  part came from where (`sources`).
+- **Import is tolerant.** A file without the `bilibili` section (version 1–3) still
+  imports; a file with it imports the Bilibili part only when a Bilibili account is
+  signed in, and says so when it skips it. Every valid part is imported, nothing is
+  refused because another part is missing.
 
 ---
 
@@ -244,19 +334,12 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
 - Settings: unknown YAML keys are **ignored** (never crash on an older config file);
   `max_concurrent` is clamped to 1–3.
 - Version lives only in `src/version.py`; `main.spec` and the UI read it from there.
-  **安卓的版本号是另一处**：`android/buildozer.spec` 的 `version` 不读 `src/version.py`，
-  发版时要一起改。漏了就会出现 tag 里写着 3.6.0、从 tag 重建出来的 APK 却是 3.5.17
-  的情况。**两处必须在同一个 commit 里，而且这个 commit 要在打 tag 之前。**
 - **版本号按改动性质递增，不按提交次数。** 判据只有一个：用户能不能看出多了什么。
-  - 能 —— 加了功能、换了交互、行为变了 → **minor +1，patch 归零**（3.5.17 → 3.6.0）
+  - 能 —— 加了功能、换了交互、行为变了 → **minor +1，patch 归零**（3.6.0 → 3.7.0）
   - 不能 —— 只修错、改文档、调性能、改内部结构 → **patch +1**
   - 一批改动里既有功能又有修复 → 按功能算，升 minor
   - **patch 号到 9 还没升过 minor，说明这段时间的功能都被当成补丁发了，判错了。**
     下一次改动直接按 minor 走。
-  
-  3.5.x 就是反例：从 3.5.0 一路补到 3.5.17，中间进来了 B 站支持、
-  聚合搜索、首页分区、改名和整套安卓修复——这些用户都能看出来，
-  本该进 3.6。**下一次功能更新从 3.6.0 起。**
 - The macOS bundle id is `com.skyc8266.skycmedia` — never use a reverse-DNS
   name under someone else's domain.
 - Comments explain *why*; no development notes in user-visible strings.
@@ -268,3 +351,5 @@ are indistinguishable from success. `/api/song/url/v1`, `/api/login/status` and
   The project was renamed from `NeteaseMusicDownloader`; the config directory
   keeps the old name on machines that already used it (`src/config/settings.py`
   falls back to it), so an upgrade does not ask the user to sign in again.
+- **对外文档（README、公告、帮助信息）不要有 AI 味**：不用口号句、加粗引导句、
+  清单式排比；不要出现只有开发者懂的行话，换成普通用户能读懂的说法。

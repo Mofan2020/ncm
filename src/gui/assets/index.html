@@ -298,12 +298,52 @@
                                 data-icon="refresh" data-i18n-title="bili.refresh" aria-label="refresh"></button>
                     </div>
                 </div>
+                <!-- 账号条：昵称、等级、大会员与退出登录 -->
+                <div class="bili-account" id="bili-account">
+                    <img class="bili-account-face" id="bili-account-face" alt="" hidden>
+                    <div class="bili-account-info">
+                        <span class="bili-account-name" id="bili-account-name"></span>
+                        <span class="bili-account-meta" id="bili-account-meta"></span>
+                    </div>
+                    <div class="bili-account-actions" id="bili-account-actions"></div>
+                </div>
+
+                <div class="top-tabs filter-seg" id="bili-tabs" role="tablist">
+                    <button class="top-tab is-compact is-active" type="button" role="tab"
+                            data-tab="hot" data-i18n="bili.tab_hot"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
+                            data-tab="favorites" data-i18n="bili.tab_favorites"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
+                            data-tab="history" data-i18n="bili.tab_history"></button>
+                </div>
+
                 <div class="chip-row" id="bili-chips"></div>
                 <div class="bili-grid" id="bili-results"></div>
                 <div id="bili-state"></div>
                 <button class="btn btn-sm btn-block" id="btn-bili-more" type="button" hidden
                         data-i18n="bili.load_more"></button>
                 <div class="result-end" id="bili-end" hidden></div>
+
+                <!-- 我的收藏：收藏夹一排，内容用同一套卡片 -->
+                <div id="bili-favorites" hidden>
+                    <div class="bili-folders-title" data-i18n="bili.folders_title"></div>
+                    <div class="chip-row" id="bili-folder-chips"></div>
+                    <div class="bili-grid" id="bili-fav-results"></div>
+                    <div id="bili-fav-state"></div>
+                    <button class="btn btn-sm btn-block" id="btn-bili-fav-more" type="button" hidden
+                            data-i18n="bili.load_more"></button>
+                    <div class="result-end" id="bili-fav-end" hidden></div>
+                </div>
+
+                <!-- 观看历史 -->
+                <div id="bili-history" hidden>
+                    <div class="bili-folders-title" data-i18n="bili.history"></div>
+                    <div class="bili-grid" id="bili-history-results"></div>
+                    <div id="bili-history-state"></div>
+                    <button class="btn btn-sm btn-block" id="btn-bili-history-more" type="button" hidden
+                            data-i18n="bili.load_more"></button>
+                    <div class="result-end" id="bili-history-end" hidden></div>
+                </div>
             </div>
         </section>
 
@@ -1353,9 +1393,308 @@
     </div>
 </div>
 
+<!-- ============ bilibili login modal ============ -->
+<div class="modal" id="bili-login-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-login-modal"></div>
+    <div class="modal-box glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="bili.login_title"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-login-modal" data-icon="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="tabs" id="bili-login-tabs">
+                <button class="tab is-active" type="button" data-tab="qr" data-i18n="bili.method_qr"></button>
+                <button class="tab" type="button" data-tab="password" data-i18n="bili.method_password"></button>
+                <button class="tab" type="button" data-tab="sms" data-i18n="bili.method_sms"></button>
+                <button class="tab" type="button" data-tab="cookie" data-i18n="bili.method_cookie"></button>
+                <button class="tab" type="button" data-tab="register" data-i18n="bili.method_register"></button>
+            </div>
+
+            <div class="tab-panel is-active" data-panel="qr">
+                <div class="qr-wrap">
+                    <img id="bili-qrcode-image" class="qr" src="" alt="">
+                    <p class="muted" data-i18n="bili.qr_tip"></p>
+                    <p id="bili-qrcode-status" class="qr-status"></p>
+                </div>
+                <button id="btn-bili-qrcode-refresh" class="btn btn-secondary" type="button" hidden
+                        data-i18n="bili.qr_refresh"></button>
+            </div>
+
+            <div class="tab-panel" data-panel="password">
+                <label class="option">
+                    <span data-i18n="bili.username"></span>
+                    <input type="text" id="bili-username" autocomplete="off" spellcheck="false">
+                </label>
+                <label class="option">
+                    <span data-i18n="bili.password"></span>
+                    <input type="password" id="bili-password" autocomplete="current-password">
+                </label>
+                <label class="option">
+                    <span data-i18n="bili.captcha_label"></span>
+                    <input type="text" id="bili-captcha" autocomplete="off" spellcheck="false">
+                </label>
+                <label class="option">
+                    <span data-i18n="bili.captcha_token"></span>
+                    <input type="text" id="bili-captcha-token" readonly spellcheck="false">
+                </label>
+                <p class="muted" data-i18n="bili.captcha_hint"></p>
+                <button id="btn-bili-password-login" class="btn btn-primary btn-block" type="button"
+                        data-i18n="bili.submit"></button>
+            </div>
+
+            <div class="tab-panel" data-panel="sms">
+                <label class="option">
+                    <span data-i18n="bili.phone"></span>
+                    <div class="inline-form">
+                        <input type="tel" id="bili-phone" autocomplete="off">
+                        <button id="btn-bili-sms-send" class="btn btn-secondary" type="button"
+                                data-i18n="bili.send_code"></button>
+                    </div>
+                </label>
+                <label class="option">
+                    <span data-i18n="bili.sms_code"></span>
+                    <input type="text" id="bili-sms-code" autocomplete="off" spellcheck="false">
+                </label>
+                <button id="btn-bili-sms-login" class="btn btn-primary btn-block" type="button"
+                        data-i18n="bili.submit"></button>
+            </div>
+
+            <div class="tab-panel" data-panel="cookie">
+                <label class="option">
+                    <span data-i18n="bili.cookie_label"></span>
+                    <textarea id="bili-cookie" rows="4" spellcheck="false"></textarea>
+                </label>
+                <p class="muted" data-i18n="bili.cookie_hint"></p>
+                <button id="btn-bili-cookie-login" class="btn btn-primary btn-block" type="button"
+                        data-i18n="bili.submit"></button>
+            </div>
+
+            <div class="tab-panel" data-panel="register">
+                <p class="muted" data-i18n="bili.register_hint"></p>
+                <label class="option">
+                    <span data-i18n="bili.username"></span>
+                    <input type="text" id="bili-register-username" autocomplete="off" spellcheck="false">
+                </label>
+                <label class="option">
+                    <span data-i18n="bili.password"></span>
+                    <input type="password" id="bili-register-password" autocomplete="new-password">
+                </label>
+                <label class="option">
+                    <span data-i18n="bili.phone"></span>
+                    <div class="inline-form">
+                        <input type="tel" id="bili-register-phone" autocomplete="off">
+                        <button id="btn-bili-register-send" class="btn btn-secondary" type="button"
+                                data-i18n="bili.send_code"></button>
+                    </div>
+                </label>
+                <label class="option">
+                    <span data-i18n="bili.sms_code"></span>
+                    <input type="text" id="bili-register-code" autocomplete="off" spellcheck="false">
+                </label>
+                <button id="btn-bili-register-submit" class="btn btn-primary btn-block" type="button"
+                        data-i18n="bili.submit"></button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ bilibili video player ============ -->
+<div class="modal" id="bili-player-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-player-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="bili.player_title"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-player-modal" data-icon="close"
+                    data-i18n-title="bili.close_player" aria-label="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="bili-video-name" id="bili-video-name"></div>
+            <div class="bili-video-wrap">
+                <video id="bili-video" class="bili-video" controls playsinline preload="auto"></video>
+                <div class="bili-danmaku-layer" id="bili-danmaku-layer"></div>
+            </div>
+            <div class="bili-player-bar">
+                <span class="muted" id="bili-player-status"></span>
+                <div class="bili-quality">
+                    <label class="option" for="bili-quality">
+                        <span data-i18n="bili.quality"></span>
+                        <select id="bili-quality" class="filter-select"></select>
+                    </label>
+                    <span class="bili-quality-badges" id="bili-quality-badges"></span>
+                </div>
+            </div>
+
+            <!-- 视频详情：统计、互动、评论与弹幕 -->
+            <div class="bili-detail" id="bili-detail">
+                <div class="bili-detail-head">
+                    <span class="bili-detail-label" data-i18n="bili.video_detail"></span>
+                    <span class="bili-detail-title" id="bili-detail-title"></span>
+                    <button class="bili-detail-up" id="bili-detail-up" type="button"
+                            data-i18n-title="bili.open_space"></button>
+                </div>
+                <div class="bili-detail-stats" id="bili-detail-stats"></div>
+                <div class="bili-detail-actions" id="bili-detail-actions">
+                    <button class="btn btn-sm btn-secondary" id="btn-bili-like" type="button"></button>
+                    <button class="btn btn-sm btn-secondary" id="btn-bili-coin" type="button"></button>
+                    <button class="btn btn-sm btn-secondary" id="btn-bili-favorite" type="button"></button>
+                </div>
+                <div class="bili-popover" id="bili-coin-panel" hidden>
+                    <div class="bili-popover-title" id="bili-coin-balance"></div>
+                    <div class="bili-popover-row">
+                        <button class="btn btn-sm btn-secondary" id="btn-bili-coin-one" type="button"></button>
+                        <button class="btn btn-sm btn-secondary" id="btn-bili-coin-two" type="button"></button>
+                    </div>
+                </div>
+                <div class="bili-popover" id="bili-fav-panel" hidden>
+                    <div class="bili-popover-title" data-i18n="bili.favorite_pick"></div>
+                    <div class="bili-fav-list" id="bili-fav-list"></div>
+                    <button class="btn btn-sm btn-secondary" id="btn-bili-fav-remove" type="button"
+                            data-i18n="bili.favorite_remove"></button>
+                </div>
+
+                <div class="bili-section">
+                    <div class="bili-section-title" data-i18n="bili.comments"></div>
+                    <div class="bili-comment-list" id="bili-comment-list"></div>
+                    <button class="btn btn-sm btn-block" id="btn-bili-comment-more" type="button" hidden
+                            data-i18n="bili.load_more"></button>
+                    <div class="bili-comment-reply" id="bili-comment-reply" hidden>
+                        <span class="bili-comment-reply-target" id="bili-comment-reply-target"></span>
+                        <button class="btn btn-sm btn-secondary" id="btn-bili-comment-cancel" type="button"
+                                data-i18n="bili.cancel"></button>
+                    </div>
+                    <div class="bili-comment-input">
+                        <input type="text" id="bili-comment-input" autocomplete="off" spellcheck="false"
+                               data-i18n-placeholder="bili.comment_placeholder">
+                        <button class="btn btn-sm btn-primary" id="btn-bili-comment-send" type="button"
+                                data-i18n="bili.comment_send"></button>
+                    </div>
+                </div>
+
+                <div class="bili-section">
+                    <div class="bili-section-title" data-i18n="bili.danmaku"></div>
+                    <div class="bili-danmaku-input">
+                        <input type="text" id="bili-danmaku-input" autocomplete="off" spellcheck="false"
+                               data-i18n-placeholder="bili.danmaku_placeholder">
+                        <button class="btn btn-sm btn-primary" id="btn-bili-danmaku-send" type="button"
+                                data-i18n="bili.danmaku_send"></button>
+                    </div>
+                    <div class="bili-danmaku-filters">
+                        <div class="chip-row" id="bili-danmaku-modes"></div>
+                        <input type="search" id="bili-danmaku-keyword" autocomplete="off" spellcheck="false"
+                               data-i18n-placeholder="bili.danmaku_filter">
+                    </div>
+                    <div class="bili-danmaku-hidden" id="bili-danmaku-hidden" hidden></div>
+                    <div class="bili-danmaku-list" id="bili-danmaku-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ bilibili uploader space ============ -->
+<div class="modal" id="bili-space-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-space-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="bili.space"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-space-modal" data-icon="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="bili-space-head">
+                <img class="bili-space-face" id="bili-space-face" alt="" hidden>
+                <div class="bili-space-info">
+                    <div class="bili-space-name" id="bili-space-name"></div>
+                    <div class="bili-space-meta" id="bili-space-meta"></div>
+                    <div class="bili-space-sign" id="bili-space-sign"></div>
+                </div>
+                <button class="btn btn-sm btn-primary" id="btn-bili-space-follow" type="button"></button>
+            </div>
+            <div class="bili-section-title" data-i18n="bili.space_videos"></div>
+            <div class="bili-space-videos" id="bili-space-videos"></div>
+            <div id="bili-space-state"></div>
+            <button class="btn btn-sm btn-block" id="btn-bili-space-more" type="button" hidden
+                    data-i18n="bili.load_more"></button>
+        </div>
+    </div>
+</div>
+
+<!-- ============ bilibili private messages ============ -->
+<div class="modal" id="bili-messages-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-messages-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="bili.messages"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-messages-modal" data-icon="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="bili-im">
+                <div class="bili-im-sessions" id="bili-im-sessions"></div>
+                <div class="bili-im-thread">
+                    <div class="bili-im-head" id="bili-im-head"></div>
+                    <div class="bili-im-messages" id="bili-im-messages"></div>
+                    <div class="bili-im-input">
+                        <input type="text" id="bili-im-input" autocomplete="off" spellcheck="false"
+                               data-i18n-placeholder="bili.message_placeholder">
+                        <button class="btn btn-sm btn-primary" id="btn-bili-im-send" type="button"
+                                data-i18n="bili.message_send"></button>
+                    </div>
+                </div>
+            </div>
+            <div id="bili-im-state"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ bilibili upload ============ -->
+<div class="modal" id="bili-upload-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-upload-modal"></div>
+    <div class="modal-box glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="bili.upload"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-upload-modal" data-icon="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="bili-upload-row">
+                <button class="btn btn-sm btn-secondary" id="btn-bili-upload-video" type="button"
+                        data-i18n="bili.upload_pick_video"></button>
+                <span class="bili-upload-path" id="bili-upload-video-path"></span>
+            </div>
+            <label class="option">
+                <span data-i18n="bili.upload_title"></span>
+                <input type="text" id="bili-upload-title" autocomplete="off" spellcheck="false">
+            </label>
+            <label class="option">
+                <span data-i18n="bili.upload_category"></span>
+                <select id="bili-upload-category" class="filter-select"></select>
+            </label>
+            <label class="option">
+                <span data-i18n="bili.upload_desc"></span>
+                <textarea id="bili-upload-desc" rows="3" spellcheck="false"></textarea>
+            </label>
+            <label class="option">
+                <span data-i18n="bili.upload_tags"></span>
+                <input type="text" id="bili-upload-tags" autocomplete="off" spellcheck="false">
+            </label>
+            <div class="bili-upload-row">
+                <button class="btn btn-sm btn-secondary" id="btn-bili-upload-cover" type="button"
+                        data-i18n="bili.upload_pick_cover"></button>
+                <span class="bili-upload-path" id="bili-upload-cover-path"></span>
+            </div>
+            <button class="btn btn-primary btn-block" id="btn-bili-upload-submit" type="button"
+                    data-i18n="bili.upload_submit"></button>
+            <div class="bili-upload-progress" id="bili-upload-progress" hidden>
+                <div class="bili-upload-progress-title" data-i18n="bili.upload_steps"></div>
+                <div class="bili-upload-steps" id="bili-upload-steps"></div>
+                <div class="bili-upload-error" id="bili-upload-error" hidden></div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="toast-container" id="toast-container"></div>
 
 <script src="icons.js"></script>
+<script src="bili-player.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -50,10 +50,12 @@ def test_a_new_disclaimer_version_is_shown_again(bridge, monkeypatch):
     import src.gui.bridge as bridge_module
 
     bridge.accept_disclaimer()
-    monkeypatch.setattr(bridge_module, "DISCLAIMER_VERSION", "2")
+    # 用一个比当前版本新的号，模拟「又改了一次免责声明」。
+    newer = str(int(DISCLAIMER_VERSION) + 1)
+    monkeypatch.setattr(bridge_module, "DISCLAIMER_VERSION", newer)
     status = bridge.get_disclaimer_status()
     assert status["required"] is True
-    assert status["version"] == "2"
+    assert status["version"] == newer
 
 
 def test_quit_app_is_reachable(bridge):

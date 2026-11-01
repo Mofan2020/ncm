@@ -310,6 +310,9 @@ function refreshDynamicTexts() {
     // again when the language changes.
     safeRender('renderCombinedRows', renderCombinedRows);
     safeRender('renderBiliResults', renderBiliResults);
+    safeRender('renderBiliAccount', renderBiliAccount);
+    safeRender('renderBiliFolderChips', renderBiliFolderChips);
+    safeRender('renderBiliFavorites', renderBiliFavorites);
     safeRender('updateFilterChips', updateFilterChips);
     // The idle delay is written in seconds, so the label follows the
     // language like the rest of the settings.
@@ -7418,7 +7421,9 @@ const biliSection = {
     partitions: [],
     error: '',
     loading: false,
-    exhausted: false
+    exhausted: false,
+    // 'hot' is the partition list, 'favorites' is the account's own list.
+    tab: 'hot'
 };
 
 /** The home card the user came from, so the way back lands on it. */
@@ -7585,6 +7590,9 @@ function openHomeEntry(entry, byKeyboard) {
     if (entry === 'bili') {
         showSection('bili');
         renderBili(0);
+        // The account bar is asked for every time the page is opened: the
+        // session may have ended in the meantime.
+        loadBiliAccount();
         focusPageTitle('bili-title');
         return;
     }
@@ -8297,8 +8305,10 @@ function renderBiliChips() {
     });
 }
 
-/** One video card. */
+/** One video card: the picture opens the page, the buttons play and download. */
 function biliCardElement(track) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bili-card-wrap';
     const card = document.createElement('button');
     card.className = 'video-card';
     card.type = 'button';
@@ -8324,20 +8334,51 @@ function biliCardElement(track) {
     card.appendChild(title);
     const sub = document.createElement('span');
     sub.className = 'vc-sub';
-    const up = document.createElement('span');
-    up.className = 'vc-up';
-    up.textContent = t('bili.by', { name: track.artists || '' });
+    // The uploader's name opens their page, when the list knows who it is.
+    if (track.author_mid) {
+        const link = document.createElement('button');
+        link.className = 'vc-up is-link';
+        link.type = 'button';
+        link.textContent = t('bili.by', { name: track.artists || '' });
+        link.addEventListener('click', (event) => {
+            event.stopPropagation();
+            openBiliSpace(track.author_mid);
+        });
+        sub.appendChild(link);
+    } else {
+        const up = document.createElement('span');
+        up.className = 'vc-up';
+        up.textContent = t('bili.by', { name: track.artists || '' });
+        sub.appendChild(up);
+    }
     const plays = document.createElement('span');
     plays.className = 'vc-plays';
     plays.textContent = t('bili.plays', { count: formatPlayCount(track.play_count) });
-    sub.appendChild(up);
     sub.appendChild(plays);
     card.appendChild(sub);
     card.addEventListener('click', () => {
         const url = track.url || '';
         if (url) state.api.open_external(url);
     });
-    return card;
+    wrap.appendChild(card);
+    // The buttons sit next to the card, not inside it: a button inside a
+    // button is invalid markup and the click would open the wrong thing.
+    const actions = document.createElement('div');
+    actions.className = 'bili-card-actions';
+    const playButton = document.createElement('button');
+    playButton.className = 'btn btn-sm btn-secondary';
+    playButton.type = 'button';
+    playButton.textContent = t('bili.play');
+    playButton.addEventListener('click', () => playBiliTrack(track));
+    const downloadButton = document.createElement('button');
+    downloadButton.className = 'btn btn-sm btn-secondary';
+    downloadButton.type = 'button';
+    downloadButton.textContent = t('bili.download');
+    downloadButton.addEventListener('click', () => downloadBiliTrack(track));
+    actions.appendChild(playButton);
+    actions.appendChild(downloadButton);
+    wrap.appendChild(actions);
+    return wrap;
 }
 
 /** Draw the grid, its skeleton and its states. */
@@ -8383,14 +8424,15 @@ function renderBiliResults() {
     }
     const more = document.getElementById('btn-bili-more');
     if (more) {
-        more.hidden = biliSection.exhausted || biliSection.loading;
+        more.hidden = biliSection.tab !== 'hot' || biliSection.exhausted || biliSection.loading;
         more.textContent = biliSection.loading ? t('common.loading') : t('bili.load_more');
         more.disabled = biliSection.loading;
     }
     const end = document.getElementById('bili-end');
     if (end) {
         // The button gives way to a line of text when the list is done.
-        end.hidden = biliSection.loading || !biliSection.items.length || !biliSection.exhausted;
+        end.hidden = biliSection.tab !== 'hot' || biliSection.loading
+            || !biliSection.items.length || !biliSection.exhausted;
         end.textContent = t('bili.no_more');
     }
 }
@@ -8491,6 +8533,1996 @@ async function loadMoreBili() {
     }
 }
 
+/* ------------------------------------------- bilibili account and favourites */
+
+/** The Bilibili account as the backend last reported it. */
+const biliAccount = {
+    loggedIn: false,
+    mid: 0,
+    uname: '',
+    face: '',
+    level: 0,
+    vipLabel: ''
+};
+
+/** The login panel: the open method and the captcha that is pending. */
+const biliLogin = {
+    method: 'qr',
+    timer: null,
+    captchaKey: '',
+    gt: '',
+    challenge: '',
+    token: ''
+};
+
+/** The account's own favourites: the folders and the open one. */
+const biliFavorites = {
+    folders: [],
+    folderId: null,
+    page: 1,
+    items: [],
+    hasMore: false,
+    loading: false,
+    error: '',
+    loaded: false
+};
+
+/** The video player: the open track, the streams and the chosen quality. */
+const biliPlayer = {
+    track: null,
+    streams: null,
+    quality: 0,
+    title: '',
+    author: '',
+    authorMid: ''
+};
+
+/** The value of one of the login inputs. */
+function biliInputValue(id) {
+    const el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+}
+
+/**
+ * The text of a login status.
+ *
+ * An unknown status has no key, so the caller falls back to the message the
+ * backend sent.
+ */
+function biliStatusText(status) {
+    const key = 'bili.status_' + (status || '');
+    const text = t(key);
+    return text === key ? '' : text;
+}
+
+/**
+ * The message of a failed Bilibili call.
+ *
+ * -101 is "not signed in": it gets its own text, because the user has to log
+ * in first, not retry.
+ */
+function biliFailure(result, fallbackKey) {
+    if (!result) return t(fallbackKey || 'error.unknown');
+    const code = result.code !== undefined && result.code !== null
+        ? result.code : result.error_code;
+    if (Number(code) === -101) return t('bili.login_required');
+    return result.message || t(fallbackKey || 'error.unknown');
+}
+
+/** The account bar: the avatar, the name, the level and the way out. */
+function renderBiliAccount() {
+    const face = document.getElementById('bili-account-face');
+    const name = document.getElementById('bili-account-name');
+    const meta = document.getElementById('bili-account-meta');
+    const actions = document.getElementById('bili-account-actions');
+    if (!name || !meta || !actions) return;
+    actions.innerHTML = '';
+    if (biliAccount.loggedIn) {
+        if (face) {
+            face.src = biliAccount.face || '';
+            face.hidden = !biliAccount.face;
+        }
+        // Without a nickname the account number is the only thing left.
+        name.textContent = biliAccount.uname
+            || t('bili.signed_in', { name: biliAccount.mid });
+        const parts = [];
+        if (biliAccount.level) parts.push(t('bili.level', { level: biliAccount.level }));
+        if (biliAccount.vipLabel) parts.push(t('bili.vip', { name: biliAccount.vipLabel }));
+        meta.textContent = parts.join(' · ');
+        // The three things that need the account: the messages, the upload
+        // and the own page.
+        const messages = document.createElement('button');
+        messages.className = 'btn btn-sm btn-secondary';
+        messages.type = 'button';
+        messages.textContent = t('bili.tab_messages');
+        messages.addEventListener('click', openBiliMessages);
+        actions.appendChild(messages);
+        const upload = document.createElement('button');
+        upload.className = 'btn btn-sm btn-secondary';
+        upload.type = 'button';
+        upload.textContent = t('bili.tab_upload');
+        upload.addEventListener('click', openBiliUpload);
+        actions.appendChild(upload);
+        if (biliAccount.mid) {
+            const space = document.createElement('button');
+            space.className = 'btn btn-sm btn-secondary';
+            space.type = 'button';
+            space.textContent = t('bili.tab_space');
+            space.addEventListener('click', () => openBiliSpace(biliAccount.mid));
+            actions.appendChild(space);
+        }
+        const logout = document.createElement('button');
+        logout.className = 'btn btn-sm btn-secondary';
+        logout.type = 'button';
+        logout.textContent = t('bili.logout');
+        logout.addEventListener('click', logoutBili);
+        actions.appendChild(logout);
+        return;
+    }
+    if (face) {
+        face.removeAttribute('src');
+        face.hidden = true;
+    }
+    name.textContent = t('bili.signed_out');
+    meta.textContent = '';
+    const login = document.createElement('button');
+    login.className = 'btn btn-sm btn-primary';
+    login.type = 'button';
+    login.textContent = t('bili.login_button');
+    login.addEventListener('click', openBiliLoginModal);
+    actions.appendChild(login);
+}
+
+/** Read the account from the backend and draw the bar. */
+async function loadBiliAccount() {
+    if (!bridgeHas('get_bilibili_account')) {
+        renderBiliAccount();
+        return;
+    }
+    try {
+        const result = await state.api.get_bilibili_account();
+        if (result && result.success) {
+            biliAccount.loggedIn = !!result.logged_in;
+            biliAccount.mid = result.mid || 0;
+            biliAccount.uname = result.uname || '';
+            biliAccount.face = result.face || '';
+            biliAccount.level = result.level || 0;
+            biliAccount.vipLabel = result.vip_label || '';
+        } else {
+            biliAccount.loggedIn = false;
+        }
+    } catch (err) {
+        biliAccount.loggedIn = false;
+    }
+    renderBiliAccount();
+    // The favourites need the account, so they are read again when the tab
+    // is open and the account has just changed.
+    if (biliSection.tab === 'favorites') loadBiliFolders();
+}
+
+/* ------------------------------------------------------------ bili login */
+
+/** Open the login panel. */
+function openBiliLoginModal() {
+    openModal('bili-login-modal');
+    switchBiliLoginTab('qr');
+}
+
+/** One of the five ways to sign in. */
+function switchBiliLoginTab(tab) {
+    biliLogin.method = tab;
+    document.querySelectorAll('#bili-login-tabs .tab').forEach((el) =>
+        el.classList.toggle('is-active', el.dataset.tab === tab));
+    document.querySelectorAll('#bili-login-modal .tab-panel').forEach((el) =>
+        el.classList.toggle('is-active', el.dataset.panel === tab));
+    // Only the QR code is polled; the other methods are one-shot requests.
+    stopBiliLoginPolling();
+    if (tab === 'qr') refreshBiliQrcode();
+    if (tab === 'password') loadBiliCaptcha();
+}
+
+/** Ask for a new QR code and start watching it. */
+async function refreshBiliQrcode() {
+    const image = document.getElementById('bili-qrcode-image');
+    const status = document.getElementById('bili-qrcode-status');
+    const refresh = document.getElementById('btn-bili-qrcode-refresh');
+    if (!bridgeHas('bili_login_qrcode')) {
+        if (status) status.textContent = t('error.unknown');
+        return;
+    }
+    if (refresh) refresh.hidden = true;
+    try {
+        const result = await state.api.bili_login_qrcode();
+        if (!result || !result.success) {
+            if (status) status.textContent = biliFailure(result, 'error.unknown');
+            return;
+        }
+        if (image) image.src = result.qrcode_url || '';
+        if (status) status.textContent = t('bili.status_waiting');
+        startBiliLoginPolling();
+    } catch (err) {
+        if (status) status.textContent = t('error.network');
+    }
+}
+
+/** Watch the QR code until it is used, expires or the panel closes. */
+function startBiliLoginPolling() {
+    stopBiliLoginPolling();
+    biliLogin.timer = setInterval(pollBiliLogin, 2000);
+    pollBiliLogin();
+}
+
+/** Stop watching the QR code. */
+function stopBiliLoginPolling() {
+    if (biliLogin.timer) {
+        clearInterval(biliLogin.timer);
+        biliLogin.timer = null;
+    }
+}
+
+/** One step of the QR login. */
+async function pollBiliLogin() {
+    const modal = document.getElementById('bili-login-modal');
+    if (modal && modal.hidden) {
+        stopBiliLoginPolling();
+        return;
+    }
+    if (!bridgeHas('bili_login_poll')) return;
+    let result = null;
+    try {
+        result = await state.api.bili_login_poll();
+    } catch (err) {
+        return;
+    }
+    if (!result) return;
+    const status = result.status || '';
+    const text = document.getElementById('bili-qrcode-status');
+    if (text) {
+        text.textContent = biliStatusText(status) || result.message || t('bili.status_waiting');
+    }
+    const refresh = document.getElementById('btn-bili-qrcode-refresh');
+    if (refresh) refresh.hidden = status !== 'expired';
+    if (status === 'success') {
+        stopBiliLoginPolling();
+        await finishBiliLogin();
+        return;
+    }
+    if (status === 'expired' || status === 'failed' || status === 'signed_out') {
+        stopBiliLoginPolling();
+    }
+}
+
+/** The login worked: close the panel and show who is signed in. */
+async function finishBiliLogin() {
+    stopBiliLoginPolling();
+    closeModal('bili-login-modal');
+    showToast('success', t('bili.signed_in_toast'));
+    await loadBiliAccount();
+}
+
+/** The captcha parameters of the password login. */
+async function loadBiliCaptcha() {
+    if (!bridgeHas('bili_captcha')) return;
+    try {
+        const result = await state.api.bili_captcha();
+        if (!result || !result.success) return;
+        biliLogin.gt = result.gt || '';
+        biliLogin.challenge = result.challenge || '';
+        biliLogin.token = result.token || '';
+        biliLogin.captchaKey = '';
+        const token = document.getElementById('bili-captcha-token');
+        if (token) token.value = biliLogin.token;
+    } catch (err) {
+        // No captcha today: the password login works without one.
+    }
+}
+
+/** Sign in with the account and the password. */
+async function submitBiliPassword() {
+    const username = biliInputValue('bili-username');
+    const password = biliInputValue('bili-password');
+    const captcha = biliInputValue('bili-captcha');
+    if (!bridgeHas('bili_login_password')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_login_password(
+            username, password, biliLogin.captchaKey, captcha, biliLogin.challenge, '', '');
+        if (!result || !result.success) {
+            if (result && result.captcha_required) {
+                // The backend asks for a captcha: keep its key for the next try.
+                biliLogin.captchaKey = result.captcha_key || '';
+                showToast('warning', result.message || t('bili.captcha_hint'), 9000);
+                return;
+            }
+            showToast('error', biliFailure(result, 'bili.status_failed'));
+            return;
+        }
+        await finishBiliLogin();
+    } catch (err) {
+        showToast('error', t('bili.status_failed'));
+    }
+}
+
+/** Ask for the SMS code of the login. */
+async function sendBiliSmsCode() {
+    const tel = biliInputValue('bili-phone');
+    if (!bridgeHas('bili_send_sms_code')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_send_sms_code(tel, '86');
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.status_failed'));
+            return;
+        }
+        showToast('success', result.message || t('bili.send_code'));
+    } catch (err) {
+        showToast('error', t('error.network'));
+    }
+}
+
+/** Sign in with the SMS code. */
+async function submitBiliSms() {
+    const tel = biliInputValue('bili-phone');
+    const code = biliInputValue('bili-sms-code');
+    if (!bridgeHas('bili_login_sms')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_login_sms(tel, code, '86');
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.status_failed'));
+            return;
+        }
+        await finishBiliLogin();
+    } catch (err) {
+        showToast('error', t('bili.status_failed'));
+    }
+}
+
+/** Sign in with a cookie that was copied from the browser. */
+async function submitBiliCookie() {
+    const cookie = biliInputValue('bili-cookie');
+    if (!bridgeHas('bili_login_cookie')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_login_cookie(cookie);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.status_failed'));
+            return;
+        }
+        await finishBiliLogin();
+    } catch (err) {
+        showToast('error', t('bili.status_failed'));
+    }
+}
+
+/** Ask for the SMS code of the registration. */
+async function sendBiliRegisterCode() {
+    const tel = biliInputValue('bili-register-phone');
+    if (!bridgeHas('bili_register_send_code')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_register_send_code(tel, '86');
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.status_failed'));
+            return;
+        }
+        showToast('success', result.message || t('bili.send_code'));
+    } catch (err) {
+        showToast('error', t('error.network'));
+    }
+}
+
+/** Create a new account. */
+async function submitBiliRegister() {
+    const username = biliInputValue('bili-register-username');
+    const password = biliInputValue('bili-register-password');
+    const tel = biliInputValue('bili-register-phone');
+    const code = biliInputValue('bili-register-code');
+    if (!bridgeHas('bili_register')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_register(username, password, tel, code, '86');
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.status_failed'));
+            return;
+        }
+        await finishBiliLogin();
+    } catch (err) {
+        showToast('error', t('bili.status_failed'));
+    }
+}
+
+/** Sign out and forget the favourites. */
+async function logoutBili() {
+    if (!bridgeHas('bili_logout')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_logout();
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.status_failed'));
+            return;
+        }
+        biliAccount.loggedIn = false;
+        biliAccount.uname = '';
+        biliAccount.face = '';
+        biliFavorites.folders = [];
+        biliFavorites.items = [];
+        biliFavorites.folderId = null;
+        biliFavorites.loaded = false;
+        renderBiliAccount();
+        renderBiliFolderChips();
+        renderBiliFavorites();
+        showToast('info', t('bili.status_signed_out'));
+    } catch (err) {
+        showToast('error', t('error.network'));
+    }
+}
+
+/* --------------------------------------------------------- bili favourites */
+
+/** Switch between the hot list, the favourites and the watch history. */
+function setBiliTab(tab) {
+    biliSection.tab = ['favorites', 'history'].indexOf(tab) >= 0 ? tab : 'hot';
+    document.querySelectorAll('#bili-tabs .top-tab').forEach((el) =>
+        el.classList.toggle('is-active', el.dataset.tab === biliSection.tab));
+    ['bili-chips', 'bili-results', 'bili-state', 'btn-bili-more', 'bili-end'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.hidden = biliSection.tab !== 'hot';
+    });
+    const favorites = document.getElementById('bili-favorites');
+    if (favorites) favorites.hidden = biliSection.tab !== 'favorites';
+    const history = document.getElementById('bili-history');
+    if (history) history.hidden = biliSection.tab !== 'history';
+    if (biliSection.tab === 'favorites') loadBiliFolders();
+    if (biliSection.tab === 'history') loadBiliHistory(true);
+}
+
+/** Draw the row of favourite folders. */
+function renderBiliFolderChips() {
+    const row = document.getElementById('bili-folder-chips');
+    if (!row) return;
+    row.innerHTML = '';
+    biliFavorites.folders.forEach((folder) => {
+        if (!folder) return;
+        const chip = document.createElement('button');
+        chip.className = biliFavorites.folderId === folder.id ? 'chip is-active' : 'chip';
+        chip.type = 'button';
+        const count = t('bili.folder_media_count', { count: folder.media_count || 0 });
+        chip.textContent = (folder.title || '') + ' · ' + count;
+        chip.addEventListener('click', () => openBiliFolder(folder.id));
+        row.appendChild(chip);
+    });
+}
+
+/** Open one folder and read its first page. */
+function openBiliFolder(folderId) {
+    biliFavorites.folderId = folderId;
+    biliFavorites.page = 1;
+    biliFavorites.items = [];
+    biliFavorites.hasMore = false;
+    biliFavorites.error = '';
+    renderBiliFolderChips();
+    loadBiliFavoriteVideos(true);
+}
+
+/** Read the folders of the account. */
+async function loadBiliFolders() {
+    biliFavorites.loading = true;
+    renderBiliFavorites();
+    try {
+        if (!bridgeHas('get_bilibili_favorites')) {
+            biliFavorites.error = t('error.unknown');
+            biliFavorites.loading = false;
+            renderBiliFavorites();
+            return;
+        }
+        const result = await state.api.get_bilibili_favorites();
+        if (!result || !result.success) {
+            biliFavorites.folders = [];
+            biliFavorites.error = biliFailure(result, 'bili.favorite_login_hint');
+            biliFavorites.loading = false;
+            renderBiliFolderChips();
+            renderBiliFavorites();
+            return;
+        }
+        biliFavorites.folders = result.folders || [];
+        biliFavorites.loaded = true;
+        biliFavorites.loading = false;
+        renderBiliFolderChips();
+        if (!biliFavorites.folderId && biliFavorites.folders.length) {
+            openBiliFolder(biliFavorites.folders[0].id);
+            return;
+        }
+        renderBiliFavorites();
+    } catch (err) {
+        biliFavorites.error = t('error.network');
+        biliFavorites.loading = false;
+        renderBiliFavorites();
+    }
+}
+
+/** Read one page of the open folder. */
+async function loadBiliFavoriteVideos(reset) {
+    if (biliFavorites.loading) return;
+    if (!biliFavorites.folderId) {
+        renderBiliFavorites();
+        return;
+    }
+    if (!reset && !biliFavorites.hasMore) return;
+    biliFavorites.loading = true;
+    biliFavorites.error = '';
+    renderBiliFavorites();
+    try {
+        if (!bridgeHas('get_bilibili_favorite_videos')) {
+            biliFavorites.error = t('error.unknown');
+            biliFavorites.loading = false;
+            renderBiliFavorites();
+            return;
+        }
+        const page = reset ? 1 : biliFavorites.page + 1;
+        const result = await state.api.get_bilibili_favorite_videos(
+            biliFavorites.folderId, page, 30);
+        if (!result || !result.success) {
+            biliFavorites.error = biliFailure(result, 'bili.favorite_login_hint');
+            biliFavorites.loading = false;
+            renderBiliFavorites();
+            return;
+        }
+        const items = result.items || [];
+        if (reset) biliFavorites.items = [];
+        items.forEach((item) => biliFavorites.items.push(item));
+        biliFavorites.page = page;
+        biliFavorites.hasMore = !!result.has_more;
+        biliFavorites.loading = false;
+        renderBiliFavorites();
+    } catch (err) {
+        biliFavorites.error = t('error.network');
+        biliFavorites.loading = false;
+        renderBiliFavorites();
+    }
+}
+
+/** Draw the favourites: the folders, the grid and the states. */
+function renderBiliFavorites() {
+    const grid = document.getElementById('bili-fav-results');
+    const box = document.getElementById('bili-fav-state');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (box) box.innerHTML = '';
+    if (!biliAccount.loggedIn) {
+        if (box) {
+            box.appendChild(buildStateBlock('user-plus', t('bili.favorite_login_hint'), ''));
+        }
+        return;
+    }
+    if (!biliFavorites.folders.length) {
+        if (box) box.appendChild(buildStateBlock('folder', t('bili.no_folders'), ''));
+        return;
+    }
+    biliFavorites.items.forEach((track) => grid.appendChild(biliCardElement(track)));
+    if (biliFavorites.loading) return;
+    if (biliFavorites.error && box) {
+        box.appendChild(buildStateBlock('close', t('bili.error_title'),
+            t('bili.error_hint', { message: biliFavorites.error }),
+            t('common.retry'), () => loadBiliFavoriteVideos(true)));
+        return;
+    }
+    if (!biliFavorites.items.length && box) {
+        box.appendChild(buildStateBlock('list', t('bili.favorites_empty'), ''));
+    }
+    const more = document.getElementById('btn-bili-fav-more');
+    if (more) {
+        more.hidden = !biliFavorites.hasMore || biliFavorites.loading;
+        more.disabled = biliFavorites.loading;
+        more.textContent = biliFavorites.loading ? t('common.loading') : t('bili.load_more');
+    }
+    const end = document.getElementById('bili-fav-end');
+    if (end) {
+        end.hidden = biliFavorites.loading || !biliFavorites.items.length || biliFavorites.hasMore;
+        end.textContent = t('bili.no_more');
+    }
+}
+
+/* ----------------------------------------------------------- bili playback */
+
+/** The status line of the player. */
+function setBiliPlayerStatus(code) {
+    const status = document.getElementById('bili-player-status');
+    if (!status) return;
+    if (code === 'buffering') { status.textContent = t('bili.buffering'); return; }
+    if (code === 'ready') { status.textContent = t('bili.video_ready'); return; }
+    if (code === 'audio_only') { status.textContent = t('bili.audio_only'); return; }
+    if (code === 'streaming') { status.textContent = t('bili.streaming'); return; }
+    status.textContent = t('bili.video_error');
+}
+
+/** The badges that say what the streams carry (HD, Dolby, Hi-Res). */
+function renderBiliQualityBadges(streams) {
+    const box = document.getElementById('bili-quality-badges');
+    if (!box) return;
+    box.innerHTML = '';
+    const names = (streams.qualities || []).map((quality) =>
+        (quality && quality.name ? String(quality.name).toLowerCase() : '')).join(' ');
+    const add = (key) => {
+        const badge = document.createElement('span');
+        badge.className = 'source-badge is-bili';
+        badge.textContent = t(key);
+        box.appendChild(badge);
+    };
+    if (streams.dolby || names.indexOf('dolby') >= 0) add('bili.dolby');
+    if (streams.flac || names.indexOf('flac') >= 0
+        || names.indexOf('hi-res') >= 0 || names.indexOf('hires') >= 0) add('bili.hires');
+    if (streams.hd || names.indexOf('hd') >= 0 || names.indexOf('1080') >= 0
+        || names.indexOf('4k') >= 0) add('bili.hd');
+}
+
+/** The quality picker: the auto line and the qualities that are available. */
+function renderBiliQualities(streams) {
+    const select = document.getElementById('bili-quality');
+    if (!select) return;
+    select.innerHTML = '';
+    const auto = document.createElement('option');
+    auto.value = '0';
+    auto.textContent = t('bili.quality_auto');
+    select.appendChild(auto);
+    const offered = ['0'];
+    (streams.qualities || []).forEach((quality) => {
+        if (!quality || !quality.available) return;
+        const option = document.createElement('option');
+        option.value = String(quality.id);
+        option.textContent = quality.name || String(quality.id);
+        select.appendChild(option);
+        offered.push(option.value);
+    });
+    // The chosen quality stays, unless it is not in the list any more.
+    const wanted = String(biliPlayer.quality || 0);
+    select.value = offered.indexOf(wanted) >= 0 ? wanted : '0';
+    renderBiliQualityBadges(streams);
+}
+
+/** Open the player for one track. */
+function openBiliPlayer(track) {
+    const name = document.getElementById('bili-video-name');
+    if (name) name.textContent = (track && track.name) || '';
+    const status = document.getElementById('bili-player-status');
+    if (status) status.textContent = t('bili.buffering');
+    openModal('bili-player-modal');
+}
+
+/** Fetch the streams and hand them to the player. */
+async function loadBiliStreams(bvid, quality) {
+    const videoEl = document.getElementById('bili-video');
+    if (!videoEl) return;
+    setBiliPlayerStatus('buffering');
+    try {
+        const result = await state.api.get_bilibili_video_streams(bvid, quality);
+        if (!result || !result.success) {
+            setBiliPlayerStatus('error');
+            showToast('error', biliFailure(result, 'bili.video_error'));
+            return;
+        }
+        biliPlayer.streams = result;
+        biliPlayer.quality = quality;
+        // The details of the video: the detail panel needs the uploader too.
+        biliPlayer.title = result.title || '';
+        biliPlayer.author = result.author || '';
+        biliPlayer.authorMid = result.author_mid || '';
+        renderBiliQualities(result);
+        const played = await window.playBiliVideo(videoEl, result, {
+            onStatus: (code) => setBiliPlayerStatus(code)
+        });
+        if (!played) setBiliPlayerStatus('error');
+    } catch (err) {
+        setBiliPlayerStatus('error');
+    }
+}
+
+/** Play one video in the client. */
+async function playBiliTrack(track) {
+    const bvid = (track && track.bvid) || '';
+    if (!bvid) {
+        showToast('error', t('bili.video_error'));
+        return;
+    }
+    if (!bridgeHas('get_bilibili_video_streams')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    biliPlayer.track = track || null;
+    biliPlayer.quality = 0;
+    openBiliPlayer(track);
+    await loadBiliStreams(bvid, 0);
+    // The detail panel lives inside the player, so it is filled once the
+    // video is known.
+    await openBiliDetail(bvid, {
+        title: biliPlayer.title,
+        author: biliPlayer.author,
+        authorMid: biliPlayer.authorMid
+    });
+}
+
+/** Switch to another quality and keep the place in the video. */
+async function changeBiliQuality(value) {
+    const track = biliPlayer.track;
+    const videoEl = document.getElementById('bili-video');
+    if (!track || !track.bvid || !videoEl) return;
+    const position = videoEl.currentTime || 0;
+    const restore = () => {
+        try { videoEl.currentTime = position; } catch (err) { /* 还没准备好 */ }
+    };
+    videoEl.addEventListener('loadedmetadata', restore, { once: true });
+    await loadBiliStreams(track.bvid, Number(value) || 0);
+    if (position) restore();
+}
+
+/** Stop the playback and let go of the media. */
+function closeBiliPlayer() {
+    const videoEl = document.getElementById('bili-video');
+    if (videoEl) {
+        try { videoEl.pause(); } catch (err) { /* 没有在播 */ }
+        try {
+            videoEl.removeAttribute('src');
+            videoEl.load();
+        } catch (err) { /* 忽略 */ }
+    }
+    if (window.stopBiliVideo) window.stopBiliVideo();
+    biliPlayer.streams = null;
+}
+
+/** Download one video (and its audio track). */
+/** The download progress of a Bilibili file, pushed by the backend. */
+function onBiliDownloadProgress(payload) {
+    if (!payload) return;
+    if (payload.status === 'completed') {
+        showToast('success', t('bili.download_done'), 6000);
+    } else if (payload.status === 'failed') {
+        showToast('error', biliFailure(payload, 'bili.download_failed'), 6000);
+    }
+}
+
+async function downloadBiliTrack(track) {
+    if (!track) return;
+    if (!bridgeHas('download_bilibili_tracks')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.download_bilibili_tracks(
+            [track], { quality: biliPlayer.quality || 0 });
+        if (result && result.success) {
+            showToast('success', t('bili.downloading'));
+            return;
+        }
+        showToast('error', biliFailure(result, 'bili.download_failed'));
+    } catch (err) {
+        showToast('error', t('bili.download_failed'));
+    }
+}
+
+/* --------------------------------------- bili detail: counters, comments, danmaku */
+
+/**
+ * The state of the video detail panel.
+ *
+ * The like and the favourite are kept here: Bilibili has no query for
+ * "which videos did I like", so the button can only follow what the user
+ * did last.  A new video starts over.
+ */
+const biliDetail = {
+    bvid: '',
+    title: '',
+    author: '',
+    authorMid: '',
+    stat: {},
+    liked: false,
+    favorited: false,
+    comments: [],
+    commentPage: 1,
+    commentHasMore: false,
+    commentLoading: false,
+    replyTo: null,
+    danmaku: [],
+    danmakuCursor: 0,
+    danmakuMode: '',
+    danmakuKeyword: ''
+};
+
+/** The danmaku that are on the picture at the moment. */
+const biliDanmakuLive = [];
+
+/** The numbers of the video that is open. */
+function renderBiliDetailStats() {
+    const box = document.getElementById('bili-detail-stats');
+    if (!box) return;
+    box.innerHTML = '';
+    const stat = biliDetail.stat || {};
+    const add = (key, value) => {
+        const chip = document.createElement('span');
+        chip.className = 'source-badge is-bili';
+        chip.textContent = t(key) + ' ' + formatPlayCount(value);
+        box.appendChild(chip);
+    };
+    add('bili.stat_view', stat.view || 0);
+    add('bili.stat_danmaku', stat.danmaku || 0);
+    add('bili.stat_reply', stat.reply || 0);
+    add('bili.stat_favorite', stat.favorite || 0);
+    add('bili.stat_coin', stat.coin || 0);
+    add('bili.stat_like', stat.like || 0);
+}
+
+/** The title, the uploader and the state of the three buttons. */
+function renderBiliDetailHeader() {
+    const title = document.getElementById('bili-detail-title');
+    if (title) title.textContent = biliDetail.title || '';
+    const up = document.getElementById('bili-detail-up');
+    if (up) {
+        up.textContent = biliDetail.author || '';
+        up.hidden = !biliDetail.authorMid;
+    }
+    const like = document.getElementById('btn-bili-like');
+    if (like) {
+        like.textContent = biliDetail.liked ? t('bili.liked') : t('bili.like');
+        like.classList.toggle('is-active', biliDetail.liked);
+    }
+    const favorite = document.getElementById('btn-bili-favorite');
+    if (favorite) {
+        favorite.textContent = biliDetail.favorited
+            ? t('bili.favorite_done') : t('bili.favorite_add');
+        favorite.classList.toggle('is-active', biliDetail.favorited);
+    }
+}
+
+/** Read the counters of the video that is open. */
+async function loadBiliDetailStat() {
+    if (!biliDetail.bvid) return;
+    if (!bridgeHas('get_bilibili_video_stat')) return;
+    try {
+        const result = await state.api.get_bilibili_video_stat(biliDetail.bvid);
+        if (!result || !result.success) return;
+        biliDetail.stat = result.stat || {};
+        renderBiliDetailStats();
+    } catch (err) {
+        /* No counters: the panel is still usable without them. */
+    }
+}
+
+/** Open the detail panel of a video and fill it. */
+async function openBiliDetail(bvid, info) {
+    const details = info || {};
+    biliDetail.bvid = bvid || '';
+    biliDetail.title = details.title || '';
+    biliDetail.author = details.author || '';
+    biliDetail.authorMid = details.authorMid || '';
+    biliDetail.stat = {};
+    biliDetail.liked = false;
+    biliDetail.favorited = false;
+    biliDetail.comments = [];
+    biliDetail.commentPage = 1;
+    biliDetail.commentHasMore = false;
+    biliDetail.replyTo = null;
+    biliDetail.danmaku = [];
+    biliDetail.danmakuCursor = 0;
+    biliDetail.danmakuMode = '';
+    biliDetail.danmakuKeyword = '';
+    clearBiliDanmakuLive();
+    renderBiliDetailHeader();
+    renderBiliDetailStats();
+    renderBiliComments();
+    renderBiliDanmaku();
+    cancelBiliReply();
+    await loadBiliDetailStat();
+    await loadBiliComments(true);
+    await loadBiliDanmaku();
+}
+
+/** Like the video that is open, or take the like back. */
+async function likeBiliVideo() {
+    const bvid = biliDetail.bvid;
+    if (!bvid) return;
+    if (!bridgeHas('bili_like_video')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const next = !biliDetail.liked;
+    try {
+        const result = await state.api.bili_like_video(bvid, next);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.like_done'));
+            return;
+        }
+        biliDetail.liked = next;
+        renderBiliDetailHeader();
+        showToast('success', next ? t('bili.like_done') : t('bili.unlike_done'));
+        await loadBiliDetailStat();
+    } catch (err) {
+        showToast('error', t('bili.like_done'));
+    }
+}
+
+/** Open the coin panel and read the balance. */
+async function openBiliCoinPanel() {
+    const panel = document.getElementById('bili-coin-panel');
+    if (!panel) return;
+    panel.hidden = false;
+    const box = document.getElementById('bili-coin-balance');
+    if (box) box.textContent = '';
+    if (!bridgeHas('get_bilibili_coin_balance')) return;
+    try {
+        const result = await state.api.get_bilibili_coin_balance();
+        if (!result || !result.success) {
+            if (box) box.textContent = biliFailure(result, 'bili.coin_failed');
+            return;
+        }
+        if (box) box.textContent = t('bili.coin_balance', { count: result.balance || 0 });
+    } catch (err) {
+        if (box) box.textContent = t('bili.coin_failed');
+    }
+}
+
+/** Throw one or two coins at the video that is open. */
+async function coinBiliVideo(count) {
+    const bvid = biliDetail.bvid;
+    if (!bvid) return;
+    if (!bridgeHas('bili_coin_video')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_coin_video(bvid, count, false);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.coin_failed'));
+            return;
+        }
+        showToast('success', t('bili.coin_success'));
+        const panel = document.getElementById('bili-coin-panel');
+        if (panel) panel.hidden = true;
+        await loadBiliDetailStat();
+        await openBiliCoinPanel();
+    } catch (err) {
+        showToast('error', t('bili.coin_failed'));
+    }
+}
+
+/** Open the folder picker for the video that is open. */
+async function openBiliFavoritePanel() {
+    const panel = document.getElementById('bili-fav-panel');
+    const list = document.getElementById('bili-fav-list');
+    if (!panel || !list) return;
+    panel.hidden = false;
+    list.innerHTML = '';
+    if (!bridgeHas('get_bilibili_favorites')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.get_bilibili_favorites();
+        const folders = (result && result.folders) || [];
+        if (!folders.length) {
+            list.appendChild(buildStateBlock('folder', t('bili.no_folders'), ''));
+            return;
+        }
+        folders.forEach((folder) => {
+            if (!folder) return;
+            const button = document.createElement('button');
+            button.className = 'btn btn-sm btn-secondary';
+            button.type = 'button';
+            const count = t('bili.folder_media_count', { count: folder.media_count || 0 });
+            button.textContent = (folder.title || '') + ' · ' + count;
+            button.addEventListener('click', () => favoriteBiliVideo(folder.id));
+            list.appendChild(button);
+        });
+    } catch (err) {
+        showToast('error', t('bili.favorite_failed'));
+    }
+}
+
+/** Put the video that is open into a favourite folder. */
+async function favoriteBiliVideo(folderId) {
+    const bvid = biliDetail.bvid;
+    if (!bvid) return;
+    if (!bridgeHas('bili_favorite_video')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_favorite_video(bvid, folderId, false);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.favorite_failed'));
+            return;
+        }
+        biliDetail.favorited = true;
+        renderBiliDetailHeader();
+        const panel = document.getElementById('bili-fav-panel');
+        if (panel) panel.hidden = true;
+        showToast('success', t('bili.favorite_folder_done'));
+        await loadBiliDetailStat();
+    } catch (err) {
+        showToast('error', t('bili.favorite_failed'));
+    }
+}
+
+/** Take the video that is open out of its favourite folder. */
+async function unfavoriteBiliVideo() {
+    const bvid = biliDetail.bvid;
+    if (!bvid) return;
+    if (!bridgeHas('bili_favorite_video')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_favorite_video(bvid, '', true);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.favorite_failed'));
+            return;
+        }
+        biliDetail.favorited = false;
+        renderBiliDetailHeader();
+        const panel = document.getElementById('bili-fav-panel');
+        if (panel) panel.hidden = true;
+        showToast('success', t('bili.favorite_remove'));
+        await loadBiliDetailStat();
+    } catch (err) {
+        showToast('error', t('bili.favorite_failed'));
+    }
+}
+
+/* -------------------------------------------------------------- comments */
+
+/** One comment, with the replies the backend kept. */
+function biliCommentElement(comment, child) {
+    const row = document.createElement('div');
+    row.className = child ? 'bili-comment is-child' : 'bili-comment';
+    const head = document.createElement('div');
+    head.className = 'bili-comment-head';
+    const face = document.createElement('img');
+    face.className = 'bili-comment-face';
+    face.alt = '';
+    face.loading = 'lazy';
+    if (comment.face) {
+        face.src = comment.face;
+        face.addEventListener('error', () => { face.remove(); });
+    }
+    head.appendChild(face);
+    const name = document.createElement('button');
+    name.className = 'bili-comment-name';
+    name.type = 'button';
+    name.textContent = comment.uname || '';
+    name.addEventListener('click', () => {
+        if (comment.mid) openBiliSpace(comment.mid);
+    });
+    head.appendChild(name);
+    if (comment.level) {
+        const level = document.createElement('span');
+        level.className = 'source-badge is-bili';
+        level.textContent = t('bili.level', { level: comment.level });
+        head.appendChild(level);
+    }
+    row.appendChild(head);
+    const body = document.createElement('div');
+    body.className = 'bili-comment-body';
+    body.textContent = comment.content || '';
+    row.appendChild(body);
+    const meta = document.createElement('div');
+    meta.className = 'bili-comment-meta';
+    if (comment.location) {
+        const place = document.createElement('span');
+        place.textContent = comment.location;
+        meta.appendChild(place);
+    }
+    const reply = document.createElement('button');
+    reply.className = 'btn btn-sm btn-link';
+    reply.type = 'button';
+    reply.textContent = t('bili.comment_reply');
+    reply.addEventListener('click', () => startBiliReply(comment));
+    meta.appendChild(reply);
+    const like = document.createElement('button');
+    like.className = 'btn btn-sm btn-link';
+    like.type = 'button';
+    like.textContent = t('bili.comment_like') + ' ' + formatPlayCount(comment.like || 0);
+    like.addEventListener('click', () => likeBiliComment(comment, like));
+    meta.appendChild(like);
+    row.appendChild(meta);
+    const children = comment.children || [];
+    children.forEach((childComment) => {
+        row.appendChild(biliCommentElement(childComment, true));
+    });
+    return row;
+}
+
+/** Draw the comment list. */
+function renderBiliComments() {
+    const list = document.getElementById('bili-comment-list');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!biliDetail.comments.length) {
+        list.appendChild(buildStateBlock('message-circle', t('bili.comment_empty'), ''));
+    } else {
+        biliDetail.comments.forEach((comment) => {
+            if (!comment) return;
+            list.appendChild(biliCommentElement(comment, false));
+        });
+    }
+    const more = document.getElementById('btn-bili-comment-more');
+    if (more) {
+        more.hidden = !biliDetail.commentHasMore || biliDetail.commentLoading;
+        more.disabled = biliDetail.commentLoading;
+        more.textContent = biliDetail.commentLoading
+            ? t('common.loading') : t('bili.load_more');
+    }
+}
+
+/** Read the comments of the video that is open. */
+async function loadBiliComments(reset) {
+    const bvid = biliDetail.bvid;
+    if (!bvid) return;
+    if (!bridgeHas('get_bilibili_comments')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    if (biliDetail.commentLoading) return;
+    biliDetail.commentLoading = true;
+    renderBiliComments();
+    try {
+        const page = reset ? 1 : biliDetail.commentPage + 1;
+        const result = await state.api.get_bilibili_comments(bvid, page, 'hot');
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.comment_failed'));
+            return;
+        }
+        const items = result.comments || [];
+        if (reset) biliDetail.comments = [];
+        items.forEach((comment) => {
+            if (comment) biliDetail.comments.push(comment);
+        });
+        biliDetail.commentPage = page;
+        biliDetail.commentHasMore = !!result.has_more;
+    } catch (err) {
+        showToast('error', t('bili.comment_failed'));
+    } finally {
+        biliDetail.commentLoading = false;
+        renderBiliComments();
+    }
+}
+
+/** Write a comment, or a reply to the one that was picked. */
+async function sendBiliComment() {
+    const input = document.getElementById('bili-comment-input');
+    const text = (input && input.value ? input.value : '').trim();
+    if (!text) return;
+    const bvid = biliDetail.bvid;
+    if (!bvid) return;
+    if (!bridgeHas('bili_post_comment')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const parent = biliDetail.replyTo ? biliDetail.replyTo.rpid : 0;
+    try {
+        const result = await state.api.bili_post_comment(bvid, text, parent);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.comment_failed'));
+            return;
+        }
+        if (input) input.value = '';
+        cancelBiliReply();
+        showToast('success', t('bili.like_done'));
+        await loadBiliComments(true);
+    } catch (err) {
+        showToast('error', t('bili.comment_failed'));
+    }
+}
+
+/** Remember which comment the next message answers. */
+function startBiliReply(comment) {
+    if (!comment) return;
+    biliDetail.replyTo = { rpid: comment.rpid || 0, name: comment.uname || '' };
+    const bar = document.getElementById('bili-comment-reply');
+    const target = document.getElementById('bili-comment-reply-target');
+    if (target) target.textContent = t('bili.comment_reply') + ' ' + (comment.uname || '');
+    if (bar) bar.hidden = false;
+    const input = document.getElementById('bili-comment-input');
+    if (input) input.focus();
+}
+
+/** Forget the comment the next message would answer. */
+function cancelBiliReply() {
+    biliDetail.replyTo = null;
+    const bar = document.getElementById('bili-comment-reply');
+    if (bar) bar.hidden = true;
+}
+
+/** Like a comment, or take the like back. */
+async function likeBiliComment(comment, button) {
+    if (!comment || !comment.rpid) return;
+    if (!bridgeHas('bili_like_comment')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const liked = !!comment.liked;
+    try {
+        const result = await state.api.bili_like_comment(comment.rpid, !liked);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.comment_failed'));
+            return;
+        }
+        comment.liked = !liked;
+        comment.like = Math.max(0, Number(comment.like || 0) + (liked ? -1 : 1));
+        if (button) {
+            button.textContent = t('bili.comment_like') + ' ' + formatPlayCount(comment.like);
+        }
+    } catch (err) {
+        showToast('error', t('bili.comment_failed'));
+    }
+}
+
+/* --------------------------------------------------------------- danmaku */
+
+/**
+ * Put the cursor on the danmaku that come after the given second.
+ *
+ * The cursor says how far the list has been read; when the filter changes
+ * the list changes too, so the cursor has to be put back to the place the
+ * video is at -- otherwise a burst of old danmaku lands on the picture.
+ */
+function resetBiliDanmakuCursor(currentTime) {
+    const visible = biliVisibleDanmaku();
+    const now = Number(currentTime || 0);
+    let index = 0;
+    while (index < visible.length && Number(visible[index].time || 0) < now) index += 1;
+    biliDetail.danmakuCursor = index;
+}
+
+/** The danmaku that pass the current filter. */
+function biliVisibleDanmaku() {
+    const mode = biliDetail.danmakuMode;
+    const keyword = (biliDetail.danmakuKeyword || '').trim().toLowerCase();
+    const modes = mode === 'scroll' ? [1] : (mode === 'bottom' ? [4] : (mode === 'top' ? [5] : []));
+    return biliDetail.danmaku.filter((item) => {
+        if (!item) return false;
+        if (modes.length && modes.indexOf(Number(item.mode || 0)) < 0) return false;
+        if (keyword && String(item.text || '').toLowerCase().indexOf(keyword) < 0) return false;
+        return true;
+    });
+}
+
+/** The chips that pick the position of the danmaku that are shown. */
+function renderBiliDanmakuModes() {
+    const row = document.getElementById('bili-danmaku-modes');
+    if (!row) return;
+    row.innerHTML = '';
+    const modes = [
+        { key: 'scroll', label: 'bili.danmaku_mode_scroll' },
+        { key: 'bottom', label: 'bili.danmaku_mode_bottom' },
+        { key: 'top', label: 'bili.danmaku_mode_top' }
+    ];
+    modes.forEach((mode) => {
+        const chip = document.createElement('button');
+        chip.className = biliDetail.danmakuMode === mode.key ? 'chip is-active' : 'chip';
+        chip.type = 'button';
+        chip.textContent = t(mode.label);
+        chip.addEventListener('click', () => {
+            // Clicking the chip that is already on turns the filter off again.
+            biliDetail.danmakuMode = biliDetail.danmakuMode === mode.key ? '' : mode.key;
+            renderBiliDanmakuModes();
+            resetBiliDanmakuCursor(biliVideoTime());
+            renderBiliDanmaku();
+        });
+        row.appendChild(chip);
+    });
+}
+
+/** Draw the danmaku list and say how many the filter hid. */
+function renderBiliDanmaku() {
+    const list = document.getElementById('bili-danmaku-list');
+    if (!list) return;
+    list.innerHTML = '';
+    const items = biliVisibleDanmaku();
+    if (!items.length) {
+        list.appendChild(buildStateBlock('message-square', t('bili.danmaku_empty'), ''));
+    } else {
+        items.forEach((item) => {
+            const row = document.createElement('div');
+            row.className = 'bili-danmaku-row';
+            const time = document.createElement('span');
+            time.className = 'bili-danmaku-time';
+            time.textContent = fmtTime(item.time || 0);
+            row.appendChild(time);
+            const text = document.createElement('span');
+            text.className = 'bili-danmaku-text';
+            text.textContent = item.text || '';
+            row.appendChild(text);
+            list.appendChild(row);
+        });
+    }
+    const hidden = document.getElementById('bili-danmaku-hidden');
+    if (hidden) {
+        const count = biliDetail.danmaku.length - items.length;
+        hidden.hidden = count <= 0;
+        hidden.textContent = t('bili.danmaku_hidden', { count: count });
+    }
+}
+
+/** Read the danmaku of the video that is open. */
+async function loadBiliDanmaku() {
+    const bvid = biliDetail.bvid;
+    if (!bvid) return;
+    if (!bridgeHas('get_bilibili_danmaku')) return;
+    biliDetail.danmakuLoading = true;
+    try {
+        const result = await state.api.get_bilibili_danmaku(bvid, 0);
+        if (!result || !result.success) return;
+        biliDetail.danmaku = result.items || [];
+        resetBiliDanmakuCursor(biliVideoTime());
+        renderBiliDanmaku();
+    } catch (err) {
+        /* No danmaku: nothing to show. */
+    } finally {
+        biliDetail.danmakuLoading = false;
+    }
+}
+
+/** Write one danmaku. */
+async function sendBiliDanmaku() {
+    const input = document.getElementById('bili-danmaku-input');
+    const text = (input && input.value ? input.value : '').trim();
+    if (!text) return;
+    const bvid = biliDetail.bvid;
+    if (!bvid) return;
+    if (!bridgeHas('bili_send_danmaku')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_send_danmaku(bvid, text, 0, 16777215, 25, 1);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.danmaku_failed'));
+            return;
+        }
+        if (input) input.value = '';
+        showToast('success', t('bili.danmaku_send'));
+        await loadBiliDanmaku();
+    } catch (err) {
+        showToast('error', t('bili.danmaku_failed'));
+    }
+}
+
+/** The second the video is at, or zero when nothing plays. */
+function biliVideoTime() {
+    const videoEl = document.getElementById('bili-video');
+    return videoEl ? Number(videoEl.currentTime || 0) : 0;
+}
+
+/** Take every danmaku off the picture. */
+function clearBiliDanmakuLive() {
+    biliDanmakuLive.length = 0;
+    const layer = document.getElementById('bili-danmaku-layer');
+    if (layer) layer.innerHTML = '';
+}
+
+/**
+ * Show the danmaku that belong to the time the video is at.
+ *
+ * The danmaku are sorted by time, so a cursor says how far we got; every
+ * danmaku that passes the filter is put on the picture once and scrolls
+ * away on its own.
+ */
+function updateBiliDanmakuLive(currentTime) {
+    const layer = document.getElementById('bili-danmaku-layer');
+    if (!layer) return;
+    const now = Number(currentTime || 0);
+    const visible = biliVisibleDanmaku();
+    for (let index = biliDanmakuLive.length - 1; index >= 0; index -= 1) {
+        if (biliDanmakuLive[index].start + 8 < now) {
+            const entry = biliDanmakuLive[index];
+            if (entry.el && entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
+            biliDanmakuLive.splice(index, 1);
+        }
+    }
+    while (biliDetail.danmakuCursor < visible.length) {
+        const item = visible[biliDetail.danmakuCursor];
+        biliDetail.danmakuCursor += 1;
+        if (!item || Number(item.time || 0) > now) continue;
+        const el = document.createElement('span');
+        el.className = 'bili-danmaku-live';
+        const mode = Number(item.mode || 0);
+        if (mode === 4) el.classList.add('is-bottom');
+        if (mode === 5) el.classList.add('is-top');
+        el.textContent = item.text || '';
+        el.style.color = '#' + ('000000' + (Number(item.color || 16777215)).toString(16)).slice(-6);
+        layer.appendChild(el);
+        biliDanmakuLive.push({ el: el, start: now });
+    }
+}
+
+/* --------------------------------------------------------- watch history */
+
+/** The watched videos. */
+const biliHistory = {
+    items: [],
+    page: 1,
+    hasMore: false,
+    loading: false,
+    error: ''
+};
+
+/** Turn a history entry into a card the list understands. */
+function biliHistoryTrack(item) {
+    return {
+        bvid: item.bvid || '',
+        name: item.title || '',
+        artists: item.author || '',
+        author_mid: item.author_mid || '',
+        cover_url: item.cover || '',
+        duration: item.duration || 0,
+        play_count: 0,
+        url: 'https://www.bilibili.com/video/' + (item.bvid || '')
+    };
+}
+
+/** Read the watched videos. */
+async function loadBiliHistory(reset) {
+    if (biliHistory.loading) return;
+    if (!bridgeHas('get_bilibili_history')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    biliHistory.loading = true;
+    renderBiliHistory();
+    try {
+        const page = reset ? 1 : biliHistory.page + 1;
+        const result = await state.api.get_bilibili_history(page, 30);
+        if (!result || !result.success) {
+            biliHistory.error = biliFailure(result, 'bili.favorite_login_hint');
+            return;
+        }
+        const items = result.items || [];
+        if (reset) biliHistory.items = [];
+        items.forEach((item) => {
+            if (item) biliHistory.items.push(item);
+        });
+        biliHistory.page = page;
+        biliHistory.hasMore = !!result.has_more;
+        biliHistory.error = '';
+    } catch (err) {
+        biliHistory.error = t('error.network');
+    } finally {
+        biliHistory.loading = false;
+        renderBiliHistory();
+    }
+}
+
+/** Draw the watched videos. */
+function renderBiliHistory() {
+    const grid = document.getElementById('bili-history-results');
+    const box = document.getElementById('bili-history-state');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (box) box.innerHTML = '';
+    if (!biliAccount.loggedIn) {
+        if (box) box.appendChild(buildStateBlock('user-plus', t('bili.favorite_login_hint'), ''));
+        return;
+    }
+    if (biliHistory.error && box) {
+        box.appendChild(buildStateBlock('close', t('bili.error_title'),
+            t('bili.error_hint', { message: biliHistory.error })));
+        return;
+    }
+    if (!biliHistory.items.length) {
+        if (box) box.appendChild(buildStateBlock('list', t('bili.history_empty'), ''));
+        return;
+    }
+    biliHistory.items.forEach((item) => {
+        grid.appendChild(biliCardElement(biliHistoryTrack(item)));
+    });
+    const more = document.getElementById('btn-bili-history-more');
+    if (more) {
+        more.hidden = !biliHistory.hasMore || biliHistory.loading;
+        more.disabled = biliHistory.loading;
+        more.textContent = biliHistory.loading ? t('common.loading') : t('bili.load_more');
+    }
+    const end = document.getElementById('bili-history-end');
+    if (end) {
+        end.hidden = biliHistory.loading || !biliHistory.items.length || biliHistory.hasMore;
+        end.textContent = t('bili.no_more');
+    }
+}
+
+/* --------------------------------------------------------- uploader page */
+
+/** The uploader whose page is open. */
+const biliSpace = {
+    mid: '',
+    profile: {},
+    items: [],
+    page: 1,
+    hasMore: false,
+    following: false,
+    loading: false,
+    error: ''
+};
+
+/** Open the page of an uploader. */
+async function openBiliSpace(mid) {
+    const id = String(mid || '');
+    if (!id) return;
+    biliSpace.mid = id;
+    biliSpace.profile = {};
+    biliSpace.items = [];
+    biliSpace.page = 1;
+    biliSpace.hasMore = false;
+    biliSpace.following = false;
+    biliSpace.error = '';
+    openModal('bili-space-modal');
+    renderBiliSpace();
+    if (bridgeHas('get_bilibili_space')) {
+        try {
+            const result = await state.api.get_bilibili_space(id);
+            if (result && result.success) {
+                biliSpace.profile = result.profile || {};
+            } else {
+                biliSpace.error = biliFailure(result, 'error.network');
+            }
+        } catch (err) {
+            biliSpace.error = t('error.network');
+        }
+    }
+    if (bridgeHas('get_bilibili_follow_state')) {
+        try {
+            const result = await state.api.get_bilibili_follow_state(id);
+            biliSpace.following = !!(result && result.following);
+        } catch (err) {
+            biliSpace.following = false;
+        }
+    }
+    renderBiliSpace();
+    await loadBiliSpaceVideos(true);
+}
+
+/** Read the videos of the uploader whose page is open. */
+async function loadBiliSpaceVideos(reset) {
+    const mid = biliSpace.mid;
+    if (!mid) return;
+    if (!bridgeHas('get_bilibili_space_videos')) return;
+    if (biliSpace.loading) return;
+    biliSpace.loading = true;
+    renderBiliSpace();
+    try {
+        const page = reset ? 1 : biliSpace.page + 1;
+        const result = await state.api.get_bilibili_space_videos(mid, page, 30);
+        if (!result || !result.success) {
+            biliSpace.error = biliFailure(result, 'error.network');
+            return;
+        }
+        const items = result.items || [];
+        if (reset) biliSpace.items = [];
+        items.forEach((item) => {
+            if (item) biliSpace.items.push(item);
+        });
+        biliSpace.page = page;
+        biliSpace.hasMore = !!result.has_more;
+    } catch (err) {
+        biliSpace.error = t('error.network');
+    } finally {
+        biliSpace.loading = false;
+        renderBiliSpace();
+    }
+}
+
+/** Draw the uploader's page. */
+function renderBiliSpace() {
+    const face = document.getElementById('bili-space-face');
+    const name = document.getElementById('bili-space-name');
+    const meta = document.getElementById('bili-space-meta');
+    const sign = document.getElementById('bili-space-sign');
+    const follow = document.getElementById('btn-bili-space-follow');
+    const videos = document.getElementById('bili-space-videos');
+    const box = document.getElementById('bili-space-state');
+    const profile = biliSpace.profile || {};
+    if (face) {
+        if (profile.face) {
+            face.src = profile.face;
+            face.hidden = false;
+        } else {
+            face.hidden = true;
+        }
+    }
+    if (name) name.textContent = profile.name || '';
+    if (meta) {
+        const parts = [];
+        if (profile.level) parts.push(t('bili.level', { level: profile.level }));
+        parts.push(t('bili.followers', { count: formatPlayCount(profile.fans || 0) }));
+        parts.push(t('bili.following_count', { count: formatPlayCount(profile.following || 0) }));
+        parts.push(t('bili.videos_count', { count: formatPlayCount(profile.video_count || 0) }));
+        meta.textContent = parts.join(' · ');
+    }
+    if (sign) sign.textContent = profile.sign || '';
+    if (follow) {
+        follow.textContent = biliSpace.following ? t('bili.following') : t('bili.follow');
+        follow.classList.toggle('is-active', biliSpace.following);
+    }
+    if (videos) {
+        videos.innerHTML = '';
+        if (!biliSpace.items.length) {
+            if (box) {
+                box.innerHTML = '';
+                box.appendChild(buildStateBlock('film', t('bili.space_empty'), ''));
+            }
+        } else {
+            biliSpace.items.forEach((item) => {
+                videos.appendChild(biliCardElement({
+                    bvid: item.bvid || '',
+                    name: item.title || '',
+                    artists: item.author || '',
+                    author_mid: item.author_mid || biliSpace.mid,
+                    cover_url: item.cover || '',
+                    duration: item.duration || 0,
+                    play_count: item.play_count || 0,
+                    url: 'https://www.bilibili.com/video/' + (item.bvid || '')
+                }));
+            });
+        }
+    }
+    const more = document.getElementById('btn-bili-space-more');
+    if (more) {
+        more.hidden = !biliSpace.hasMore || biliSpace.loading;
+        more.disabled = biliSpace.loading;
+        more.textContent = biliSpace.loading ? t('common.loading') : t('bili.load_more');
+    }
+}
+
+/** Follow the uploader whose page is open, or stop following. */
+async function toggleBiliFollow() {
+    const mid = biliSpace.mid;
+    if (!mid) return;
+    if (!bridgeHas('bili_follow_user')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const next = !biliSpace.following;
+    try {
+        const result = await state.api.bili_follow_user(mid, next);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'error.unknown'));
+            return;
+        }
+        biliSpace.following = next;
+        renderBiliSpace();
+        showToast('success', next ? t('bili.follow') : t('bili.unfollow'));
+    } catch (err) {
+        showToast('error', t('error.unknown'));
+    }
+}
+
+/* -------------------------------------------------------- private messages */
+
+/** The conversations and the message that is open. */
+const biliIm = {
+    sessions: [],
+    sessionId: '',
+    talkerId: '',
+    name: '',
+    messages: [],
+    loading: false,
+    error: ''
+};
+
+/** Open the private messages. */
+async function openBiliMessages() {
+    biliIm.error = '';
+    openModal('bili-messages-modal');
+    renderBiliMessages();
+    await loadBiliMessages();
+}
+
+/** Read the conversations. */
+async function loadBiliMessages() {
+    if (!bridgeHas('get_bilibili_messages')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    biliIm.loading = true;
+    renderBiliMessages();
+    try {
+        const result = await state.api.get_bilibili_messages(20);
+        if (!result || !result.success) {
+            biliIm.error = biliFailure(result, 'bili.message_failed');
+            return;
+        }
+        biliIm.sessions = result.items || [];
+        biliIm.error = '';
+        if (!biliIm.talkerId && biliIm.sessions.length) {
+            await openBiliConversation(biliIm.sessions[0]);
+        }
+    } catch (err) {
+        biliIm.error = t('error.network');
+    } finally {
+        biliIm.loading = false;
+        renderBiliMessages();
+    }
+}
+
+/** Open one conversation. */
+async function openBiliConversation(session) {
+    if (!session) return;
+    biliIm.sessionId = session.session_id || '';
+    biliIm.talkerId = session.talker_id || '';
+    biliIm.name = session.name || '';
+    biliIm.messages = [];
+    renderBiliMessages();
+    if (!bridgeHas('get_bilibili_message_history')) return;
+    try {
+        const result = await state.api.get_bilibili_message_history(
+            biliIm.sessionId, biliIm.talkerId, 20);
+        if (!result || !result.success) {
+            biliIm.error = biliFailure(result, 'bili.message_failed');
+            return;
+        }
+        biliIm.messages = result.items || [];
+        biliIm.error = '';
+    } catch (err) {
+        biliIm.error = t('error.network');
+    }
+    renderBiliMessages();
+}
+
+/** Draw the conversations and the messages. */
+function renderBiliMessages() {
+    const sessions = document.getElementById('bili-im-sessions');
+    const head = document.getElementById('bili-im-head');
+    const messages = document.getElementById('bili-im-messages');
+    const box = document.getElementById('bili-im-state');
+    if (sessions) {
+        sessions.innerHTML = '';
+        if (!biliIm.sessions.length) {
+            sessions.appendChild(buildStateBlock('message-circle', t('bili.message_empty'), ''));
+        } else {
+            biliIm.sessions.forEach((session) => {
+                if (!session) return;
+                const button = document.createElement('button');
+                button.className = biliIm.talkerId === session.talker_id
+                    ? 'bili-im-session is-active' : 'bili-im-session';
+                button.type = 'button';
+                const name = document.createElement('span');
+                name.className = 'bili-im-session-name';
+                name.textContent = session.name || '';
+                button.appendChild(name);
+                if (session.unread) {
+                    const unread = document.createElement('span');
+                    unread.className = 'source-badge is-bili';
+                    unread.textContent = t('bili.message_unread', { count: session.unread });
+                    button.appendChild(unread);
+                }
+                button.addEventListener('click', () => openBiliConversation(session));
+                sessions.appendChild(button);
+            });
+        }
+    }
+    if (head) head.textContent = biliIm.name || '';
+    if (messages) {
+        messages.innerHTML = '';
+        if (!biliIm.messages.length) {
+            messages.appendChild(buildStateBlock('message-square', t('bili.message_empty'), ''));
+        } else {
+            biliIm.messages.forEach((message) => {
+                if (!message) return;
+                const row = document.createElement('div');
+                row.className = message.is_self
+                    ? 'bili-im-message is-self' : 'bili-im-message';
+                const text = document.createElement('span');
+                text.textContent = message.content || '';
+                row.appendChild(text);
+                messages.appendChild(row);
+            });
+        }
+    }
+    if (box) {
+        box.innerHTML = '';
+        if (biliIm.error) {
+            box.appendChild(buildStateBlock('close', t('bili.error_title'),
+                t('bili.error_hint', { message: biliIm.error })));
+        }
+    }
+}
+
+/** Send a private message. */
+async function sendBiliMessage() {
+    const input = document.getElementById('bili-im-input');
+    const text = (input && input.value ? input.value : '').trim();
+    if (!text) return;
+    if (!biliIm.talkerId) {
+        showToast('error', t('bili.message_failed'));
+        return;
+    }
+    if (!bridgeHas('bili_send_message')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_send_message(
+            biliIm.talkerId, text, biliIm.sessionId);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.message_failed'));
+            return;
+        }
+        if (input) input.value = '';
+        showToast('success', t('bili.message_send'));
+        await openBiliConversation({
+            session_id: biliIm.sessionId,
+            talker_id: biliIm.talkerId,
+            name: biliIm.name
+        });
+    } catch (err) {
+        showToast('error', t('bili.message_failed'));
+    }
+}
+
+/* ---------------------------------------------------------------- upload */
+
+/** The video that is about to be posted. */
+const biliUpload = {
+    videoPath: '',
+    coverPath: '',
+    categories: [],
+    steps: []
+};
+
+/** Open the upload panel and read the categories. */
+async function openBiliUpload() {
+    biliUpload.videoPath = '';
+    biliUpload.coverPath = '';
+    biliUpload.steps = [];
+    openModal('bili-upload-modal');
+    const videoPath = document.getElementById('bili-upload-video-path');
+    if (videoPath) videoPath.textContent = '';
+    const coverPath = document.getElementById('bili-upload-cover-path');
+    if (coverPath) coverPath.textContent = '';
+    const progress = document.getElementById('bili-upload-progress');
+    if (progress) progress.hidden = true;
+    const error = document.getElementById('bili-upload-error');
+    if (error) error.hidden = true;
+    renderBiliUploadSteps();
+    await loadBiliUploadCategories();
+}
+
+/** Read the categories a video can be posted to. */
+async function loadBiliUploadCategories() {
+    const select = document.getElementById('bili-upload-category');
+    if (!select) return;
+    if (!bridgeHas('get_bilibili_upload_categories')) return;
+    try {
+        const result = await state.api.get_bilibili_upload_categories();
+        const categories = (result && result.categories) || [];
+        biliUpload.categories = categories;
+        select.innerHTML = '';
+        categories.forEach((category) => {
+            if (!category) return;
+            const option = document.createElement('option');
+            option.value = String(category.tid || '');
+            option.textContent = category.name || '';
+            select.appendChild(option);
+        });
+    } catch (err) {
+        showToast('error', t('bili.upload_failed'));
+    }
+}
+
+/** Pick the video file to post. */
+async function pickBiliUploadVideo() {
+    if (!bridgeHas('choose_file')) return;
+    try {
+        const result = await state.api.choose_file('video');
+        if (!result || !result.success || !result.path) return;
+        biliUpload.videoPath = result.path;
+        const box = document.getElementById('bili-upload-video-path');
+        if (box) box.textContent = result.path;
+    } catch (err) {
+        showToast('error', t('bili.upload_failed'));
+    }
+}
+
+/** Pick the cover of the video to post. */
+async function pickBiliUploadCover() {
+    if (!bridgeHas('choose_file')) return;
+    try {
+        const result = await state.api.choose_file('image');
+        if (!result || !result.success || !result.path) return;
+        biliUpload.coverPath = result.path;
+        const box = document.getElementById('bili-upload-cover-path');
+        if (box) box.textContent = result.path;
+    } catch (err) {
+        showToast('error', t('bili.upload_failed'));
+    }
+}
+
+/** Draw the steps of the upload. */
+function renderBiliUploadSteps() {
+    const box = document.getElementById('bili-upload-steps');
+    if (!box) return;
+    box.innerHTML = '';
+    biliUpload.steps.forEach((step) => {
+        if (!step) return;
+        const row = document.createElement('div');
+        row.className = step.ok ? 'bili-upload-step is-ok' : 'bili-upload-step is-failed';
+        const name = document.createElement('span');
+        name.className = 'bili-upload-step-name';
+        name.textContent = step.name || '';
+        row.appendChild(name);
+        const message = document.createElement('span');
+        message.className = 'bili-upload-step-message';
+        message.textContent = step.message || '';
+        row.appendChild(message);
+        box.appendChild(row);
+    });
+}
+
+/** Post the video to Bilibili. */
+async function submitBiliUpload() {
+    if (!biliUpload.videoPath) {
+        showToast('warning', t('bili.upload_no_video'));
+        return;
+    }
+    const title = document.getElementById('bili-upload-title');
+    const select = document.getElementById('bili-upload-category');
+    const desc = document.getElementById('bili-upload-desc');
+    const tags = document.getElementById('bili-upload-tags');
+    const name = title ? title.value.trim() : '';
+    const tid = select ? Number(select.value || 0) : 0;
+    if (!name) {
+        showToast('warning', t('bili.upload_title'));
+        return;
+    }
+    if (!tid) {
+        showToast('warning', t('bili.upload_category'));
+        return;
+    }
+    if (!bridgeHas('bili_upload_video')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const progress = document.getElementById('bili-upload-progress');
+    if (progress) progress.hidden = false;
+    const error = document.getElementById('bili-upload-error');
+    if (error) {
+        error.hidden = true;
+        error.textContent = '';
+    }
+    biliUpload.steps = [];
+    renderBiliUploadSteps();
+    try {
+        const result = await state.api.bili_upload_video(
+            biliUpload.videoPath, name, tid,
+            desc ? desc.value : '', tags ? tags.value : '', biliUpload.coverPath);
+        biliUpload.steps = (result && result.steps) || [];
+        renderBiliUploadSteps();
+        if (!result || !result.success) {
+            const message = biliFailure(result, 'bili.upload_failed');
+            if (error) {
+                error.hidden = false;
+                error.textContent = message;
+            }
+            showToast('error', message, 9000);
+            return;
+        }
+        showToast('success', t('bili.upload_done'), 6000);
+        closeModal('bili-upload-modal');
+    } catch (err) {
+        showToast('error', t('bili.upload_failed'), 9000);
+    }
+}
+
 /* --------------------------------------------------------------- wiring */
 
 /** The events of the three new views. */
@@ -8584,9 +10616,127 @@ function bindSectionEvents() {
     if (more) more.addEventListener('click', () => loadCombinedPage());
 
     const refresh = document.getElementById('btn-bili-refresh');
-    if (refresh) refresh.addEventListener('click', () => renderBili(biliSection.rid));
+    if (refresh) {
+        refresh.addEventListener('click', () => {
+            renderBili(biliSection.rid);
+            loadBiliAccount();
+            if (biliSection.tab === 'favorites') loadBiliFolders();
+        });
+    }
     const biliMore = document.getElementById('btn-bili-more');
     if (biliMore) biliMore.addEventListener('click', () => loadMoreBili());
+
+    // The Bilibili tabs: the hot list and the account's own favourites.
+    const biliTabs = document.getElementById('bili-tabs');
+    if (biliTabs) {
+        biliTabs.addEventListener('click', (event) => {
+            const tab = event.target.closest('.top-tab');
+            if (!tab) return;
+            setBiliTab(tab.dataset.tab);
+        });
+    }
+    const favMore = document.getElementById('btn-bili-fav-more');
+    if (favMore) favMore.addEventListener('click', () => loadBiliFavoriteVideos(false));
+    const historyMore = document.getElementById('btn-bili-history-more');
+    if (historyMore) historyMore.addEventListener('click', () => loadBiliHistory(false));
+
+    // The detail panel: the three buttons, the comments and the danmaku.
+    const biliLike = document.getElementById('btn-bili-like');
+    if (biliLike) biliLike.addEventListener('click', likeBiliVideo);
+    const biliCoin = document.getElementById('btn-bili-coin');
+    if (biliCoin) biliCoin.addEventListener('click', openBiliCoinPanel);
+    const biliFavorite = document.getElementById('btn-bili-favorite');
+    if (biliFavorite) biliFavorite.addEventListener('click', openBiliFavoritePanel);
+    const coinOne = document.getElementById('btn-bili-coin-one');
+    if (coinOne) coinOne.addEventListener('click', () => coinBiliVideo(1));
+    const coinTwo = document.getElementById('btn-bili-coin-two');
+    if (coinTwo) coinTwo.addEventListener('click', () => coinBiliVideo(2));
+    const favRemove = document.getElementById('btn-bili-fav-remove');
+    if (favRemove) favRemove.addEventListener('click', unfavoriteBiliVideo);
+    const detailUp = document.getElementById('bili-detail-up');
+    if (detailUp) detailUp.addEventListener('click', () => openBiliSpace(biliDetail.authorMid));
+    const commentSend = document.getElementById('btn-bili-comment-send');
+    if (commentSend) commentSend.addEventListener('click', sendBiliComment);
+    const commentCancel = document.getElementById('btn-bili-comment-cancel');
+    if (commentCancel) commentCancel.addEventListener('click', cancelBiliReply);
+    const commentMore = document.getElementById('btn-bili-comment-more');
+    if (commentMore) commentMore.addEventListener('click', () => loadBiliComments(false));
+    const danmakuSend = document.getElementById('btn-bili-danmaku-send');
+    if (danmakuSend) danmakuSend.addEventListener('click', sendBiliDanmaku);
+    const danmakuKeyword = document.getElementById('bili-danmaku-keyword');
+    if (danmakuKeyword) {
+        danmakuKeyword.addEventListener('input', () => {
+            biliDetail.danmakuKeyword = danmakuKeyword.value || '';
+            resetBiliDanmakuCursor(biliVideoTime());
+            renderBiliDanmaku();
+        });
+    }
+
+    // The uploader's page, the private messages and the upload.
+    const spaceFollow = document.getElementById('btn-bili-space-follow');
+    if (spaceFollow) spaceFollow.addEventListener('click', toggleBiliFollow);
+    const spaceMore = document.getElementById('btn-bili-space-more');
+    if (spaceMore) spaceMore.addEventListener('click', () => loadBiliSpaceVideos(false));
+    const imSend = document.getElementById('btn-bili-im-send');
+    if (imSend) imSend.addEventListener('click', sendBiliMessage);
+    const uploadVideo = document.getElementById('btn-bili-upload-video');
+    if (uploadVideo) uploadVideo.addEventListener('click', pickBiliUploadVideo);
+    const uploadCover = document.getElementById('btn-bili-upload-cover');
+    if (uploadCover) uploadCover.addEventListener('click', pickBiliUploadCover);
+    const uploadSubmit = document.getElementById('btn-bili-upload-submit');
+    if (uploadSubmit) uploadSubmit.addEventListener('click', submitBiliUpload);
+
+    // The danmaku follow the video: every tick puts the ones of that second
+    // on the picture.
+    const biliVideo = document.getElementById('bili-video');
+    if (biliVideo) {
+        biliVideo.addEventListener('timeupdate', () => {
+            updateBiliDanmakuLive(biliVideo.currentTime);
+        });
+    }
+
+    // The login panel: five ways to sign in.
+    const loginTabs = document.getElementById('bili-login-tabs');
+    if (loginTabs) {
+        loginTabs.addEventListener('click', (event) => {
+            const tab = event.target.closest('.tab');
+            if (!tab) return;
+            switchBiliLoginTab(tab.dataset.tab);
+        });
+    }
+    const qrRefresh = document.getElementById('btn-bili-qrcode-refresh');
+    if (qrRefresh) qrRefresh.addEventListener('click', () => refreshBiliQrcode());
+    const passwordLogin = document.getElementById('btn-bili-password-login');
+    if (passwordLogin) passwordLogin.addEventListener('click', () => submitBiliPassword());
+    const smsSend = document.getElementById('btn-bili-sms-send');
+    if (smsSend) smsSend.addEventListener('click', () => sendBiliSmsCode());
+    const smsLogin = document.getElementById('btn-bili-sms-login');
+    if (smsLogin) smsLogin.addEventListener('click', () => submitBiliSms());
+    const cookieLogin = document.getElementById('btn-bili-cookie-login');
+    if (cookieLogin) cookieLogin.addEventListener('click', () => submitBiliCookie());
+    const registerSend = document.getElementById('btn-bili-register-send');
+    if (registerSend) registerSend.addEventListener('click', () => sendBiliRegisterCode());
+    const registerSubmit = document.getElementById('btn-bili-register-submit');
+    if (registerSubmit) registerSubmit.addEventListener('click', () => submitBiliRegister());
+
+    // The player: the quality picker and the two ways to leave it.
+    const quality = document.getElementById('bili-quality');
+    if (quality) quality.addEventListener('change', () => changeBiliQuality(quality.value));
+    document.querySelectorAll('[data-close="bili-login-modal"]').forEach((el) => {
+        el.addEventListener('click', () => stopBiliLoginPolling());
+    });
+    document.querySelectorAll('[data-close="bili-player-modal"]').forEach((el) => {
+        el.addEventListener('click', () => closeBiliPlayer());
+    });
+    // The capture phase runs before the generic Esc handler, so the playback
+    // and the polling are stopped before the panel disappears.
+    document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        const open = document.querySelector('.modal:not([hidden])');
+        if (!open) return;
+        if (open.id === 'bili-player-modal') closeBiliPlayer();
+        if (open.id === 'bili-login-modal') stopBiliLoginPolling();
+    }, true);
 }
 
 /** Run the search the user asked for. */

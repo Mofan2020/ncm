@@ -2537,7 +2537,160 @@ input[type="range"]::-webkit-slider-thumb {
     gap: 8px; font-size: 11.5px; color: var(--text-3);
 }
 .video-card .vc-up { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The uploader's name is a button when it opens their page. */
+.vc-up.is-link { background: none; border: none; padding: 0; cursor: pointer;
+    color: inherit; font: inherit; text-align: left; }
+.vc-up.is-link:hover { color: var(--info); }
 .video-card .vc-plays { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+/* --- bilibili: account, favourites and the player ---------------- */
+.bili-account {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: var(--radius-sm);
+    background: var(--bili-soft);
+}
+.bili-account-face {
+    width: 34px; height: 34px; border-radius: 50%; flex: 0 0 auto;
+    object-fit: cover; background: var(--sunken);
+}
+.bili-account-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.bili-account-name {
+    font-size: 13.5px; font-weight: 600; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bili-account-meta { font-size: 11.5px; color: var(--text-2); }
+.bili-account-actions { margin-left: auto; display: flex; gap: 6px; flex: 0 0 auto; }
+
+/* The card and its buttons: the buttons sit next to the card, because a
+   button inside a button is invalid markup. */
+.bili-card-wrap { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.bili-card-actions { display: flex; gap: 6px; }
+.bili-card-actions .btn { flex: 1 1 auto; }
+
+.bili-folders-title {
+    font-size: 12px; color: var(--text-3); margin: 2px 0 6px;
+}
+.bili-video-name {
+    font-size: 13.5px; font-weight: 600; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bili-video {
+    width: 100%; max-height: 58vh; background: #000;
+    border-radius: var(--radius-xs); display: block;
+}
+.bili-player-bar {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap;
+}
+.bili-quality { display: flex; align-items: center; gap: 8px; }
+.bili-quality .option { flex-direction: row; align-items: center; gap: 6px; }
+.bili-quality-badges { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* --- bilibili: the video detail, the comments and the danmaku ------- */
+.bili-detail { display: flex; flex-direction: column; gap: 12px; }
+.bili-detail-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.bili-detail-label { font-size: 12px; color: var(--text-3); }
+.bili-detail-title { font-size: 13.5px; font-weight: 600; color: var(--text); flex: 1 1 auto; min-width: 0; }
+.bili-detail-up { background: none; border: none; padding: 0; color: var(--info); font-size: 12.5px; cursor: pointer; }
+.bili-detail-up:hover { text-decoration: underline; }
+.bili-detail-stats { display: flex; gap: 6px; flex-wrap: wrap; }
+.bili-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.bili-detail-actions .btn.is-active { border-color: var(--bili); color: var(--bili); }
+.bili-popover {
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 10px 12px; border-radius: var(--radius-sm);
+    background: var(--sunken);
+}
+.bili-popover-title { font-size: 12.5px; color: var(--text-2); }
+.bili-popover-row { display: flex; gap: 8px; }
+.bili-fav-list { display: flex; flex-direction: column; gap: 6px; }
+.bili-section { display: flex; flex-direction: column; gap: 8px; }
+.bili-section-title { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+
+.bili-comment-list { display: flex; flex-direction: column; gap: 10px; }
+.bili-comment { display: flex; flex-direction: column; gap: 4px; }
+.bili-comment.is-child { padding-left: 26px; }
+.bili-comment-head { display: flex; align-items: center; gap: 6px; }
+.bili-comment-face { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; background: var(--sunken); }
+.bili-comment-name { background: none; border: none; padding: 0; color: var(--text-2); font-size: 12.5px; cursor: pointer; }
+.bili-comment-name:hover { color: var(--info); }
+.bili-comment-body { font-size: 13px; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.bili-comment-meta { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--text-3); }
+.bili-comment-reply { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
+.bili-comment-reply-target { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bili-comment-input, .bili-danmaku-input, .bili-im-input { display: flex; gap: 8px; align-items: center; }
+.bili-comment-input input, .bili-danmaku-input input, .bili-im-input input { flex: 1 1 auto; min-width: 0; }
+
+.bili-danmaku-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bili-danmaku-filters input { flex: 1 1 160px; min-width: 0; }
+.bili-danmaku-hidden { font-size: 11.5px; color: var(--text-3); }
+.bili-danmaku-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+.bili-danmaku-row { display: flex; gap: 8px; font-size: 12.5px; }
+.bili-danmaku-time { flex: 0 0 auto; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.bili-danmaku-text { color: var(--text); word-break: break-word; }
+
+/* The danmaku float over the picture.  The layer never takes clicks, so the
+   video stays controllable while the danmaku are on top of it. */
+.bili-video-wrap { position: relative; }
+.bili-danmaku-layer {
+    position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+    font-size: 14px; font-weight: 600;
+}
+.bili-danmaku-live {
+    position: absolute; left: 0; top: 14%; white-space: nowrap;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, .75);
+    animation: bili-danmaku-move 8s linear forwards;
+}
+.bili-danmaku-live.is-bottom { top: auto; bottom: 14%; left: 50%; transform: translateX(-50%); animation: none; }
+.bili-danmaku-live.is-top { top: 6%; left: 50%; transform: translateX(-50%); animation: none; }
+@keyframes bili-danmaku-move {
+    from { transform: translateX(100vw); }
+    to { transform: translateX(-100%); }
+}
+
+/* --- bilibili: the uploader's page ---------------------------------- */
+.bili-space-head { display: flex; align-items: center; gap: 12px; }
+.bili-space-face { width: 58px; height: 58px; border-radius: 50%; object-fit: cover; background: var(--sunken); flex: 0 0 auto; }
+.bili-space-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }
+.bili-space-name { font-size: 15px; font-weight: 600; color: var(--text); }
+.bili-space-meta { font-size: 12px; color: var(--text-3); }
+.bili-space-sign { font-size: 12.5px; color: var(--text-2); }
+.bili-space-videos { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); column-gap: var(--grid-gap); row-gap: 18px; }
+
+/* --- bilibili: the private messages --------------------------------- */
+.bili-im { display: grid; grid-template-columns: minmax(140px, 190px) minmax(0, 1fr); gap: 12px; }
+.bili-im-sessions { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; max-height: 420px; }
+.bili-im-session {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 7px 10px; border-radius: var(--radius-xs);
+    background: none; border: none; cursor: pointer; text-align: left;
+    color: var(--text); font-size: 12.5px;
+}
+.bili-im-session:hover { background: var(--hover); }
+.bili-im-session.is-active { background: var(--bili-soft); }
+.bili-im-session-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bili-im-thread { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.bili-im-head { font-size: 13px; font-weight: 600; color: var(--text); }
+.bili-im-messages { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; max-height: 320px; }
+.bili-im-message {
+    align-self: flex-start; max-width: 78%; padding: 7px 11px;
+    border-radius: var(--radius-sm); background: var(--sunken);
+    font-size: 13px; color: var(--text); word-break: break-word;
+}
+.bili-im-message.is-self { align-self: flex-end; background: var(--bili-soft); }
+
+/* --- bilibili: the upload ------------------------------------------- */
+.bili-upload-row { display: flex; align-items: center; gap: 8px; }
+.bili-upload-path { font-size: 12px; color: var(--text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bili-upload-progress { display: flex; flex-direction: column; gap: 8px; }
+.bili-upload-progress-title { font-size: 12.5px; color: var(--text-2); }
+.bili-upload-steps { display: flex; flex-direction: column; gap: 4px; }
+.bili-upload-step { display: flex; gap: 8px; font-size: 12.5px; color: var(--text-2); }
+.bili-upload-step-name { flex: 0 0 auto; font-weight: 600; color: var(--text); }
+.bili-upload-step.is-ok .bili-upload-step-name { color: var(--ok); }
+.bili-upload-step.is-failed .bili-upload-step-name { color: var(--danger); }
+.bili-upload-step-message { min-width: 0; word-break: break-word; }
+.bili-upload-error { font-size: 12.5px; color: var(--danger); }
 
 /* --- states -------------------------------------------------- */
 .state-block {

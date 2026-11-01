@@ -124,7 +124,7 @@ def _initial_geometry(width: int, height: int,
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="SkycMedia",
-        description=f"{APP_DISPLAY_NAME} / NetEase + Bilibili music client",
+        description=f"{APP_DISPLAY_NAME} / 网易云音乐 + B站 第三方客户端",
     )
     parser.add_argument("--debug", action="store_true", help="verbose logging and dev tools")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

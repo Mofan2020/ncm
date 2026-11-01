@@ -468,3 +468,66 @@ def test_only_the_phone_layout_folds_the_two_columns():
             assert "720px" in condition, (
                 f"the two-column layout is folded in {condition!r}; "
                 "only the phone layout may do that")
+
+
+# ------------------------------------------------------- bilibili: 互动与评论
+def test_the_video_detail_panel_has_its_three_buttons():
+    """点赞、投币、收藏三个按钮必须都在，而且都得接到后端方法上。"""
+    for element_id in ("btn-bili-like", "btn-bili-coin", "btn-bili-favorite"):
+        assert f'id="{element_id}"' in HTML, f"{element_id} is missing"
+    for method in ("bili_like_video(", "bili_coin_video(", "bili_favorite_video("):
+        assert f"state.api.{method}" in JS, f"{method} is never called"
+
+
+def test_the_comment_box_can_read_write_and_like():
+    """评论要能看、能发、能回复、能点赞，四件事缺一不可。"""
+    assert 'id="bili-comment-input"' in HTML
+    assert 'id="btn-bili-comment-send"' in HTML
+    assert 'id="btn-bili-comment-more"' in HTML
+    assert 'id="btn-bili-comment-cancel"' in HTML
+    for method in ("get_bilibili_comments(", "bili_post_comment(", "bili_like_comment("):
+        assert f"state.api.{method}" in JS, f"{method} is never called"
+    # 回复是把对方的 rpid 一起发出去。
+    assert re.search(r"bili_post_comment\(bvid, text, parent\)", JS)
+
+
+def test_the_danmaku_can_be_sent_and_filtered():
+    """弹幕要能发，也要能按位置和文字筛。"""
+    assert 'id="bili-danmaku-input"' in HTML
+    assert 'id="btn-bili-danmaku-send"' in HTML
+    assert 'id="bili-danmaku-keyword"' in HTML
+    assert "state.api.bili_send_danmaku(" in JS
+    assert "state.api.get_bilibili_danmaku(" in JS
+
+
+def test_the_bilibili_tabs_reach_the_history():
+    """观看历史得有自己的标签，不是只能从别处绕进去。"""
+    assert 'data-tab="history"' in HTML
+    assert "loadBiliHistory(" in JS
+    assert 'id="bili-history"' in HTML
+
+
+def test_the_uploader_page_and_the_messages_have_their_panels():
+    """个人主页、私信、投稿各有一个面板，而且都从桥接层拿数据。"""
+    for element_id in ("bili-space-modal", "bili-messages-modal", "bili-upload-modal"):
+        assert f'id="{element_id}"' in HTML, f"{element_id} is missing"
+    for method in ("get_bilibili_space(", "get_bilibili_space_videos(",
+                   "bili_follow_user(", "get_bilibili_messages(",
+                   "get_bilibili_message_history(", "bili_send_message(",
+                   "bili_upload_video("):
+        assert f"state.api.{method}" in JS, f"{method} is never called"
+
+
+def test_the_upload_panel_shows_every_step():
+    """投稿分好几步，每一步的结果都要能看到。"""
+    assert 'id="bili-upload-steps"' in HTML
+    assert "bili-upload-step" in CSS
+    assert re.search(r"biliUpload\.steps = \(result && result\.steps\)", JS)
+
+
+def test_the_bilibili_detail_classes_have_styles():
+    """没有样式的详情面板就是一堵字。"""
+    for selector in (".bili-detail", ".bili-comment", ".bili-danmaku-list",
+                     ".bili-space-head", ".bili-im-session", ".bili-upload-steps"):
+        assert selector + " " in CSS or selector + "{" in CSS or selector + "," in CSS, \
+            f"{selector} has no rule in style.css"

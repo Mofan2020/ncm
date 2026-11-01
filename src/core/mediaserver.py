@@ -163,6 +163,11 @@ class _Handler(BaseHTTPRequestHandler):
                 # and the bytes land in the persistent cache for next time.
                 self._cover(query.get("u", [""])[0], query.get("ext", ["jpg"])[0],
                             send_body)
+            elif route == "bili":
+                # Bilibili CDN proxy.  The CDN answers 403 without a matching
+                # Referer, and a signed stream url has to stay in the
+                # backend, so the webview asks the loopback for the bytes.
+                self._bili(query.get("u", [""])[0], send_body)
             elif route == "bg":
                 self._background(send_body)
             else:
@@ -373,6 +378,56 @@ class _Handler(BaseHTTPRequestHandler):
         self.media.write_cover_cache(url, data, mime)
         self._send_cover_bytes(data, mime, send_body)
 
+    def _bili(self, url: str, send_body: bool) -> None:
+        """Stream a file from the Bilibili CDN.
+
+        The CDN refuses requests that do not come from the site, so the
+        request carries the site's ``Referer`` and the signed-in cookie.
+        ``Range`` is forwarded because the video player asks for the
+        initialisation segment first and then for the rest of the file.
+        """
+        if not _is_bili_url(url):
+            self._error(403, "url not allowed")
+            return
+        headers = dict(_BILI_HEADERS)
+        cookie = self.media.bili_cookie
+        if cookie:
+            headers["Cookie"] = cookie
+        range_header = self.headers.get("Range")
+        if range_header:
+            headers["Range"] = range_header
+        try:
+            response = self.media.session.get(url, headers=headers, stream=True,
+                                              timeout=(10, 30))
+        except requests.exceptions.RequestException as exc:
+            log.warning("bilibili upstream error: %s", exc)
+            self._error(502, "upstream error")
+            return
+        if response.status_code not in (200, 206):
+            response.close()
+            self._error(response.status_code, "upstream refused")
+            return
+        length = response.headers.get("content-length")
+        extra = {"Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
+                 "Cache-Control": "no-store"}
+        content_range = response.headers.get("content-range")
+        if content_range:
+            extra["Content-Range"] = content_range
+        path = Path(urlparse(url).path)
+        self._send_headers(response.status_code, _content_type_for(path),
+                           int(length) if length and length.isdigit() else None, extra)
+        if not send_body:
+            response.close()
+            return
+        try:
+            for chunk in response.iter_content(CHUNK):
+                if chunk:
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        finally:
+            response.close()
+
     def _background(self, send_body: bool) -> None:
         """Serve the wallpaper, downscaled to what the UI can actually show.
 
@@ -525,6 +580,37 @@ _CDN_HEADERS = {
 #: NetEase serves the same picture from several hosts.
 _PICTURE_HOSTS = ("p1.music.126.net", "p2.music.126.net", "p3.music.126.net")
 
+#: The Bilibili CDN refuses requests without a matching ``Referer``.
+_BILI_HEADERS = {
+    "User-Agent": _UA,
+    "Referer": "https://www.bilibili.com/",
+    "Origin": "https://www.bilibili.com",
+    "Accept": "*/*",
+}
+
+#: Hosts the Bilibili proxy is allowed to fetch from.  Anything else would
+#: turn the loopback server into an open proxy for the whole internet.
+_BILI_HOST_SUFFIXES = (
+    ".hdslb.com",
+    ".bilivideo.com",
+    ".bilivideo.cn",
+    ".biliapi.net",
+    ".bilibili.com",
+)
+
+
+def _is_bili_url(url: str) -> bool:
+    """Whether ``url`` points at the Bilibili CDN."""
+    try:
+        parsed = urlparse(str(url or ""))
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return any(host == suffix[1:] or host.endswith(suffix)
+               for suffix in _BILI_HOST_SUFFIXES)
+
 
 def _cover_url_candidates(url: str) -> list[str]:
     """The picture URL, followed by the same path on the other hosts.
@@ -554,6 +640,8 @@ def _content_type_for(path: Path) -> str:
         ".alac": "audio/mp4", ".png": "image/png", ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif",
         ".bmp": "image/bmp", ".heic": "image/heic",
+        ".mp4": "video/mp4", ".m4v": "video/mp4", ".m4s": "video/iso.segment",
+        ".flv": "video/x-flv", ".mkv": "video/x-matroska", ".webm": "video/webm",
     }
     if suffix in known:
         return known[suffix]
@@ -630,6 +718,7 @@ class MediaServer:
         self._covers = _CoverCache()
         self._api_provider: Callable[[], Any] | None = None
         self._background_provider: Callable[[], Path | None] | None = None
+        self._bili_cookie: str = ""
         self.session = requests.Session()
         self._crossfade_duration: float = 0.0
         # Imported lazily so unit tests can monkey-patch the module before the
@@ -788,6 +877,25 @@ class MediaServer:
 
     def url_for_background(self) -> str:
         return f"{self.base_url}/bg"
+
+    def url_for_bili(self, url: str) -> str | None:
+        """Proxy a Bilibili CDN url through the loopback server.
+
+        The video player in the webview may not talk to the CDN directly:
+        the CDN checks the ``Referer``, the signed stream url has to stay in
+        the backend, and the browser would refuse the cross-origin request.
+        """
+        if not _is_bili_url(url):
+            return None
+        return f"{self.base_url}/bili?u={quote(str(url), safe='')}"
+
+    def set_bili_cookie(self, cookie: str) -> None:
+        """Remember the Bilibili cookie used for CDN requests."""
+        self._bili_cookie = str(cookie or "")
+
+    @property
+    def bili_cookie(self) -> str:
+        return self._bili_cookie
 
     def url_for_health(self) -> str:
         return f"{self.base_url}/health"

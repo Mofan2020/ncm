@@ -158,10 +158,3 @@ def test_the_undo_wording_exists_in_both_languages():
         common = _catalogue(language)["common"]
         assert common.get("undo"), language
         assert common.get("undone"), language
-
-
-def test_the_phone_interface_has_its_own_toast():
-    """The Android app is a web page now, so its toast lives in the page."""
-    mobile = (ROOT / "android" / "web" / "app.js").read_text(encoding="utf-8")
-    assert "function showToast" in mobile
-    assert "TOAST_UNDO_MS" in mobile

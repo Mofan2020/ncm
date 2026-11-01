@@ -1,10 +1,10 @@
 """Single source of truth for application identity and version."""
 
-__version__ = "3.6.0"
+__version__ = "3.7.0"
 
 #: Version of the disclaimer text shown on the first start.  Bump it when the
 #: text changes so the dialog is shown again after an update.
-DISCLAIMER_VERSION = "1"
+DISCLAIMER_VERSION = "2"
 
 #: Product name used for the window title, artifact names and the config dir.
 APP_NAME = "SkycMedia"

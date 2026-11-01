@@ -199,9 +199,21 @@ class MetaCache:
         return removed
 
     def clear(self, kind: str | None = None) -> int:
-        """Drop cached entries.  Returns how many files went."""
+        """Drop cached entries.  Returns how many files went.
+
+        Without a ``kind`` every folder in the cache goes -- including the
+        ones a later module added (the Bilibili side keeps its own kinds).
+        A user who asks to clear the cache means all of it.
+        """
         removed = 0
-        kinds = [kind] if kind else ("meta", "lyric", "playlist")
+        if kind:
+            kinds = [kind]
+        else:
+            try:
+                kinds = sorted(entry.name for entry in self.root.iterdir()
+                               if entry.is_dir())
+            except OSError:
+                kinds = ["meta", "lyric", "playlist"]
         for one in kinds:
             folder = self.root / one
             if not folder.is_dir():
@@ -219,7 +231,13 @@ class MetaCache:
     def stats(self) -> dict[str, Any]:
         """Occupancy per kind, for the settings panel."""
         result: dict[str, Any] = {"available": False, "root": str(self.root)}
-        for kind in ("meta", "lyric", "playlist"):
+        kinds = ["meta", "lyric", "playlist"]
+        try:
+            kinds = sorted({entry.name for entry in self.root.iterdir()
+                            if entry.is_dir()} | set(kinds))
+        except OSError:
+            pass
+        for kind in kinds:
             folder = self.root / kind
             count = 0
             size = 0

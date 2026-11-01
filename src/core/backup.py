@@ -72,7 +72,10 @@ BACKUP_FORMAT = "ncm-account-backup"
 #: 3 补上了剩下的收藏面：``liked_albums``（收藏的专辑）、
 #: ``subscribed_djradios``（订阅的电台）、``liked_mvs``（收藏的 MV）和
 #: ``play_record``（云端的听歌排行，带播放次数）。2 版的文件照样能读。
-BACKUP_VERSION = 3
+#:
+#: 4 增加了 ``bilibili`` 一节（B站账号和收藏夹）。3 版的文件照样能读：
+#: 读不到这一节就当没有，别的部分照常导入。
+BACKUP_VERSION = 4
 
 #: 备份文件的后缀。
 BACKUP_SUFFIX = ".ncmbk"
@@ -120,6 +123,13 @@ PHASE_DJRADIOS = "djradios"
 PHASE_MVS = "mvs"
 PHASE_RECORD = "record"
 PHASE_LOCAL = "local"
+PHASE_BILI = "bilibili"
+
+#: 导出 B站收藏夹时，一个收藏夹最多翻多少页。
+BILI_FOLDER_MAX_PAGES = 20
+
+#: 导出 B站收藏夹时，一页读多少个视频。
+BILI_FOLDER_PAGE = 50
 
 #: 导出时一页读多少个关注的歌手。
 ARTIST_PAGE = 100
@@ -499,6 +509,108 @@ def export_account_data(
         "liked_mvs": mvs,
         "play_record": record,
         "local_state": local_state,
+        "errors": errors,
+    }
+
+
+def export_bilibili_data(
+    bili: Any,
+    *,
+    progress: Callable[[str, int, int], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    page_size: int = BILI_FOLDER_PAGE,
+) -> dict[str, Any]:
+    """把 B站那一半的账号数据抓下来。
+
+    ``bili`` 是 :class:`~src.core.bilibili.BiliClient`（或任何长得一样的
+    假对象）。读不到就返回空的一节，**不让整次导出失败**：网易云那半边
+    照样能导出。
+
+    返回的这一节长这样：
+
+    .. code-block:: json
+
+        {
+          "account": {"mid": "1", "uname": "某人", "face": "..."},
+          "folders": [{"id": "9", "title": "收藏夹", "videos": [{"bvid": "BV1xx"}]}],
+          "errors": []
+        }
+    """
+    errors: list[dict[str, str]] = []
+    account: dict[str, Any] = {}
+    folders: list[dict[str, Any]] = []
+
+    def report(phase: str, current: int, total: int) -> None:
+        if progress is not None:
+            progress(phase, current, total)
+
+    report(PHASE_BILI, 0, 1)
+    try:
+        info = bili.account_info() or {}
+    except Exception as exc:
+        info = {}
+        errors.append({"section": PHASE_BILI, "message": str(exc)})
+    if info.get("logged_in"):
+        account = {
+            "mid": str(info.get("mid") or ""),
+            "uname": str(info.get("uname") or ""),
+            "face": str(info.get("face") or ""),
+            "level": int(info.get("level") or 0),
+            "vip_status": int(info.get("vip_status") or 0),
+            "vip_label": str(info.get("vip_label") or ""),
+        }
+
+    try:
+        raw_folders = bili.favorite_folders() or []
+    except Exception as exc:
+        raw_folders = []
+        errors.append({"section": PHASE_BILI, "message": str(exc)})
+
+    total = len(raw_folders)
+    for index, raw in enumerate(raw_folders):
+        report(PHASE_BILI, index, total)
+        if not isinstance(raw, dict):
+            continue
+        folder_id = str(raw.get("id") or "")
+        if not folder_id:
+            continue
+        entry = {
+            "id": folder_id,
+            "title": str(raw.get("title") or ""),
+            "media_count": int(raw.get("media_count") or 0),
+            "videos": [],
+        }
+        page = 1
+        while page <= BILI_FOLDER_MAX_PAGES:
+            try:
+                result = bili.favorite_videos(folder_id, page=page,
+                                              page_size=page_size) or {}
+            except Exception as exc:
+                errors.append({"section": f"bilibili_folder:{folder_id}",
+                               "message": str(exc)})
+                break
+            for video in (result.get("items") or []):
+                if not isinstance(video, dict):
+                    continue
+                bvid = str(video.get("bvid") or "").strip()
+                if not bvid:
+                    continue
+                entry["videos"].append({
+                    "bvid": bvid,
+                    "aid": str(video.get("aid") or ""),
+                    "title": str(video.get("title") or ""),
+                    "author": str(video.get("author") or ""),
+                })
+            if not result.get("has_more"):
+                break
+            page += 1
+            sleep(0.2)
+        folders.append(entry)
+    report(PHASE_BILI, total, total)
+
+    return {
+        "account": account,
+        "folders": folders,
         "errors": errors,
     }
 
@@ -926,6 +1038,7 @@ def read_backup_file(path: str | os.PathLike[str]) -> dict[str, Any]:
 # --------------------------------------------------------------------- 导入
 
 def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
+                bili: Any = None,
                 sleep: Callable[[float], None] = time.sleep,
                 attempts: int = DEFAULT_ATTEMPTS,
                 retry_delay: float = DEFAULT_RETRY_DELAY) -> dict[str, Any]:
@@ -936,17 +1049,21 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
     :func:`apply_import` 拿到用户的决定之后才发生。
     """
     uid = str(uid or "").strip()
+    # 没有登录网易云的时候不去碰它的接口：备份文件里可能只有 B站那一半，
+    # 这时把网易云的部分整个跳过，别让一堆无意义的报错盖住真正的问题。
+    netease_alive = bool(uid)
     raw_playlists, playlists_error = _retry(
         "playlists",
         lambda: api.get_user_playlists_all(uid, fresh=True) or None,
         attempts=attempts, delay=retry_delay, sleep=sleep,
-    )
+    ) if netease_alive else ([], "")
     current = [_playlist_entry(raw, uid) for raw in (raw_playlists or [])
                if isinstance(raw, dict)]
     current_by_name = {item["name"]: item for item in current if item["name"]}
 
     liked_now, liked_error = _read_liked_ids(api, uid, 0, attempts=attempts,
-                                              delay=retry_delay, sleep=sleep)
+                                              delay=retry_delay, sleep=sleep) \
+        if netease_alive else ([], "")
     liked_set = set(liked_now)
     if liked_error:
         # 读不到当前收藏，就当全都要加——重复喜欢一首网易云是允许的，
@@ -996,7 +1113,8 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
     # -- 关注的歌手 ---------------------------------------------------------
     backup_artists = _backup_artists(payload)
     current_artists = _current_artist_ids(api, attempts=attempts,
-                                          delay=retry_delay, sleep=sleep)
+                                          delay=retry_delay, sleep=sleep) \
+        if netease_alive else set()
     artists_to_follow = [item for item in backup_artists
                          if item["id"] not in current_artists]
     artists_present = [item for item in backup_artists
@@ -1006,15 +1124,18 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
     albums_plan = _saved_plan(api, payload, "liked_albums",
                               lambda offset: api.get_liked_albums(
                                   uid, limit=SAVED_PAGE, offset=offset),
-                              "albums", ("id",), ("name",))
+                              "albums", ("id",), ("name",)) if netease_alive \
+        else {"total": 0, "to_add": [], "present": []}
     djradios_plan = _saved_plan(api, payload, "subscribed_djradios",
                                 lambda offset: api.get_subscribed_djradios(
                                     uid, limit=SAVED_PAGE, offset=offset),
-                                "djradios", ("id",), ("name",))
+                                "djradios", ("id",), ("name",)) if netease_alive \
+        else {"total": 0, "to_add": [], "present": []}
     mvs_plan = _saved_plan(api, payload, "liked_mvs",
                             lambda offset: api.get_subscribed_mvs(
                                 uid, limit=SAVED_PAGE, offset=offset),
-                            "mvs", ("vid", "id"), ("title", "name"))
+                            "mvs", ("vid", "id"), ("title", "name")) if netease_alive \
+        else {"total": 0, "to_add": [], "present": []}
 
     # -- 云端的听歌排行（播放次数只写本地）------------------------------------
     record = _payload_record(payload)
@@ -1022,8 +1143,12 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
     # -- 本机状态（播放次数 / 收藏 / 最近播放）--------------------------------
     local_state = _payload_local_state(payload)
 
+    # -- B站收藏夹 ------------------------------------------------------------
+    bili_plan = _bili_plan(payload, bili)
+
     return {
         "ok": True,
+        "netease_available": netease_alive,
         "source": {
             "user_id": str((payload.get("account") or {}).get("user_id") or ""),
             "nickname": str((payload.get("account") or {}).get("nickname") or ""),
@@ -1065,10 +1190,67 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
         "mvs": mvs_plan,
         "record": record,
         "local_state": local_state,
+        "bilibili": bili_plan,
         "warnings": ([{"section": "playlists", "message": playlists_error}]
                      if playlists_error else [])
         + ([{"section": "favorites", "message": liked_error}]
-           if liked_error else []),
+           if liked_error else [])
+        + ([{"section": PHASE_BILI, "message": bili_plan["message"]}]
+           if bili_plan.get("message") else []),
+    }
+
+
+def _bili_plan(payload: dict[str, Any], bili: Any) -> dict[str, Any]:
+    """备份文件里的 B站收藏夹，和能不能恢复它们。
+
+    备份里没有 B站 数据、或者当前没登录 B站，这一节就只是「跳过」，
+    **不影响别的部分照常导入**。
+    """
+    data = payload.get("bilibili")
+    if not isinstance(data, dict):
+        data = {}
+    folders: list[dict[str, Any]] = []
+    for raw in (data.get("folders") or []):
+        if not isinstance(raw, dict):
+            continue
+        folder_id = str(raw.get("id") or "")
+        if not folder_id:
+            continue
+        videos: list[dict[str, Any]] = []
+        for video in (raw.get("videos") or []):
+            if not isinstance(video, dict):
+                continue
+            bvid = str(video.get("bvid") or "").strip()
+            if not bvid:
+                continue
+            videos.append({
+                "bvid": bvid,
+                "aid": str(video.get("aid") or ""),
+                "title": str(video.get("title") or ""),
+                "author": str(video.get("author") or ""),
+            })
+        folders.append({
+            "id": folder_id,
+            "title": str(raw.get("title") or ""),
+            "media_count": int(raw.get("media_count") or 0),
+            "videos": videos,
+        })
+    signed_in = bool(bili is not None and getattr(bili, "is_logged_in", False))
+    video_count = sum(len(item["videos"]) for item in folders)
+    if not folders:
+        message = ""
+    elif not signed_in:
+        message = "没有登录 B站，B站收藏夹先不恢复"
+    else:
+        message = ""
+    return {
+        "available": bool(folders) and signed_in,
+        "signed_in": signed_in,
+        "folders": folders,
+        "folder_count": len(folders),
+        "video_count": video_count,
+        "account": data.get("account") if isinstance(data.get("account"), dict) else {},
+        "message": message,
     }
 
 
@@ -1137,7 +1319,8 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
                  favorite_batch: int = FAVOURITE_BATCH,
                  track_batch: int = TRACK_BATCH,
                  batch_pause: float = BATCH_PAUSE,
-                 local: Any = None) -> dict[str, Any]:
+                 local: Any = None,
+                 bili: Any = None) -> dict[str, Any]:
     """按用户的决定把备份并进当前账号。
 
     ``decisions`` 的形状是 ``{"playlists": {歌单 id: {"action": ..., "name": ...}}}``，
@@ -1174,6 +1357,7 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
             "failed": 0,
             "skipped_detail": [],
             "local_restored": {"play_counts": 0, "favorites": 0, "recent": 0},
+            "bilibili": {"folders_created": 0, "videos_added": 0, "skipped": 0},
             "errors": [{"section": "conflicts",
                         "message": "decisions missing: " + ", ".join(missing)}],
         }
@@ -1182,8 +1366,12 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
     skipped_detail: list[dict[str, str]] = []
     report = progress or (lambda *args: None)
 
+    # 备份里只有 B站那一半时，网易云的部分整段跳过。
+    netease_alive = bool(plan.get("netease_available", True))
+
     # -- 收藏列表 ---------------------------------------------------------
-    to_add = [str(item) for item in ((plan.get("favorites") or {}).get("to_add") or [])]
+    to_add = [str(item) for item in ((plan.get("favorites") or {}).get("to_add") or [])] \
+        if netease_alive else []
     songs_skipped = len((plan.get("favorites") or {}).get("present") or [])
     songs_liked = 0
     failed = 0
@@ -1220,7 +1408,7 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
     playlists_skipped = 0
     tracks_added = 0
     plan_playlists = [item for item in (plan.get("playlists") or [])
-                      if isinstance(item, dict)]
+                      if isinstance(item, dict)] if netease_alive else []
     for index, item in enumerate(plan_playlists):
         report(PHASE_PLAYLISTS, index, len(plan_playlists))
         action = str(item.get("action") or "skip")
@@ -1287,7 +1475,7 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
     # -- 关注的歌手 ---------------------------------------------------------
     artists_followed = 0
     to_follow = [item for item in ((plan.get("artists") or {}).get("to_follow") or [])
-                 if isinstance(item, dict) and item.get("id")]
+                 if isinstance(item, dict) and item.get("id")] if netease_alive else []
     report(PHASE_ARTISTS, 0, len(to_follow))
     for index, artist in enumerate(to_follow):
         report(PHASE_ARTISTS, index, len(to_follow))
@@ -1317,7 +1505,7 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
     report(PHASE_ARTISTS, len(to_follow), len(to_follow))
 
     # -- 收藏的专辑 / 电台 / MV ---------------------------------------------
-    albums_to_add = (plan.get("albums") or {}).get("to_add") or []
+    albums_to_add = ((plan.get("albums") or {}).get("to_add") or []) if netease_alive else []
     report(PHASE_ALBUMS, 0, len(albums_to_add))
     albums_liked, albums_failed = _apply_saved(
         albums_to_add, lambda album_id: api.set_album_like(album_id, True),
@@ -1325,7 +1513,7 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
     failed += albums_failed
     report(PHASE_ALBUMS, len(albums_to_add), len(albums_to_add))
 
-    djradios_to_add = (plan.get("djradios") or {}).get("to_add") or []
+    djradios_to_add = ((plan.get("djradios") or {}).get("to_add") or []) if netease_alive else []
     report(PHASE_DJRADIOS, 0, len(djradios_to_add))
     djradios_subscribed, djradios_failed = _apply_saved(
         djradios_to_add, lambda dj_id: api.set_djradio_subscribe(dj_id, True),
@@ -1333,7 +1521,7 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
     failed += djradios_failed
     report(PHASE_DJRADIOS, len(djradios_to_add), len(djradios_to_add))
 
-    mvs_to_add = (plan.get("mvs") or {}).get("to_add") or []
+    mvs_to_add = ((plan.get("mvs") or {}).get("to_add") or []) if netease_alive else []
     report(PHASE_MVS, 0, len(mvs_to_add))
     mvs_liked, mvs_failed = _apply_saved(
         mvs_to_add, lambda mv_id: api.set_mv_like(mv_id, True),
@@ -1378,6 +1566,43 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
                 errors.append({"section": PHASE_RECORD, "message": str(exc)})
     report(PHASE_LOCAL, 1, 1)
 
+    # -- B站收藏夹 ------------------------------------------------------------
+    # 只有登录了 B站、备份里也确实有这一节时才恢复；否则这一段直接跳过，
+    # 网易云那边的结果照样算数。
+    bili_result = {"folders_created": 0, "videos_added": 0, "skipped": 0}
+    bili_plan = plan.get("bilibili") or {}
+    bili_folders = [item for item in (bili_plan.get("folders") or [])
+                     if isinstance(item, dict)]
+    if bili_plan.get("available") and bili is not None:
+        from src.core.bili_favorites import BiliFavorites
+
+        writer = BiliFavorites(bili)
+        for index, folder in enumerate(bili_folders):
+            report(PHASE_BILI, index, len(bili_folders))
+            title = str(folder.get("title") or "").strip()
+            if not title:
+                bili_result["skipped"] += 1
+                continue
+            created = writer.create_folder(title)
+            if not created.get("success"):
+                failed += 1
+                errors.append({"section": f"bilibili_folder:{folder.get('id')}",
+                               "message": str(created.get("message") or "建收藏夹失败")})
+                continue
+            bili_result["folders_created"] += 1
+            added = writer.add_videos(str(created.get("id") or ""),
+                                       folder.get("videos") or [])
+            if added.get("success"):
+                bili_result["videos_added"] += int(added.get("count") or 0)
+            else:
+                failed += 1
+                errors.append({"section": f"bilibili_folder:{folder.get('id')}",
+                               "message": str(added.get("message") or "加收藏失败")})
+            sleep(batch_pause)
+        report(PHASE_BILI, len(bili_folders), len(bili_folders))
+    elif bili_folders:
+        bili_result["skipped"] = len(bili_folders)
+
     return {
         "ok": True,
         "songs_liked": songs_liked,
@@ -1394,6 +1619,7 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
         "failed": failed,
         "skipped_detail": skipped_detail,
         "local_restored": local_restored,
+        "bilibili": bili_result,
         "errors": errors,
     }
 

@@ -20,6 +20,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -168,7 +169,12 @@ class GuiBridge:
         #: The Bilibili music source.  Composed, not inherited: the bridge
         #: layer knows how to talk to the frontend, the source knows how to
         #: talk to Bilibili.
-        self.bilibili = BilibiliBridge()
+        self.bilibili = BilibiliBridge(media=self.media)
+        # The remembered Bilibili cookie has to reach the media server too:
+        # the CDN refuses the video streams without it.
+        bili_session = self.bilibili.session
+        if bili_session is not None:
+            bili_session.apply_to_media(self.media)
 
         self.login_manager.on("status_change", self._on_login_status_change)
         self.login_manager.on("qrcode_update", self._on_qrcode_update)
@@ -404,6 +410,32 @@ class GuiBridge:
             self.logger.debug("native theme update failed: %s", exc)
             return False
 
+    def choose_file(self, kind: str = "video") -> dict[str, Any]:
+        """弹原生打开对话框选一个文件（投稿要的视频或封面）。
+
+        ``kind`` 取 ``"video"`` 或 ``"image"``。
+        """
+        if not self._window:
+            return {"success": False, "path": ""}
+        filters = {
+            "video": "Video files (*.mp4;*.mov;*.mkv;*.flv;*.avi;*.webm)",
+            "image": "Image files (*.jpg;*.jpeg;*.png;*.webp)",
+        }
+        wanted = str(kind or "video").lower()
+        try:
+            result = self._window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=(filters.get(wanted, filters["video"]),),
+            )
+        except Exception as exc:
+            self.logger.warning("file dialog failed: %s", exc)
+            return {"success": False, "path": ""}
+        if not result:
+            return {"success": False, "path": ""}
+        chosen = result[0] if isinstance(result, list | tuple) else result
+        return {"success": True, "path": str(chosen)}
+
     def choose_directory(self) -> str | None:
         if not self._window:
             return None
@@ -487,27 +519,64 @@ class GuiBridge:
 
         先弹原生保存对话框让用户选位置，再去云端把数据拉下来写进去。云端
         读不到的部分退到本地缓存，导出的文件里会标明每一节的来源。
+
+        **网易云和 B站登录任意一个就能导出**：只登录了 B站时，文件里是
+        B站那一半的数据；两边都登录了就都写进去。
         """
         user = self.login_manager.user_info
-        if not user or not user.user_id:
+        netease_signed_in = bool(user and user.user_id)
+        bili_signed_in = bool(self._bili_signed_in())
+        if not netease_signed_in and not bili_signed_in:
             return {"success": False, "error_key": "backup.login_required"}
-        path = self._choose_backup_save_path(user.nickname)
+        nickname = (user.nickname if netease_signed_in else "") or ""
+        path = self._choose_backup_save_path(nickname or "SkycMedia")
         if not path:
             return {"success": False, "cancelled": True}
-        try:
-            payload = backup_core.export_account_data(
-                self.api,
-                uid=user.user_id,
-                account=self._backup_account_payload(user),
-                cloud_profile=self._backup_cloud_profile,
-                cache=get_meta_cache(),
-                local=self.library.exportable_state(),
-                progress=self._on_backup_progress,
-            )
-        except Exception as exc:
-            self.logger.warning("account backup export failed: %s", exc)
-            return {"success": False, "error_key": "backup.export_failed",
-                    "message": str(exc)}
+        payload: dict[str, Any] = {}
+        if netease_signed_in:
+            try:
+                payload = backup_core.export_account_data(
+                    self.api,
+                    uid=user.user_id,
+                    account=self._backup_account_payload(user),
+                    cloud_profile=self._backup_cloud_profile,
+                    cache=get_meta_cache(),
+                    local=self.library.exportable_state(),
+                    progress=self._on_backup_progress,
+                )
+            except Exception as exc:
+                self.logger.warning("account backup export failed: %s", exc)
+                return {"success": False, "error_key": "backup.export_failed",
+                        "message": str(exc)}
+        else:
+            # 只登录了 B站：文件里也要有格式标识和版本号，导入的时候才认得。
+            payload = {
+                "format": backup_core.BACKUP_FORMAT,
+                "version": backup_core.BACKUP_VERSION,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "app_version": __version__,
+                "sources": {},
+                "account": {},
+                "liked_song_ids": [],
+                "playlists": [],
+                "followed_artists": [],
+                "liked_albums": [],
+                "subscribed_djradios": [],
+                "liked_mvs": [],
+                "play_record": [],
+                "local_state": {},
+                "errors": [],
+            }
+        if bili_signed_in:
+            try:
+                payload["bilibili"] = backup_core.export_bilibili_data(
+                    self.bilibili.client,
+                    progress=self._on_backup_progress,
+                )
+            except Exception as exc:
+                self.logger.warning("bilibili backup export failed: %s", exc)
+                payload.setdefault("errors", []).append(
+                    {"section": "bilibili", "message": str(exc)})
         try:
             backup_core.write_backup_file(path, payload)
         except OSError as exc:
@@ -515,6 +584,8 @@ class GuiBridge:
             return {"success": False, "error_key": "backup.write_failed",
                     "message": str(exc)}
         local_state = payload.get("local_state") or {}
+        bili_section = payload.get("bilibili") or {}
+        bili_folders = bili_section.get("folders") or []
         return {
             "success": True,
             "path": str(path),
@@ -531,17 +602,36 @@ class GuiBridge:
             "local_play_counts": len(local_state.get("play_counts") or {}),
             "local_favorites": len(local_state.get("favorites") or []),
             "local_recent": len(local_state.get("recent") or []),
+            "bilibili_folders": len(bili_folders),
+            "bilibili_videos": sum(len(item.get("videos") or [])
+                                   for item in bili_folders),
+            "netease": netease_signed_in,
+            "bilibili": bili_signed_in,
             "errors": payload.get("errors", []),
         }
+
+    def _bili_signed_in(self) -> bool:
+        """Whether a Bilibili account is signed in."""
+        session = self.bilibili.session
+        if session is None:
+            return False
+        try:
+            return bool(session.is_logged_in)
+        except Exception:  # pragma: no cover - the session does not raise
+            return False
 
     def import_account_backup(self, file_path: str) -> dict[str, Any]:
         """读一个 ``.ncmbk`` 文件，算出导入要做的事。
 
         这一步**不写任何东西**：先把冲突清单交给用户确认，拿到决定之后才
         调 :meth:`apply_account_backup` 真正写入。
+
+        备份里有没有 B站那一节都能导入：没有就只恢复网易云的部分，有的话
+        登录了 B站就一起恢复，没登录就跳过并说明。
         """
         user = self.login_manager.user_info
-        if not user or not user.user_id:
+        netease_signed_in = bool(user and user.user_id)
+        if not netease_signed_in and not self._bili_signed_in():
             return {"success": False, "error_key": "backup.login_required"}
         try:
             payload = backup_core.read_backup_file(file_path)
@@ -552,7 +642,10 @@ class GuiBridge:
             return {"success": False, "error_key": "backup.read_failed",
                     "message": str(exc)}
         try:
-            plan = backup_core.plan_import(self.api, payload, uid=user.user_id)
+            plan = backup_core.plan_import(
+                self.api, payload, uid=user.user_id if netease_signed_in else "",
+                bili=self.bilibili.client if self._bili_signed_in() else None,
+            )
         except Exception as exc:
             self.logger.warning("cannot plan the account backup import: %s", exc)
             return {"success": False, "error_key": "backup.plan_failed",
@@ -563,6 +656,7 @@ class GuiBridge:
             "success": True,
             "summary": plan.get("summary", {}),
             "conflicts": plan.get("conflicts", []),
+            "bilibili": plan.get("bilibili", {}),
             "skipped": [{"id": item.get("id"), "name": item.get("name"),
                          "reason": item.get("reason")}
                         for item in plan.get("playlists", [])
@@ -585,6 +679,7 @@ class GuiBridge:
                 self.api, payload, plan, decisions,
                 progress=self._on_backup_progress,
                 local=self.library,
+                bili=self.bilibili.client if self._bili_signed_in() else None,
             )
         except Exception as exc:
             self.logger.warning("account backup import failed: %s", exc)
@@ -611,6 +706,7 @@ class GuiBridge:
             "failed": result.get("failed", 0),
             "skipped_detail": result.get("skipped_detail", []),
             "local_restored": result.get("local_restored", {}),
+            "bilibili": result.get("bilibili", {}),
             "errors": result.get("errors", []),
         }
 
@@ -1898,21 +1994,192 @@ class GuiBridge:
     @staticmethod
     def _bilibili_track_payload(item: dict[str, Any]) -> dict[str, Any]:
         """One Bilibili item, in the shape the player list renders."""
-        item = item or {}
-        bvid = str(item.get("bvid") or item.get("id") or "")
-        return {
-            "id": bvid,
-            "key": track_key("bilibili", bvid),
-            "source": "bilibili",
-            "name": item.get("title") or "",
-            "artists": item.get("author") or "",
-            "album": item.get("category") or "",
-            "cover_url": item.get("cover") or "",
-            "duration": int(item.get("duration") or 0),
-            "play_count": int(item.get("play_count") or 0),
-            "url": item.get("url") or "",
-            "bvid": bvid,
-        }
+        from src.gui.bilibili_bridge import track_payload
+
+        return track_payload(item)
+
+    # -- bilibili account ------------------------------------------------------
+    def get_bilibili_account(self, refresh: bool = False) -> dict[str, Any]:
+        """The account information of the signed-in Bilibili user."""
+        return self.bilibili.account(refresh=refresh)
+
+    def bili_login_qrcode(self) -> dict[str, Any]:
+        """Ask Bilibili for a login QR code."""
+        return self.bilibili.login_qrcode()
+
+    def bili_login_poll(self) -> dict[str, Any]:
+        """Check the state of the login QR code."""
+        return self.bilibili.login_poll()
+
+    def bili_login_cookie(self, cookie: str) -> dict[str, Any]:
+        """Sign in to Bilibili with a cookie from the browser."""
+        return self.bilibili.login_cookie(cookie)
+
+    def bili_login_password(self, username: str, password: str,
+                            captcha_key: str = "", captcha: str = "",
+                            challenge: str = "", validate: str = "",
+                            seccode: str = "") -> dict[str, Any]:
+        """Sign in to Bilibili with a user name and a password."""
+        return self.bilibili.login_password(
+            username, password, captcha_key=captcha_key, captcha=captcha,
+            challenge=challenge, validate=validate, seccode=seccode,
+        )
+
+    def bili_captcha(self) -> dict[str, Any]:
+        """The verification challenge of the password and SMS flows."""
+        return self.bilibili.captcha()
+
+    def bili_send_sms_code(self, tel: str, cid: str = "86") -> dict[str, Any]:
+        """Send a verification code to a phone number."""
+        return self.bilibili.send_sms_code(tel, cid=cid)
+
+    def bili_login_sms(self, tel: str, code: str, cid: str = "86") -> dict[str, Any]:
+        """Sign in to Bilibili with the code sent to a phone number."""
+        return self.bilibili.login_sms(tel, code, cid=cid)
+
+    def bili_register_send_code(self, tel: str, cid: str = "86") -> dict[str, Any]:
+        """Send the code needed to register a new Bilibili account."""
+        return self.bilibili.register_send_code(tel, cid=cid)
+
+    def bili_register(self, username: str, password: str, tel: str, code: str,
+                      cid: str = "86") -> dict[str, Any]:
+        """Create a new Bilibili account and sign in with it."""
+        return self.bilibili.register(username, password, tel, code, cid=cid)
+
+    def bili_logout(self) -> dict[str, Any]:
+        """Sign out of Bilibili."""
+        return self.bilibili.logout()
+
+    # -- bilibili favourites ----------------------------------------------------
+    def get_bilibili_favorites(self) -> dict[str, Any]:
+        """The favourite folders of the signed-in Bilibili user."""
+        return self.bilibili.favorites()
+
+    def get_bilibili_favorite_videos(self, folder_id: str = "", page: int = 1,
+                                     page_size: int = 30) -> dict[str, Any]:
+        """The videos inside one favourite folder."""
+        return self.bilibili.favorite_videos(folder_id, page=page,
+                                              page_size=page_size)
+
+    # -- bilibili playback / download -------------------------------------------
+    def get_bilibili_video_streams(self, bvid: str, quality: int = 0) -> dict[str, Any]:
+        """The playable streams of one Bilibili video."""
+        return self.bilibili.video_streams(bvid, quality=quality)
+
+    def download_bilibili_tracks(self, tracks: list[dict[str, Any]] | None = None,
+                                 options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Download the video and the sound of every track of the list."""
+        return self.bilibili.download(
+            tracks, options,
+            progress=lambda payload: self._call_js("onBiliDownloadProgress", payload),
+        )
+
+
+    # -- bilibili interactions -------------------------------------------------
+    def get_bilibili_video_stat(self, bvid: str) -> dict[str, Any]:
+        """The counters of one Bilibili video."""
+        return self.bilibili.video_stat(bvid)
+
+    def bili_like_video(self, bvid: str, like: bool = True) -> dict[str, Any]:
+        """Like (or unlike) one Bilibili video."""
+        return self.bilibili.like_video(bvid, like=like)
+
+    def bili_coin_video(self, bvid: str, count: int = 1,
+                        also_like: bool = False) -> dict[str, Any]:
+        """Throw coins at a Bilibili video."""
+        return self.bilibili.coin_video(bvid, count=count, also_like=also_like)
+
+    def get_bilibili_coin_balance(self) -> dict[str, Any]:
+        """The coin balance of the signed-in Bilibili account."""
+        return self.bilibili.coin_balance()
+
+    def bili_favorite_video(self, bvid: str, folder_id: str = "",
+                            remove: bool = False) -> dict[str, Any]:
+        """Put a Bilibili video into a favourite folder."""
+        return self.bilibili.favorite_video(bvid, folder_id=folder_id,
+                                             remove=remove)
+
+    def bili_favorite_folder(self, folder_id: str,
+                             remove: bool = False) -> dict[str, Any]:
+        """Favourite somebody else's Bilibili folder."""
+        return self.bilibili.favorite_folder(folder_id, remove=remove)
+
+    # -- bilibili comments -----------------------------------------------------
+    def get_bilibili_comments(self, bvid: str, page: int = 1,
+                              sort: str = "hot") -> dict[str, Any]:
+        """The comments of one Bilibili video."""
+        return self.bilibili.comments(bvid, page=page, sort=sort)
+
+    def bili_post_comment(self, bvid: str, content: str,
+                          parent_rpid: int = 0) -> dict[str, Any]:
+        """Write a Bilibili comment or a reply."""
+        return self.bilibili.post_comment(bvid, content, parent_rpid=parent_rpid)
+
+    def bili_like_comment(self, rpid: str, like: bool = True) -> dict[str, Any]:
+        """Like (or unlike) a Bilibili comment."""
+        return self.bilibili.like_comment(rpid, like=like)
+
+    # -- bilibili danmaku ------------------------------------------------------
+    def get_bilibili_danmaku(self, bvid: str, cid: int = 0) -> dict[str, Any]:
+        """The danmaku of one Bilibili video."""
+        return self.bilibili.danmaku(bvid, cid=cid)
+
+    def bili_send_danmaku(self, bvid: str, text: str, cid: int = 0,
+                          color: int = 16777215, size: int = 25,
+                          mode: int = 1) -> dict[str, Any]:
+        """Send one Bilibili danmaku."""
+        return self.bilibili.send_danmaku(bvid, text, cid=cid, color=color,
+                                           size=size, mode=mode)
+
+    # -- bilibili history / space ----------------------------------------------
+    def get_bilibili_history(self, page: int = 1,
+                             page_size: int = 30) -> dict[str, Any]:
+        """What the signed-in Bilibili account watched."""
+        return self.bilibili.history(page=page, page_size=page_size)
+
+    def get_bilibili_space(self, mid: str) -> dict[str, Any]:
+        """The profile of a Bilibili uploader."""
+        return self.bilibili.space(mid)
+
+    def get_bilibili_space_videos(self, mid: str, page: int = 1,
+                                  page_size: int = 30) -> dict[str, Any]:
+        """The videos a Bilibili uploader published."""
+        return self.bilibili.space_videos(mid, page=page, page_size=page_size)
+
+    def bili_follow_user(self, mid: str, follow: bool = True) -> dict[str, Any]:
+        """Follow (or unfollow) a Bilibili uploader."""
+        return self.bilibili.follow_user(mid, follow=follow)
+
+    def get_bilibili_follow_state(self, mid: str) -> dict[str, Any]:
+        """Whether the account follows this Bilibili uploader."""
+        return self.bilibili.follow_state(mid)
+
+    # -- bilibili private messages ----------------------------------------------
+    def get_bilibili_messages(self, size: int = 20) -> dict[str, Any]:
+        """The Bilibili private-message conversations."""
+        return self.bilibili.messages(size=size)
+
+    def get_bilibili_message_history(self, session_id: str, talker_id: str,
+                                     size: int = 20) -> dict[str, Any]:
+        """The messages of one Bilibili conversation."""
+        return self.bilibili.message_history(session_id, talker_id, size=size)
+
+    def bili_send_message(self, talker_id: str, text: str,
+                          session_id: str = "") -> dict[str, Any]:
+        """Send one Bilibili private message."""
+        return self.bilibili.send_message(talker_id, text, session_id=session_id)
+
+    # -- bilibili uploading -----------------------------------------------------
+    def get_bilibili_upload_categories(self) -> dict[str, Any]:
+        """The categories a Bilibili video can be posted to."""
+        return self.bilibili.upload_categories()
+
+    def bili_upload_video(self, video_path: str, title: str, tid: int,
+                          desc: str = "", tags: str = "",
+                          cover_path: str = "") -> dict[str, Any]:
+        """Post a video to Bilibili."""
+        return self.bilibili.upload_video(video_path, title, tid, desc=desc,
+                                           tags=tags, cover_path=cover_path)
 
     # -- playlist management ---------------------------------------------------
     def create_playlist(self, name: str, privacy: int = 0, description: str = "") -> dict[str, Any]:
