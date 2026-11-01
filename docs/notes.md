@@ -3309,3 +3309,26 @@ H.264 优先、HEVC 次之、AV1 最后。画质档位不变（`id` 的过滤在
   预发布路径返回 v3.9.2、新资产名 `SkycMedia-*`）。**真实 TLS 和冻结应用的安装流程没验。**
 - `.dmg` 安装路径（走 `hdiutil attach`）没验，没有 dmg fixture。
 - 写操作（投币、发私信、上报播放）都没拿真实账号试。
+
+### 启动头几秒私信会失败：Session 被多线程共用
+
+现象：应用刚起来时点「私信」，面板显示「拿私信会话列表失败」；等十几秒再点就正常。
+同一份代码在 Python 里直接调 `get_bilibili_messages()` 一次都没失败过。
+
+根因是 `requests.Session` **不是线程安全的**。GUI 启动时会同时要账号、推荐、热门、
+历史、私信，全压在 `BiliClient` 那一个 Session 上；连接池在多线程下会把一个请求的
+回答串给另一个。晚一点就只剩零星请求，所以看不出来。
+
+修法：`BiliClient` 加一把 `RLock`（`request_lock`），`_get_response`、`_post_request`、
+`_passport_request` 和 `BiliIm._get`/`_post` 全部在锁里发请求。实测五个请求并发发出，
+耗时按 0.28 → 0.40 → 0.72 → 1.05 秒累加（说明确实串行了），**五个全部成功**。
+
+代价是 B站请求变成串行，每次几百毫秒。B站本来就该节流，这个代价值得。
+`BiliIm._lock()` 对没有 `request_lock` 的假 client 返回 `nullcontext()`，
+所以测试里的 fake 不用改。
+
+### 私信和头像其实是好的（实测）
+
+用真实应用窗口验证过：账号头像 `naturalWidth 1792 / complete true`，
+私信面板 20 个会话、20 张头像、19 张加载成功（第 20 张是对方没有头像）、
+消息正文正常渲染、`#bili-im-state` 无错误。**没有代码要改。**

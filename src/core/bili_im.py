@@ -134,13 +134,29 @@ class BiliIm:
             pass
         return headers
 
+    def _lock(self) -> Any:
+        """The request lock of the client, so both halves of the app share one.
+
+        ``requests.Session`` is not thread safe; the client exposes its lock
+        and every module on the same client has to take it around a request.
+        A contextlib.nullcontext fallback keeps a fake client in the tests
+        working without one.
+        """
+        import contextlib
+
+        getter = getattr(self._client, "request_lock", None)
+        if getter is None:
+            return contextlib.nullcontext()
+        return getter
+
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any] | None:
         """一次 GET，返回解析后的包封；失败返回 ``None``。"""
         try:
-            response = self._client.session.get(
-                BILI_IM_BASE + path, params=params, headers=self._headers(),
-                timeout=(10, 30),
-            )
+            with self._lock():
+                response = self._client.session.get(
+                    BILI_IM_BASE + path, params=params, headers=self._headers(),
+                    timeout=(10, 30),
+                )
         except Exception as exc:  # noqa: BLE001 - 上层不能看到异常
             log.warning("bili im request failed (%s): %s", path, exc)
             return None
@@ -151,9 +167,10 @@ class BiliIm:
         headers = self._headers()
         headers["Content-Type"] = "application/x-www-form-urlencoded"
         try:
-            response = self._client.session.post(
-                BILI_IM_BASE + path, data=data, headers=headers, timeout=(10, 30),
-            )
+            with self._lock():
+                response = self._client.session.post(
+                    BILI_IM_BASE + path, data=data, headers=headers, timeout=(10, 30),
+                )
         except Exception as exc:  # noqa: BLE001
             log.warning("bili im write failed (%s): %s", path, exc)
             return None

@@ -33,6 +33,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 import urllib.parse
 import uuid
@@ -461,7 +462,22 @@ class BiliClient:
         self._cookie: dict[str, str] = {}
         self._mixin: str = ""
         self._buvid_ready = False
+        #: 一把请求锁。``requests.Session`` 不是线程安全的——它的连接池在
+        #: 多线程下共用一个 socket 会把回答串给别的请求。界面启动时会同时
+        #: 要账号、推荐、热门、私信，全压在这一个 session 上；实测启动后
+        #: 头几秒调私信会失败，晚一点再调就正常，就是这里串包了。
+        #: 加锁后请求变成串行，代价是几百毫秒，B站本来也该节流。
+        self._request_lock = threading.RLock()
         self.set_cookie(cookie)
+
+    @property
+    def request_lock(self) -> threading.RLock:
+        """The lock every request on this client has to hold.
+
+        Other modules on the same client (private messages) take it too, so
+        one session is never used from two threads at once.
+        """
+        return self._request_lock
 
     # ------------------------------------------------------------------
     # session / identity
@@ -548,12 +564,14 @@ class BiliClient:
         """
         url = path if path.startswith("http") else BILI_API_BASE + path
         try:
-            return self._session.get(
-                url,
-                params=params or {},
-                headers=headers or self._headers(),
-                timeout=self._timeout,
-            )
+            # 共享的 Session 只能一个线程用，见 __init__ 里的说明。
+            with self._request_lock:
+                return self._session.get(
+                    url,
+                    params=params or {},
+                    headers=headers or self._headers(),
+                    timeout=self._timeout,
+                )
         except Exception as exc:  # noqa: BLE001 - the UI must never see an exception
             log.warning("bilibili request failed: %s (%s)", path, exc)
             return None
@@ -593,20 +611,22 @@ class BiliClient:
         url = path if path.startswith("http") else BILI_PASSPORT_BASE + path
         headers = self._headers()
         try:
-            if method.upper() == "POST":
-                response = self._session.post(
-                    url,
-                    data=params or {},
-                    headers=headers,
-                    timeout=self._timeout,
-                )
-            else:
-                response = self._session.get(
-                    url,
-                    params=params or {},
-                    headers=headers,
-                    timeout=self._timeout,
-                )
+            # 共享的 Session 只能一个线程用，见 __init__ 里的说明。
+            with self._request_lock:
+                if method.upper() == "POST":
+                    response = self._session.post(
+                        url,
+                        data=params or {},
+                        headers=headers,
+                        timeout=self._timeout,
+                    )
+                else:
+                    response = self._session.get(
+                        url,
+                        params=params or {},
+                        headers=headers,
+                        timeout=self._timeout,
+                    )
         except Exception as exc:  # noqa: BLE001
             log.warning("bilibili passport request failed: %s (%s)", path, exc)
             return None, None
@@ -928,8 +948,10 @@ class BiliClient:
         headers = self._headers()
         headers["Content-Type"] = "application/x-www-form-urlencoded"
         try:
-            response = self._session.post(url, data=payload, headers=headers,
-                                          timeout=self._timeout)
+            # 共享的 Session 只能一个线程用，见 __init__ 里的说明。
+            with self._request_lock:
+                response = self._session.post(url, data=payload, headers=headers,
+                                              timeout=self._timeout)
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             log.warning("bilibili write failed: %s (%s)", path, exc)
             return None
