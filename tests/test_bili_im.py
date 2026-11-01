@@ -199,7 +199,7 @@ MESSAGES_PAYLOAD = {
 
 def test_messages_parses_json_content_and_marks_own_messages() -> None:
     session = FakeSession({
-        "/session_svr/v1/session_svr/fetch_session_msgs": MESSAGES_PAYLOAD})
+        "/svr_sync/v1/svr_sync/fetch_session_msgs": MESSAGES_PAYLOAD})
     result = BiliIm(FakeClient(session)).messages("900", "123")
 
     assert result["success"] is True
@@ -218,12 +218,62 @@ def test_messages_parses_json_content_and_marks_own_messages() -> None:
     assert raw["msg_type"] == 10
     assert raw["msg_key"] == "key-3"
 
+    # 读消息走 svr_sync 网关上的 GET（session_svr 那条是 404）
+    url, params = session.gets[0]
+    assert url.endswith("/svr_sync/v1/svr_sync/fetch_session_msgs")
+    assert params["session_id"] == "900"
+    assert params["talker_id"] == "123"
+    assert params["session_type"] == 1
+
+
+def test_messages_fall_back_to_the_legacy_route() -> None:
+    """新路由没有回答时，退回老的 POST 路由。"""
+    session = FakeSession({
+        "/session_svr/v1/session_svr/fetch_session_msgs": MESSAGES_PAYLOAD})
+    original = session._reply
+
+    def reply(url: str):
+        if url.endswith("/svr_sync/v1/svr_sync/fetch_session_msgs"):
+            return FakeResponse({}, status=404)
+        return original(url)
+
+    session._reply = reply
+    result = BiliIm(FakeClient(session)).messages("900", "123")
+    assert result["success"] is True
+    assert result["count"] == 3
+    assert session.posts, "老路由应该被试一次"
     url, form = session.posts[0]
     assert url.endswith("/session_svr/v1/session_svr/fetch_session_msgs")
-    assert form["session_id"] == "900"
-    assert form["talker_id"] == "123"
-    assert form["session_type"] == 1
     assert form["csrf"] == "csrf-token"
+
+
+def test_conversations_fill_in_missing_names_and_faces() -> None:
+    """会话列表没带对方资料时，用 user/cards 一次问一批补齐。"""
+    payload = {
+        "code": 0,
+        "data": {
+            "session_list": [{
+                "talker_id": 777,
+                "session_type": 1,
+                "unread_count": 0,
+                "last_msg": {"msg_type": 1, "content": "hi"},
+            }],
+        },
+    }
+    session = FakeSession({
+        "/session_svr/v1/session_svr/get_sessions": payload,
+        "/account/v1/user/cards": {
+            "code": 0,
+            "data": [{"mid": 777, "name": "路人甲",
+                      "face": "https://example.invalid/777.jpg"}],
+        },
+    })
+    result = BiliIm(FakeClient(session)).conversations()
+    assert result["success"] is True
+    assert result["items"][0]["name"] == "路人甲"
+    assert result["items"][0]["face"] == "https://example.invalid/777.jpg"
+    urls = [url for url, _ in session.gets]
+    assert any(url.endswith("/account/v1/user/cards") for url in urls)
 
 
 # --------------------------------------------------------------------- 发消息
@@ -269,7 +319,7 @@ def test_not_logged_in_fails_without_request() -> None:
 def test_error_codes_are_translated() -> None:
     session = FakeSession({
         "/session_svr/v1/session_svr/get_sessions": {"code": -101, "message": "账号未登录"},
-        "/session_svr/v1/session_svr/fetch_session_msgs": {"code": -111, "message": "csrf 校验失败"},
+        "/svr_sync/v1/svr_sync/fetch_session_msgs": {"code": -111, "message": "csrf 校验失败"},
         "/session_svr/v1/session_svr/send_msg": {"code": -352, "message": "风控校验失败"},
     })
     im = BiliIm(FakeClient(session))

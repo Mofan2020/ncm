@@ -55,6 +55,25 @@ def test_roundtrip_persistence(isolated_home):
     assert reloaded.auth.saved_cookie == "MUSIC_U=abc"
 
 
+def test_bili_settings_survive_a_restart(isolated_home):
+    """B站的设置以前只写进内存，重启就回默认值。"""
+    from src.config import settings as settings_module
+
+    settings = get_settings()
+    settings.update_bili(quality=80, danmaku_enabled=False, danmaku_font_size=24,
+                         danmaku_opacity=0.5, download_audio=False,
+                         separate_player_window=False)
+
+    settings_module.Settings._instance = None
+    reloaded = get_settings()
+    assert reloaded.bili.quality == 80
+    assert reloaded.bili.danmaku_enabled is False
+    assert reloaded.bili.danmaku_font_size == 24
+    assert reloaded.bili.danmaku_opacity == pytest.approx(0.5)
+    assert reloaded.bili.download_audio is False
+    assert reloaded.bili.separate_player_window is False
+
+
 def test_max_concurrent_is_clamped_to_three(isolated_home):
     settings = get_settings()
     settings.update_download(max_concurrent=99)

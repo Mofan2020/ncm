@@ -2713,8 +2713,13 @@ input[type="range"]::-webkit-slider-thumb {
 .bili-im-session:hover { background: var(--hover); }
 .bili-im-session.is-active { background: var(--bili-soft); }
 .bili-im-session-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bili-im-face {
+    width: 22px; height: 22px; border-radius: 50%; object-fit: cover;
+    flex: 0 0 auto; background: var(--sunken);
+}
+.bili-im-ident { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1 1 auto; }
 .bili-im-thread { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.bili-im-head { font-size: 13px; font-weight: 600; color: var(--text); }
+.bili-im-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text); }
 .bili-im-messages { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; max-height: 320px; }
 .bili-im-message {
     align-self: flex-start; max-width: 78%; padding: 7px 11px;

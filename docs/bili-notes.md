@@ -76,19 +76,36 @@ B站对同一 IP 的写操作频控很紧。收藏夹的写入（建夹、加视
   `/m/<token>/bili?u=<地址>`。这个代理会补上 `Referer` 和 cookie、转发
   `Range`，并且**只放行** `hdslb.com` / `bilivideo.com` / `bilibili.com`
   这几个域名——不限制的话，回环服务器就成了一个开放代理。
-- **单文件（muxed）流的主机换过域名。** B站现在给 muxed 流的主机是
-  `*.edge.mountaintoys.cn:4483`，不在上面的白名单里。代理会回 403，
-  而那个地址**直连是好的**（206）——所以症状是「视频一个都放不了」，
-  看起来像播放器坏了，其实是代理拒绝转发。
-  macOS 上尤其致命：WKWebView 没有 `MediaSource`，只能吃 muxed 单文件流，
-  所以白名单漏了这一个域 = 全部视频都播不了。
-  白名单在 `src/core/mediaserver.py` 的 `_BILI_HOST_SUFFIXES`，
+- **代理只放行 B站自己的域名。** 白名单在 `src/core/mediaserver.py` 的
+  `_BILI_HOST_SUFFIXES`（含 `*.mountaintoys.cn`——合并流现在在那儿）。
   加域名时只加明确后缀，别把回环服务变成开放代理。
+- **`baseUrl` 里的节点不一定是最快的。** 2026-11-01 实测同一台机器取 6 MB：
+  `upos-sz-estgoss.bilivideo.com` 8211 kB/s、`upos-sz-mirrorhwo1` 1097 kB/s、
+  `*.edge.mountaintoys.cn:4483` 331 kB/s、`*.mcdn.bilivideo.cn:8082` 211 kB/s
+  （还两次读超时）。B站把 `mcdn` 节点排在 `baseUrl` 第一位，那是给官方客户端
+  用的 P2P 加速节点，对第三方客户端经常连得上却不发数据。
+  所以：**按主机排个序（`upos-*` → `mountaintoys` → `mcdn`），并且把
+  `backupUrl` 一起带着，代理在第一台不发数据时换下一台。**
+  代理要记住哪台能用，同一个文件后面的 Range 请求直接用它。
 - **画质是账号说了算。** `accept_quality` 给出这次登录能看的画质，
   `support_formats` 给出清晰度名称。没有大会员时 1080P 以上拿不到，
   这不是 bug。
 - **无损音质在 `dash.flac` 里**（`codecid` 30280 一类），杜比在
   `dash.dolby` 里。两者都只有部分视频有。
+- **同一个画质会给好几条**（码率和主机都不同）。挑的时候要按码率最高的那条，
+  按顺序拿第一条会拿到 750 kB/s 的流，而 2.6 MB/s 的那条就在旁边。
+- **合并流（`fnval=1` 的 `durl`）最高只有 720P**，不管 `qn` 要多少。它是
+  WKWebView 里唯一能随意 seek 的形态（普通 mp4 文件）。
+- **WKWebView 有没有 `MediaSource`，要在 http 来源的页面上测。**
+  `pywebview` 的 `html=` 内联页面不是 http 来源，WebKit 会把 MSE 直接掐掉
+  （`video.error.code = 4`），拿这种页面测出来的「不支持」是假的。
+  2026-11-01 在真实回环地址上测：MSE 可用，H.264/H.265/AAC 都支持。
+- **MSE 不能从分片中间起播。** 把 fragment 切开喂进 `SourceBuffer`，
+  WebKit 回的是 decode error，整个 MediaSource 就废了。压缩画面里到处是
+  假的 `moof` 标记，靠扫字节对齐 box 边界不可靠。要跳到没缓冲的地方，
+  只能换成合并流让浏览器自己 seek。
+- **`SourceBuffer.remove()` 是异步的**，必须等 `updateend`。没等就
+  `appendBuffer()`，WebKit 回 `InvalidStateError`，画面同样会废。
 
 ## 收藏夹
 
@@ -150,10 +167,26 @@ B站对同一 IP 的写操作频控很紧。收藏夹的写入（建夹、加视
 
 私信走的是**另一个网关** `api.vc.bilibili.com`，不走 WBI 签名：
 
-- 会话列表：`GET /session_svr/v1/session/notify_fetch`
-- 某个会话的消息：`POST /sess_svr/v1/sess/get_messages`
-- 发消息：`POST /sess_svr/v1/sess/send_msg`，`content` 是 **JSON 字符串**
+- 会话列表：`GET /session_svr/v1/session_svr/get_sessions`
+- 某个会话的消息：`GET /svr_sync/v1/svr_sync/fetch_session_msgs`
+  （`session_type=1`、`talker_id`、`session_id`、`size`、`build=0`、
+  `mobi_app=web`、`platform=web`）
+- 发消息：`POST /session_svr/v1/session_svr/send_msg`，`content` 是 **JSON 字符串**
   （`{"content": "文字"}`），`client_key` 用 UUID。
+  （这条路由代码里是这个写法，旧笔记记的是 `/sess_svr/v1/sess/send_msg`；
+  发消息是写操作，本轮没有拿真实账号试，两条都留着，谁先试通改另一条。）
+
+2026-11-01 实测踩到的：
+
+- **读消息是 GET，而且网关前缀是 `svr_sync`。**
+  `/session_svr/v1/session_svr/fetch_session_msgs` 回 404（整页 HTML）。
+  POST 到 `svr_sync` 那条回 405——路径对，方法不对。
+- **会话列表只给「关注过的人」带 `account_info`**（名字 + 头像）。
+  没关注过的会话这一项是空的，界面只剩一串 uid。补的办法是
+  `GET /account/v1/user/cards?uids=1,2,3`——一次能问 50 个，
+  网页端私信列表也是这么做的。
+- **`content` 是 JSON 字符串**，里面再包一层 `{"content": "文字"}`。
+  系统通知（登录提醒一类）没有 `content`，正文在 `text`、标题在 `title`。
 
 ## 投稿
 

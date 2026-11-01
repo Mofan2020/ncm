@@ -167,7 +167,8 @@ class _Handler(BaseHTTPRequestHandler):
                 # Bilibili CDN proxy.  The CDN answers 403 without a matching
                 # Referer, and a signed stream url has to stay in the
                 # backend, so the webview asks the loopback for the bytes.
-                self._bili(query.get("u", [""])[0], send_body)
+                # ``alt`` repeats: the other hosts the same file is on.
+                self._bili(query.get("u", [""])[0], query.get("alt", []), send_body)
             elif route == "bg":
                 self._background(send_body)
             else:
@@ -378,17 +379,32 @@ class _Handler(BaseHTTPRequestHandler):
         self.media.write_cover_cache(url, data, mime)
         self._send_cover_bytes(data, mime, send_body)
 
-    def _bili(self, url: str, send_body: bool) -> None:
+    def _bili(self, url: str, alts: list[str] | None, send_body: bool) -> None:
         """Stream a file from the Bilibili CDN.
 
         The CDN refuses requests that do not come from the site, so the
         request carries the site's ``Referer`` and the signed-in cookie.
         ``Range`` is forwarded because the video player asks for the
         initialisation segment first and then for the rest of the file.
+
+        ``alts`` are the other hosts the same stream is offered on
+        (``backupUrl``): B站 hands out ``*.mcdn.bilivideo.cn:8082`` nodes that
+        regularly accept the connection and then never send a byte, and a
+        video served from one of those looks like a player that hangs.  The
+        first host that actually answers with data wins, and the winner is
+        remembered for the rest of the file so the following range requests
+        do not probe the dead node again.
         """
-        if not _is_bili_url(url):
+        candidates: list[str] = []
+        for raw in [url] + list(alts or []):
+            if raw and raw not in candidates and _is_bili_url(raw):
+                candidates.append(raw)
+        if not candidates:
             self._error(403, "url not allowed")
             return
+        key = _bili_stream_key(candidates[0])
+        candidates = self.media.bili_failover_order(key, candidates[:MAX_BILI_CANDIDATES])
+
         headers = dict(_BILI_HEADERS)
         cookie = self.media.bili_cookie
         if cookie:
@@ -396,17 +412,50 @@ class _Handler(BaseHTTPRequestHandler):
         range_header = self.headers.get("Range")
         if range_header:
             headers["Range"] = range_header
-        try:
-            response = self.media.session.get(url, headers=headers, stream=True,
-                                              timeout=(10, 30))
-        except requests.exceptions.RequestException as exc:
-            log.warning("bilibili upstream error: %s", exc)
-            self._error(502, "upstream error")
+
+        response = None
+        first_chunk = b""
+        chosen = ""
+        refused = 502
+        for candidate in candidates:
+            try:
+                attempt = self.media.session.get(candidate, headers=headers,
+                                                 stream=True, timeout=BILI_TIMEOUT)
+            except (requests.exceptions.RequestException, OSError) as exc:
+                log.info("bilibili host unreachable (%s): %s", _host_of(candidate), exc)
+                continue
+            if attempt.status_code not in (200, 206):
+                refused = attempt.status_code
+                attempt.close()
+                log.info("bilibili host refused (%s): http %s",
+                         _host_of(candidate), attempt.status_code)
+                continue
+            if send_body:
+                # A host that connects and then sends nothing is the failure
+                # mode this loop exists for: find it here, before answering.
+                try:
+                    first_chunk = next(attempt.iter_content(CHUNK), b"")
+                except (requests.exceptions.RequestException, OSError) as exc:
+                    attempt.close()
+                    log.info("bilibili host stalled (%s): %s", _host_of(candidate), exc)
+                    continue
+                if not first_chunk:
+                    attempt.close()
+                    log.info("bilibili host sent nothing (%s)", _host_of(candidate))
+                    continue
+            response = attempt
+            chosen = candidate
+            break
+
+        if response is None:
+            log.warning("bilibili upstream error: no host answered (%s)",
+                        ", ".join(_host_of(item) for item in candidates))
+            self._error(refused if refused != 502 else 502, "upstream error")
             return
-        if response.status_code not in (200, 206):
-            response.close()
-            self._error(response.status_code, "upstream refused")
-            return
+        if chosen != candidates[0]:
+            log.info("bilibili failover: %s -> %s", _host_of(candidates[0]), _host_of(chosen))
+        self.media.remember_bili_host(key, chosen)
+
         length = response.headers.get("content-length")
         extra = {"Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
                  "Cache-Control": "no-store"}
@@ -426,10 +475,12 @@ class _Handler(BaseHTTPRequestHandler):
             response.close()
             return
         try:
+            if first_chunk:
+                self.wfile.write(first_chunk)
             for chunk in response.iter_content(CHUNK):
                 if chunk:
                     self.wfile.write(chunk)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, requests.exceptions.RequestException):
             self.close_connection = True
         finally:
             response.close()
@@ -594,6 +645,37 @@ _BILI_HEADERS = {
     "Accept": "*/*",
 }
 
+#: How long one CDN host gets: connect, then each read.  A host that cannot
+#: produce 256 kB in ten seconds is a host whose video would not play anyway,
+#: so the proxy moves on to the next one instead of waiting it out.
+BILI_TIMEOUT = (6, 10)
+
+#: Hosts tried for one stream.  More than three is never useful: the answer
+#: carries one primary and at most a couple of backups.
+MAX_BILI_CANDIDATES = 3
+
+
+def _host_of(url: str) -> str:
+    """The host part of ``url``, for the log."""
+    try:
+        return urlparse(str(url or "")).netloc or "?"
+    except ValueError:
+        return "?"
+
+
+def _bili_stream_key(url: str) -> str:
+    """Identify the stream a URL points at, ignoring host and signature.
+
+    The same file is offered on several hosts with the same path; that path is
+    what the failover memory is keyed on, so the second range request of a
+    video goes straight to the host that answered the first one.
+    """
+    try:
+        parsed = urlparse(str(url or ""))
+    except ValueError:
+        return str(url or "")
+    return parsed.path or str(url or "")
+
 #: Hosts the Bilibili proxy is allowed to fetch from.  Anything else would
 #: turn the loopback server into an open proxy for the whole internet.
 #:
@@ -732,6 +814,9 @@ class MediaServer:
         self._api_provider: Callable[[], Any] | None = None
         self._background_provider: Callable[[], Path | None] | None = None
         self._bili_cookie: str = ""
+        #: stream key -> the host that last answered for it (failover memory).
+        self._bili_hosts: dict[str, str] = {}
+        self._bili_hosts_lock = threading.Lock()
         self.session = requests.Session()
         self._crossfade_duration: float = 0.0
         # Imported lazily so unit tests can monkey-patch the module before the
@@ -891,16 +976,44 @@ class MediaServer:
     def url_for_background(self) -> str:
         return f"{self.base_url}/bg"
 
-    def url_for_bili(self, url: str) -> str | None:
+    def url_for_bili(self, url: str, alts: list[str] | None = None) -> str | None:
         """Proxy a Bilibili CDN url through the loopback server.
 
         The video player in the webview may not talk to the CDN directly:
         the CDN checks the ``Referer``, the signed stream url has to stay in
         the backend, and the browser would refuse the cross-origin request.
+
+        ``alts`` are the other hosts the same file is offered on; they ride
+        along in the query so the proxy can fail over without the player
+        knowing that one of B站's nodes is dead.
         """
         if not _is_bili_url(url):
             return None
-        return f"{self.base_url}/bili?u={quote(str(url), safe='')}"
+        proxied = f"{self.base_url}/bili?u={quote(str(url), safe='')}"
+        for alt in list(alts or [])[:MAX_BILI_CANDIDATES]:
+            if not _is_bili_url(alt) or alt == url:
+                continue
+            proxied += f"&alt={quote(str(alt), safe='')}"
+        return proxied
+
+    def bili_failover_order(self, key: str, candidates: list[str]) -> list[str]:
+        """Put the host that answered for ``key`` last time first."""
+        with self._bili_hosts_lock:
+            preferred = self._bili_hosts.get(key)
+        if not preferred:
+            return list(candidates)
+        ordered = [item for item in candidates if item == preferred]
+        ordered.extend(item for item in candidates if item != preferred)
+        return ordered
+
+    def remember_bili_host(self, key: str, url: str) -> None:
+        """Remember which host actually served ``key``."""
+        if not key or not url:
+            return
+        with self._bili_hosts_lock:
+            if len(self._bili_hosts) > 200:
+                self._bili_hosts.clear()
+            self._bili_hosts[key] = url
 
     def set_bili_cookie(self, cookie: str) -> None:
         """Remember the Bilibili cookie used for CDN requests."""

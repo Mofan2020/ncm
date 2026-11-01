@@ -3030,3 +3030,122 @@ AGENTS.md 写的是「不进 CI，手动运行」，pytest 里也没有包装器
   没在真实 pywebview 窗口里看过。
 - `AGENTS.md` 里「node 检查不进 CI」那几行没改（受保护文件，写不进去），
   要手动同步。
+## 2026-11-01 B站四项缺陷（续）
+
+用户报的：视频放不了、缓冲慢得离谱、私信内容和头像取不到、B站设置保存不生效。
+
+四条都查到了根因，都不是「网络问题」。
+
+### 播放：慢的不是代理，是 B站给的节点
+
+先量了代理本身：同一个 URL，直连 CDN 和经回环代理取 6 MB，差值在噪声里
+（1004 vs 997 kB/s、1097 vs 1143 kB/s、8211 vs 8079 kB/s）。**代理不是瓶颈。**
+
+真正的差别在主机。同样取 6 MB：
+
+| 主机 | 速度 |
+|------|------|
+| `upos-sz-estgoss.bilivideo.com` | 8211 kB/s |
+| `upos-sz-mirrorhwo1.bilivideo.com` | 1097 kB/s |
+| `upos-sz-estghw.bilivideo.com` | 1005 kB/s |
+| `*.edge.mountaintoys.cn:4483` | 331 kB/s |
+| `*.mcdn.bilivideo.cn:8082` | 211 kB/s，还两次读超时 |
+
+B站把 `*.mcdn.bilivideo.cn:8082` 放在 `baseUrl` 的第一位——那是离用户近的
+P2P 节点，连得上却经常一个字节都不发。用户日志里那两条
+`Read timed out` 就是它。
+
+改法两处：
+
+- `src/core/bilibili.py` 给主机排了序（`_bili_host_rank`）：`upos-*` 官方镜像
+  最先，`mountaintoys` 次之，`mcdn` 最后；同时把 `backupUrl` 一起交给界面
+  （`backup_urls`）。
+- `src/core/mediaserver.py` 的 `/bili` 路由支持多个候选（`alt=` 参数）：先读
+  第一台的**第一个数据块**，不发数据就换下一台；记住这台能用的主机，同一个
+  文件后面的 Range 请求直接用它。
+
+实测：拿一个假的主机排在前面，代理 1.0 s 内换到真主机取回 1 MB（206），
+紧接着的第二个 Range 请求 0.1 s。
+
+### 播放：MSE 把整个文件下完才出画面
+
+`src/gui/assets/bili-player.js` 原来是这样：把整条视频和整条音轨
+**全部** append 完，再 `endOfStream()`，然后才 `play()`。用户看到的就是
+「缓冲加载极慢」——其实它在下完整个文件。
+
+改成流式的：初始化段先进去，之后按 1 MB 一段取 Range，边到边 append，缓冲
+够两秒就开播；播过的数据超过 30 秒就 `remove()` 掉，SourceBuffer 不会撑爆。
+
+真机 WKWebView 实测（1080p，26 MB 的视频，走回环代理）：
+
+```
+status: buffering 42 ms -> ready 534 ms -> streaming 634 ms
+t+1s  currentTime 0.2  readyState 4
+t+7s  currentTime 6.5  1080p 在正常往前走
+```
+
+**顺带纠正上一轮笔记里的一个错误说法**：这台机器的 WKWebView 是有
+`MediaSource` 的（`MediaSource.isTypeSupported('video/mp4; codecs="avc1.640032"')`
+为 true），而且 http 来源的页面上 `sourceopen` 会正常触发。上次写的
+「macOS 上 WKWebView 没有 MediaSource，只能吃 muxed」是错的——那次是在
+`html=` 内联页面上测的，内联页面不是 http 来源，WebKit 直接把 MSE 掐了
+（`video.error.code = 4`）。**测 WebView 能力必须在 http 来源的页面上测。**
+
+另外 `sourceopen` 现在加了 3 秒超时：这个 WebView 不支持 MSE 时，以前是
+永远等下去，视频黑着不播；现在会退回合并流。
+
+### 拖动进度条：交给合并流
+
+MSE 的解码器没法从分片中间起播（把 fragment 切开喂进去，WebKit 回的是
+decode error，整个画面就没了）。试过按码率估算字节位置再对齐 box 边界，
+实测还是 decode error（`source buffer failed`）——压缩画面里到处是假的
+`moof` 标记，扫出来的位置不可靠。
+
+所以：进度拖到缓冲区外，就把画面交给**合并流**（普通 mp4 文件，浏览器自己
+会 seek），画质从 1080P 降到 720P（合并流 B站只给到 720P），但能拖、能播。
+实测拖到 70.5 s：1 秒后 currentTime 70.5，缓冲 [70, 141]，一路播下去。
+
+### 私信：路由是 GET，不是 POST
+
+`/session_svr/v1/session_svr/fetch_session_msgs` 回 **404**（用户日志里就有）。
+网页端读消息走的是 `svr_sync` 网关上的 **GET**：
+
+```
+GET https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs
+    ?session_type=1&talker_id=<mid>&session_id=<id>&size=20&build=0
+    &mobi_app=web&platform=web
+```
+
+实测回 `code 0`，消息正文正常（`content` 是 JSON 字符串，里面再包一层
+`{"content": "..."}`）。老的 POST 路由留作回落。
+
+系统通知（登录提醒一类）没有 `content`，正文在 `text`、标题在 `title`，
+只认 `content` 的话这类消息会显示成一串 JSON，现在也一起处理了。
+
+### 头像：会话列表里根本没有对方的资料
+
+`get_sessions` 只给「关注过的人」带 `account_info`（名字 + 头像），没关注过的
+会话这一项是空的，界面于是只剩一串 uid。补的办法是
+`GET /account/v1/user/cards?uids=1,2,3`——一次能问 50 个，网页端私信列表也是
+这么做的。实测 20 个会话全部拿到了名字和头像。
+
+### 设置：保存的时候压根没写进文件
+
+`src/config/settings.py` 的 `save()` 写出去的 payload 里**没有 `bili` 这一段**。
+设置页点保存，内存里的值变了、界面也变了，就是没落盘，重启回到默认值。
+加上这一段就好了（`test_bili_settings_survive_a_restart`）。
+
+### 账号头像：登录时存下来的缓存是空的
+
+`src/auth/bili_login.py` 的 `account_info()` 原来只要缓存**非空**就拿它当答案。
+登录那一刻保存的 cookie 旁边，`mid`/`uname`/`face` 都是空的（登录流程没带
+账号信息），于是这个「空缓存」被当成账号一直用下去——界面永远显示不出名字
+和头像。现在只有缓存里真的有 `mid` 才算缓存。
+
+### 没做 / 验不了的
+
+- 进度条拖到缓冲区外会降到 720P（合并流的限制）。要保住 1080P 又能跳，
+  得自己解析 DASH 的 sidx 索引做真分段，本次没做。
+- GUI 没有完整跑一遍：验证用的是真实 WKWebView + 真实 B站流 + 真实回环代理，
+  但没有在完整的应用窗口里点过按钮。
+- B站画质选择（1080P/4K 那些）在本次改动里没碰，仍然受账号权限限制。

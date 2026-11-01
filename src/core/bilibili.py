@@ -381,6 +381,48 @@ def _absolute_url(url: Any) -> str:
     return text
 
 
+#: How fast each kind of CDN host actually is, measured on one machine on
+#: 2026-11-01 while fetching 6 MB of real video (kB/s):
+#:
+#:   upos-sz-estgoss.bilivideo.com          8200
+#:   upos-sz-mirrorhwo1.bilivideo.com       1100
+#:   upos-sz-estghw.bilivideo.com           1000
+#:   *.edge.mountaintoys.cn:4483             330
+#:   *.mcdn.bilivideo.cn:8082        210, and two read timeouts
+#:
+#: B站 tends to put the ``mcdn`` node first in ``baseUrl``, which is the
+#: difference between a video that starts at once and one that stares at a
+#: spinner.  The rank only decides the order; every candidate is kept, and the
+#: proxy fails over to the next one when a host does not answer.
+_BILI_HOST_RANKS = (
+    ("mcdn.bilivideo", 3),
+    ("mountaintoys", 2),
+    ("upos-", 0),
+)
+
+
+def _bili_host_rank(url: str) -> int:
+    """Lower is better: the order the CDN hosts are tried in."""
+    try:
+        host = (urllib.parse.urlparse(str(url or "")).hostname or "").lower()
+    except ValueError:
+        return 4
+    for marker, rank in _BILI_HOST_RANKS:
+        if marker in host:
+            return rank
+    return 1
+
+
+def _ordered_bili_urls(urls: Any) -> list[str]:
+    """The same file on several hosts, fastest host first and deduplicated."""
+    seen: list[str] = []
+    for item in urls or []:
+        text = str(item or "")
+        if text and text not in seen:
+            seen.append(text)
+    return sorted(seen, key=_bili_host_rank)
+
+
 class BiliClient:
     """Read-only Bilibili client for the music source.
 
@@ -1604,8 +1646,13 @@ class BiliClient:
         ]
         if not usable:
             return None
+        # Same resolution is offered more than once (different bitrates and
+        # different CDN hosts).  Taking the first entry in the answer picks a
+        # 750 kB/s stream where a 2.6 MB/s one was right next to it.
         usable.sort(
-            key=lambda entry: (int(entry.get("height") or 0), int(entry.get("id") or 0)),
+            key=lambda entry: (int(entry.get("height") or 0),
+                               int(entry.get("bandwidth") or 0),
+                               int(entry.get("id") or 0)),
             reverse=True,
         )
         return usable[0]
@@ -1618,8 +1665,14 @@ class BiliClient:
         if not url:
             return None
         segment = entry.get("segment_base") or entry.get("segmentBase") or {}
+        candidates = _ordered_bili_urls(
+            [_absolute_url(url)]
+            + [_absolute_url(item) for item in (entry.get("backupUrl") or entry.get("backup_url") or [])
+               if isinstance(item, str)]
+        )
         payload = {
-            "url": _absolute_url(url),
+            "url": candidates[0],
+            "backup_urls": candidates[1:],
             "mime": str(entry.get("mimeType") or entry.get("mime_type") or ""),
             "codecs": str(entry.get("codecs") or ""),
             "bandwidth": int(entry.get("bandwidth") or 0),
@@ -1662,8 +1715,13 @@ class BiliClient:
         url = _absolute_url(durl[0].get("url"))
         if not url:
             return None
+        candidates = _ordered_bili_urls(
+            [url] + [_absolute_url(item) for item in (durl[0].get("backup_url") or [])
+                     if isinstance(item, str)]
+        )
         return {
-            "url": url,
+            "url": candidates[0],
+            "backup_urls": candidates[1:],
             "mime": "video/mp4",
             "size": int(durl[0].get("size") or 0),
             "quality": int(data.get("quality") or 0),

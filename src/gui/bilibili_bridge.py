@@ -589,9 +589,13 @@ class BilibiliBridge:
         url = str(stream.get("url") or "")
         if not url:
             return None
+        backups = [str(item) for item in (stream.get("backup_urls") or [])
+                   if isinstance(item, str) and item]
         proxied = url
         if self._media is not None:
-            proxied = self._media.url_for_bili(url) or ""
+            # The backups ride along, so the proxy can fall over to another
+            # host without the player noticing a dead CDN node.
+            proxied = self._media.url_for_bili(url, backups) or ""
         result = dict(stream)
         result["url"] = proxied
         result["origin_url"] = url

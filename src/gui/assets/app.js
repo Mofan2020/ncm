@@ -10720,10 +10720,23 @@ function renderBiliMessages() {
                 button.className = biliIm.talkerId === session.talker_id
                     ? 'bili-im-session is-active' : 'bili-im-session';
                 button.type = 'button';
+                // 每个会话左边是对方的头像：私信列表里认人靠它，光有名字不够。
+                const ident = document.createElement('span');
+                ident.className = 'bili-im-ident';
+                if (session.face) {
+                    const face = document.createElement('img');
+                    face.className = 'bili-im-face';
+                    face.alt = '';
+                    face.loading = 'lazy';
+                    face.src = biliImageSrc(session.face);
+                    face.addEventListener('error', () => { face.remove(); });
+                    ident.appendChild(face);
+                }
                 const name = document.createElement('span');
                 name.className = 'bili-im-session-name';
                 name.textContent = session.name || '';
-                button.appendChild(name);
+                ident.appendChild(name);
+                button.appendChild(ident);
                 if (session.unread) {
                     const unread = document.createElement('span');
                     unread.className = 'source-badge is-bili';
@@ -10735,7 +10748,21 @@ function renderBiliMessages() {
             });
         }
     }
-    if (head) head.textContent = biliIm.name || '';
+    if (head) {
+        head.innerHTML = '';
+        const talking = biliIm.sessions.find((item) => item && item.talker_id === biliIm.talkerId);
+        if (talking && talking.face) {
+            const face = document.createElement('img');
+            face.className = 'bili-im-face';
+            face.alt = '';
+            face.src = biliImageSrc(talking.face);
+            face.addEventListener('error', () => { face.remove(); });
+            head.appendChild(face);
+        }
+        const headName = document.createElement('span');
+        headName.textContent = biliIm.name || '';
+        head.appendChild(headName);
+    }
     if (messages) {
         messages.innerHTML = '';
         if (!biliIm.messages.length) {

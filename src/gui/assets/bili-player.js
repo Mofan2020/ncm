@@ -11,6 +11,13 @@
  *   2. The merged stream (`muxed`), played by the browser itself.
  *   3. Nothing playable -> the caller shows an error.
  *
+ * The MSE path is **progressive**: the initialisation segment goes in first,
+ * then the rest arrives one byte range at a time and is appended as it lands,
+ * and the picture starts as soon as a couple of seconds are buffered.
+ * Appending the whole file before the first frame -- what this file used to
+ * do -- meant staring at a spinner for as long as the whole video took to
+ * download, and a large file blew the SourceBuffer quota before it finished.
+ *
  * Every session is released before the next one starts: a MediaSource that is
  * left open keeps its buffers (and its decoded audio) alive, which is how the
  * player used to freeze the sound of the previous video.
@@ -18,8 +25,23 @@
 'use strict';
 
 (function () {
+    /** Bytes asked for in one range request. */
+    const CHUNK = 1024 * 1024;
+    /** Seconds of picture kept in front of the play head before pausing the feed. */
+    const BUFFER_TARGET = 20;
+    /** Seconds that have to be buffered before playback starts. */
+    const START_THRESHOLD = 2;
+    /** Seconds of already-played data kept behind the play head. */
+    const TRIM_BEHIND = 30;
+    /** How long to wait for the first picture before giving up on MSE. */
+    const START_TIMEOUT = 20000;
+
     /** The playback session that runs at the moment (null when nothing plays). */
     let session = null;
+
+    function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
 
     /**
      * Release the running session.
@@ -36,6 +58,10 @@
         if (current.audio) {
             try { current.audio.pause(); } catch (err) { /* 已经停了 */ }
             current.audio = null;
+        }
+        if (current.seekHandler && current.videoEl) {
+            try { current.videoEl.removeEventListener('seeking', current.seekHandler); } catch (err) { /* 元素已经没了 */ }
+            current.seekHandler = null;
         }
         const mediaSource = current.mediaSource;
         if (mediaSource) {
@@ -125,59 +151,113 @@
         });
     }
 
-    /** Append the body of a response piece by piece, so nothing is buffered whole. */
-    async function appendStream(buffer, response, current) {
-        if (!response.body || !response.body.getReader) {
-            const chunk = await response.arrayBuffer();
-            await appendBuffer(buffer, chunk, current);
-            return;
+    /**
+     * Seconds of continuous picture available after ``time``.
+     *
+     * A gap ahead of the play head counts as zero: the video would stall at the
+     * gap, so "forty seconds buffered somewhere later" is not progress.
+     */
+    function trackAhead(buffer, time) {
+        const ranges = buffer && buffer.buffered;
+        if (!ranges || !ranges.length) return 0;
+        for (let i = 0; i < ranges.length; i += 1) {
+            const start = ranges.start(i);
+            const end = ranges.end(i);
+            if (time >= start - 0.35 && time <= end) return end - time;
         }
-        const reader = response.body.getReader();
-        while (true) {
-            const part = await reader.read();
-            if (part.done) break;
-            if (current && current.cancelled) {
-                try { reader.cancel(); } catch (err) { /* 已经断了 */ }
-                return;
-            }
-            await appendBuffer(buffer, part.value, current);
-        }
+        return 0;
     }
 
     /**
-     * Fill one SourceBuffer.
+     * Drop data behind the play head, so a SourceBuffer never fills up.
      *
-     * The initialisation segment (the moov box) comes first, otherwise the
-     * browser does not know the duration and the codecs until it has seen the
-     * whole file.  When the server ignores the Range header the answer is the
-     * whole file, and there is nothing left to fetch afterwards.
+     * Awaited like every other buffer operation: ``remove()`` is asynchronous,
+     * and appending while it is still running throws ``InvalidStateError`` --
+     * which poisons the whole MediaSource with a decode error.
      */
-    async function appendTrack(buffer, track, current) {
+    function trimBehind(buffer, time, current) {
+        const ranges = buffer && buffer.buffered;
+        if (!ranges || !ranges.length || time < TRIM_BEHIND) return Promise.resolve();
+        const cut = time - TRIM_BEHIND;
+        if (ranges.start(0) >= cut - 1) return Promise.resolve();
+        return new Promise((resolve) => {
+            const done = () => {
+                buffer.removeEventListener('updateend', done);
+                resolve();
+            };
+            buffer.addEventListener('updateend', done);
+            try {
+                buffer.remove(0, cut);
+            } catch (err) {
+                buffer.removeEventListener('updateend', done);
+                resolve();
+            }
+        });
+    }
+
+    /** Whether ``time`` is inside what the buffer already holds. */
+    function isBuffered(buffer, time) {
+        const ranges = buffer && buffer.buffered;
+        if (!ranges) return false;
+        for (let i = 0; i < ranges.length; i += 1) {
+            if (ranges.start(i) - 0.5 <= time && time <= ranges.end(i)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Hand the picture over to the merged stream, at ``time``.
+     *
+     * The merged stream is a plain file with both halves in it: the browser
+     * seeks in it by itself, and it is the only way to jump to a place the
+     * SourceBuffers do not hold.
+     */
+    function switchToMuxed(videoEl, streams, time) {
+        if (!streams.muxed || !streams.muxed.url) return false;
+        const target = Number(time) || 0;
+        stopSession();
+        try {
+            videoEl.addEventListener('loadedmetadata', () => {
+                try { videoEl.currentTime = target; } catch (err) { /* 还没准备好 */ }
+            }, { once: true });
+        } catch (err) { /* 元素已经没了 */ }
+        videoEl.src = streams.muxed.url;
+        try { videoEl.play(); } catch (err) { /* 自动播放被拦下 */ }
+        return true;
+    }
+
+    /**
+     * Feed one track: the initialisation segment first, then the rest in byte
+     * ranges, staying no more than BUFFER_TARGET seconds ahead of the picture.
+     */
+    async function feedTrack(buffer, track, current) {
         const initRange = parseRange(track.init_range);
+        let offset = 0;
         if (initRange && initRange.end >= initRange.start) {
             const response = await fetchRange(track.url, initRange.start, initRange.end);
+            if (current.cancelled) return;
             if (!response.ok) throw new Error('http ' + response.status);
-            if (response.status === 206) {
-                const chunk = await response.arrayBuffer();
-                await appendBuffer(buffer, chunk, current);
-                if (current.cancelled) return;
-                const rest = await fetchRange(track.url, initRange.end + 1, null);
-                if (!rest.ok) throw new Error('http ' + rest.status);
-                // A "200" here would be the whole file again: the bytes would
-                // be written twice, so this is a failure and not a fallback.
-                if (rest.status !== 206 && rest.status !== 200) {
-                    throw new Error('unexpected range answer: ' + rest.status);
-                }
-                if (rest.status === 206) await appendStream(buffer, rest, current);
-                return;
-            }
-            await appendStream(buffer, response, current);
-            return;
+            const chunk = await response.arrayBuffer();
+            await appendBuffer(buffer, chunk, current);
+            if (response.status === 200) return;        // the whole file came back
+            offset = initRange.end + 1;
         }
-        // Without an initialisation segment the file is appended as it comes.
-        const response = await fetchRange(track.url, null, null);
-        if (!response.ok) throw new Error('http ' + response.status);
-        await appendStream(buffer, response, current);
+        while (!current.cancelled) {
+            if (trackAhead(buffer, current.videoEl.currentTime) > BUFFER_TARGET) {
+                await trimBehind(buffer, current.videoEl.currentTime, current);
+                await sleep(200);
+                continue;
+            }
+            const response = await fetchRange(track.url, offset, offset + CHUNK - 1);
+            if (current.cancelled) return;
+            if (!response.ok) throw new Error('http ' + response.status);
+            const chunk = await response.arrayBuffer();
+            if (!chunk.byteLength) return;
+            await appendBuffer(buffer, chunk, current);
+            if (response.status === 200) return;        // the server ignored the range
+            offset += chunk.byteLength;
+            if (chunk.byteLength < CHUNK) return;       // end of the file
+        }
     }
 
     /** Play the two tracks through Media Source Extensions. */
@@ -191,15 +271,28 @@
 
         const mediaSource = new window.MediaSource();
         const objectUrl = URL.createObjectURL(mediaSource);
-        const current = { mediaSource: mediaSource, objectUrl: objectUrl, buffers: [], cancelled: false };
+        const current = {
+            mediaSource: mediaSource,
+            objectUrl: objectUrl,
+            buffers: [],
+            cancelled: false,
+            videoEl: videoEl,
+            duration: Number(streams.duration) || 0
+        };
         session = current;
         videoEl.src = objectUrl;
 
         await new Promise((resolve) => {
             if (mediaSource.readyState === 'open') { resolve(); return; }
-            mediaSource.addEventListener('sourceopen', () => resolve(), { once: true });
+            let settled = false;
+            const done = () => { if (!settled) { settled = true; resolve(); } };
+            mediaSource.addEventListener('sourceopen', done, { once: true });
+            // 没有 sourceopen 就是这个 WebView 不支持 MSE（旧内核、或者页面不是
+            // http 来源）。以前这里会一直等下去，视频就永远黑着不播。
+            setTimeout(done, 3000);
         });
         if (current.cancelled) return false;
+        if (mediaSource.readyState !== 'open') return false;
 
         const videoBuffer = mediaSource.addSourceBuffer(videoMime);
         const audioBuffer = mediaSource.addSourceBuffer(audioMime);
@@ -209,20 +302,52 @@
             audioBuffer.mode = 'segments';
         } catch (err) { /* 旧内核不认这个模式 */ }
 
-        if (streams.duration) {
-            try { mediaSource.duration = Number(streams.duration); } catch (err) { /* 让浏览器自己算 */ }
+        if (current.duration) {
+            try { mediaSource.duration = current.duration; } catch (err) { /* 让浏览器自己算 */ }
         }
 
+        // A seek past what is buffered cannot be served from the two halves:
+        // the demuxer would have to cut a fragment in half, and WebKit answers
+        // that with a decode error that kills the picture.  The merged stream
+        // is an ordinary file, so the browser seeks in it by itself.
+        current.seekHandler = () => {
+            const time = videoEl.currentTime;
+            if (isBuffered(videoBuffer, time) && isBuffered(audioBuffer, time)) return;
+            switchToMuxed(videoEl, streams, time);
+        };
+        videoEl.addEventListener('seeking', current.seekHandler);
+
+        const feeds = [
+            feedTrack(videoBuffer, streams.video, current).catch((err) => {
+                if (!current.cancelled) console.error('bilibili video track failed:', err);
+            }),
+            feedTrack(audioBuffer, streams.audio, current).catch((err) => {
+                if (!current.cancelled) console.error('bilibili audio track failed:', err);
+            })
+        ];
+
         status('buffering');
-        await Promise.all([
-            appendTrack(videoBuffer, streams.video, current),
-            appendTrack(audioBuffer, streams.audio, current)
-        ]);
-        if (current.cancelled) return false;
-        try { mediaSource.endOfStream(); } catch (err) { /* 已经结束了 */ }
+        const started = await waitForStart(current);
+        if (!started || current.cancelled) return false;
         status('ready');
         try { await videoEl.play(); } catch (err) { /* 自动播放被拦下时用户自己点 */ }
+        // The feeds keep running in the background; nothing waits for them.
+        Promise.all(feeds).catch(() => {});
         return true;
+    }
+
+    /** Wait until both tracks hold a little picture ahead of the play head. */
+    async function waitForStart(current) {
+        const deadline = Date.now() + START_TIMEOUT;
+        while (!current.cancelled && Date.now() < deadline) {
+            const time = current.videoEl.currentTime || 0;
+            const [videoBuffer, audioBuffer] = current.buffers;
+            const videoAhead = trackAhead(videoBuffer, time);
+            const audioAhead = trackAhead(audioBuffer, time);
+            if (videoAhead >= START_THRESHOLD && audioAhead >= START_THRESHOLD) return true;
+            await sleep(150);
+        }
+        return false;
     }
 
     /**

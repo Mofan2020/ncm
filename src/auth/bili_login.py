@@ -164,7 +164,10 @@ class BiliSession:
         with self._lock:
             cached = dict(self._account)
             has_cookie = bool(self._cookie)
-        if not refresh and cached:
+        # 只有真正拿到了「是谁」才算有缓存：登录那一刻写下的 cookie 旁边
+        # mid/uname/face 都是空的，拿这份空缓存当答案，界面就会一直显示
+        # 一个没名字没头像的账号，直到手动点刷新。
+        if not refresh and cached.get("mid"):
             return {
                 "logged_in": True,
                 "mid": cached.get("mid", ""),

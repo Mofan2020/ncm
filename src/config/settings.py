@@ -403,6 +403,8 @@ class Settings:
                 "ui": asdict(self._data.ui),
                 "auth": asdict(self._data.auth),
                 "local_playlists": asdict(self._data.local_playlists),
+                # 少了这一段，B站设置页保存时写得进内存、重启就回默认值。
+                "bili": asdict(self._data.bili),
                 "debug": self._data.debug,
             }
             try:

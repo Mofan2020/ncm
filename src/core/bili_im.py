@@ -73,6 +73,14 @@ def _parse_content(raw: Any) -> str:
             return content
         if content is not None:
             return json.dumps(content, ensure_ascii=False)
+        # 系统通知（登录提醒一类）没有 ``content``，正文在 ``text`` 里，
+        # 标题在 ``title`` 里。只认 content 的话，这类消息会显示成一串 JSON。
+        text_body = parsed.get("text")
+        if isinstance(text_body, str) and text_body.strip():
+            title = parsed.get("title")
+            if isinstance(title, str) and title.strip():
+                return f"{title.strip()}\n{text_body.strip()}"
+            return text_body.strip()
         return text
     if isinstance(parsed, str):
         return parsed
@@ -103,6 +111,8 @@ class BiliIm:
     def __init__(self, client: Any) -> None:
         self._client = client
         self._self_mid: str | None = None
+        #: 已经查到的对方资料（mid -> {name, face}），进程内缓存。
+        self._cards_cache: dict[str, dict[str, Any]] = {}
         #: 上一次请求的状态码，用来区分「路没了」和「网络不通」。
         self._last_status = 0
 
@@ -202,6 +212,34 @@ class BiliIm:
         uid = _as_text(cookies.get("DedeUserID"))
         return uid or self._mid()
 
+    def _cards(self, ids: list[str]) -> dict[str, dict[str, Any]]:
+        """对方的资料：一次问一批，而不是一个会话问一次。
+
+        ``get_sessions`` 只给「关注过的人」带上 ``account_info``（名字 + 头像）；
+        没关注、没聊过的会话在这一项上是空的，界面于是只剩一串 uid。
+        ``/account/v1/user/cards?uids=1,2,3`` 一次能把 50 个补齐，网页端的私信
+        列表也是这么做的。
+        """
+        wanted = [item for item in dict.fromkeys(ids) if item and item not in self._cards_cache]
+        if not wanted:
+            return {item: self._cards_cache[item] for item in ids if item in self._cards_cache}
+        for start in range(0, len(wanted), 50):
+            batch = wanted[start:start + 50]
+            body = self._get("/account/v1/user/cards", {"uids": ",".join(batch)})
+            if not body or body.get("code") != 0:
+                continue
+            for entry in body.get("data") or []:
+                if not isinstance(entry, dict):
+                    continue
+                mid = _as_text(entry.get("mid"))
+                if not mid:
+                    continue
+                self._cards_cache[mid] = {
+                    "name": _as_text(entry.get("name")),
+                    "face": _as_text(entry.get("face")),
+                }
+        return {item: self._cards_cache[item] for item in ids if item in self._cards_cache}
+
     # ------------------------------------------------------------------- reading
     def conversations(self, size: int = 20) -> dict[str, Any]:
         """会话列表。
@@ -263,6 +301,18 @@ class BiliIm:
                 "msg_type": _as_int(last.get("msg_type")),
             })
 
+        # 名字还是 uid、或者没有头像的，一次批量补齐。
+        missing = [item["talker_id"] for item in items
+                   if not item["name"] or item["name"] == item["talker_id"] or not item["face"]]
+        if missing:
+            cards = self._cards(missing)
+            for item in items:
+                card = cards.get(item["talker_id"]) or {}
+                if card.get("name"):
+                    item["name"] = card["name"]
+                if card.get("face"):
+                    item["face"] = card["face"]
+
         return {"success": True, "items": items, "count": len(items), "message": ""}
 
     def messages(self, session_id: str, talker_id: str,
@@ -280,17 +330,25 @@ class BiliIm:
         if not session_id:
             return {"success": False, "items": [], "count": 0,
                     "message": "会话 id 是空的"}
-        data = {
+        params = {
             "session_id": session_id,
             "talker_id": talker_id,
             "session_type": 1,
             "size": max(1, int(size or 20)),
+            "sender_type": 0,
             "build": 0,
             "mobi_app": "web",
             "platform": "web",
-            "csrf": self._csrf(),
         }
-        body = self._post("/session_svr/v1/session_svr/fetch_session_msgs", data)
+        # 网页端读消息走的是 ``svr_sync`` 网关上的 GET；``session_svr`` 那条
+        # 只在会话列表上有，读消息是 404（实测 2026-11-01）。GET 不行时再退回
+        # 老的 POST 路由，免得哪天两边都换了。
+        body = self._get("/svr_sync/v1/svr_sync/fetch_session_msgs", params)
+        if body is None:
+            legacy = dict(params)
+            legacy.pop("sender_type", None)
+            legacy["csrf"] = self._csrf()
+            body = self._post("/session_svr/v1/session_svr/fetch_session_msgs", legacy)
         if body is None:
             if self._last_status == 404:
                 return {"success": False, "items": [], "count": 0,

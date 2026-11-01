@@ -178,10 +178,13 @@ class FakeMedia:
     def __init__(self) -> None:
         self.cookie = ""
 
-    def url_for_bili(self, url: str):
+    def url_for_bili(self, url: str, alts=None):
         if "bilivideo.com" not in url:
             return None
-        return f"http://127.0.0.1:9999/m/token/bili?u={url}"
+        proxied = f"http://127.0.0.1:9999/m/token/bili?u={url}"
+        for alt in list(alts or []):
+            proxied += f"&alt={alt}"
+        return proxied
 
     def set_bili_cookie(self, cookie: str) -> None:
         self.cookie = cookie

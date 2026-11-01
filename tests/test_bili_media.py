@@ -134,3 +134,63 @@ def test_the_proxy_refuses_a_foreign_host(media):
     status, _headers, _body = fetch(url)
 
     assert status == 403
+
+
+def test_the_backup_hosts_ride_along_in_the_url(media):
+    """备用主机随地址一起交给代理，代理才能换一台接着放。"""
+    server, cdn = media
+
+    url = server.url_for_bili(cdn, ["http://127.0.0.1:1/backup1.mp4",
+                                    "http://127.0.0.1:2/backup2.mp4"])
+
+    assert url is not None
+    assert url.count("&alt=") == 2
+
+
+def test_the_proxy_falls_over_to_the_next_host(media, monkeypatch):
+    """第一个主机连上了却不发数据，代理要换下一个，不能一直转圈。"""
+    server, cdn = media
+    calls: list[str] = []
+
+    class DeadThenAlive:
+        """第一个地址连上就断，第二个地址好好回答。"""
+
+        def __init__(self) -> None:
+            self.real = server.session.get
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            if "dead" in url:
+                raise OSError("connection reset")
+            return self.real(url, **kwargs)
+
+    monkeypatch.setattr(server.session, "get", DeadThenAlive().get)
+    monkeypatch.setattr(media_module, "_is_bili_url", lambda url: True)
+
+    status, _headers, body = fetch(server.url_for_bili("https://dead.bilivideo.com/x.m4s",
+                                                        [cdn]))
+
+    assert status == 200
+    assert body == BODY
+    assert len(calls) == 2, "第一个主机失败后要试第二个"
+    assert "dead" in calls[0]
+
+
+def test_the_working_host_is_remembered_for_the_next_range(media, monkeypatch):
+    """同一个文件的后续 Range 请求要直接走刚才能用的那台。"""
+    server, cdn = media
+    calls: list[str] = []
+
+    real = server.session.get
+
+    def get(url, **kwargs):
+        calls.append(url)
+        return real(url, **kwargs)
+
+    monkeypatch.setattr(server.session, "get", get)
+
+    fetch(server.url_for_bili(cdn))
+    fetch(server.url_for_bili(cdn, ["https://other.bilivideo.com/x.m4s"]))
+
+    assert len(calls) == 2
+    assert calls[0] == calls[1], "第二次请求应该先用上次能用那台"
