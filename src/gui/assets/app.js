@@ -316,6 +316,10 @@ function refreshDynamicTexts() {
     safeRender('renderBiliAccount', renderBiliAccount);
     safeRender('renderBiliFolderChips', renderBiliFolderChips);
     safeRender('renderBiliFavorites', renderBiliFavorites);
+    // The like and the favourite button say whether the video is already
+    // liked, so their text is state, not a fixed label: after a language
+    // switch they have to be drawn again, not left on the static one.
+    safeRender('renderBiliDetailHeader', renderBiliDetailHeader);
     safeRender('updateFilterChips', updateFilterChips);
     // The idle delay is written in seconds, so the label follows the
     // language like the rest of the settings.
@@ -878,8 +882,7 @@ function renderFolderList() {
     directories.forEach((directory) => {
         const row = document.createElement('div');
         row.className = 'folder-row';
-        const label = document.createElement('span');
-        label.textContent = directory;
+        const label = folderRowName(directory);
         label.title = directory;
         const remove = document.createElement('button');
         remove.className = 'btn btn-sm btn-ghost';
@@ -1128,6 +1131,9 @@ async function chooseDirectory() {
 const backup = {
     conflicts: [],
     summary: null,
+    // Whether a NetEase account is signed in right now: it decides if the
+    // NetEase half of the file can be restored at all.
+    neteaseSignedIn: true,
 };
 
 /**
@@ -1140,13 +1146,28 @@ const backup = {
  */
 function localRecordCount(source) {
     const data = source || {};
-    if (data.local_restored) {
-        const restored = data.local_restored;
-        return (restored.play_counts || 0) + (restored.favorites || 0)
-            + (restored.recent || 0);
-    }
-    return (data.local_play_counts || 0) + (data.local_favorites || 0)
-        + (data.local_recent || 0);
+    // The caller may hand over the whole answer (the counts then live in
+    // ``local_restored``) or the restored part itself.  Reading only the
+    // first shape made the import summary say "0 restored records" every
+    // time, because the second shape fell through to the empty branch.
+    const restored = data.local_restored || data;
+    return (restored.play_counts || 0) + (restored.favorites || 0)
+        + (restored.recent || 0);
+}
+
+/**
+ * The name in a row of the backup list.
+ *
+ * The row clips from the left, and that needs the right-to-left direction
+ * -- which mirrors the brackets of a Chinese name.  The text goes into
+ * its own isolate so that it keeps the order it was written in.
+ */
+function folderRowName(text) {
+    const span = document.createElement('span');
+    const inner = document.createElement('bdi');
+    inner.textContent = text || '';
+    span.appendChild(inner);
+    return span;
 }
 
 /** Human name of a backup progress phase. */
@@ -1161,6 +1182,22 @@ function backupSourceText(source) {
     const key = 'backup.source_' + (source || 'missing');
     const text = t(key);
     return text === key ? (source || '') : text;
+}
+
+/**
+ * Whether a NetEase account is signed in.
+ *
+ * The state is only read at startup, so a login that happened in the
+ * meantime would still say "not signed in".  The bridge is asked again.
+ */
+async function neteaseSignedIn() {
+    if (!state.api || !state.api.get_login_status) return !!state.loggedIn;
+    try {
+        const status = await state.api.get_login_status();
+        return !!(status && status.is_logged_in);
+    } catch (err) {
+        return !!state.loggedIn;
+    }
 }
 
 function setBackupStatus(text) {
@@ -1212,23 +1249,55 @@ async function exportAccountBackup() {
         const parts = ['account', 'favorites', 'playlists', 'artists', 'local']
             .map((key) => `${backupSourceText(sources[key])}`)
             .join(' · ');
-        setBackupStatus(t('backup.export_done', {
-            path: result.path || '',
-            playlists: result.playlists || 0,
-            songs: result.songs || 0,
-            favorites: result.favorites || 0,
-            artists: result.artists || 0,
-            albums: result.albums || 0,
-            djradios: result.djradios || 0,
-            mvs: result.mvs || 0,
-            local: localRecordCount(result),
-            sources: parts,
-        }));
+        // The file holds the data of both accounts; the Bilibili half has to
+        // be counted on its own, or a Bilibili-only export would look empty.
+        const biliFolders = result.bilibili_folders || 0;
+        const biliVideos = result.bilibili_videos || 0;
+        const hasBili = result.bilibili !== false && (biliFolders || biliVideos
+            || result.bilibili === true);
+        const hasNetease = result.netease !== false;
+        const segments = [];
+        if (hasNetease) {
+            segments.push(t('backup.export_done', {
+                path: result.path || '',
+                playlists: result.playlists || 0,
+                songs: result.songs || 0,
+                favorites: result.favorites || 0,
+                artists: result.artists || 0,
+                albums: result.albums || 0,
+                djradios: result.djradios || 0,
+                mvs: result.mvs || 0,
+                local: localRecordCount(result),
+                sources: parts,
+            }));
+        }
+        if (hasBili) {
+            segments.push(hasNetease
+                ? t('backup.export_bili', {folders: biliFolders, videos: biliVideos})
+                : t('backup.export_bili_only', {
+                    path: result.path || '',
+                    folders: biliFolders,
+                    videos: biliVideos,
+                }));
+        }
+        setBackupStatus(segments.join(' · '));
         setBackupProgress(0, 0);
-        showToast('success', t('backup.export_done_short', {
-            playlists: result.playlists || 0,
-            songs: result.songs || 0,
-        }), 6000);
+        const short = [];
+        if (hasNetease) {
+            short.push(t('backup.export_done_short', {
+                playlists: result.playlists || 0,
+                songs: result.songs || 0,
+            }));
+        }
+        if (hasBili) {
+            short.push(hasNetease
+                ? t('backup.export_bili', {folders: biliFolders, videos: biliVideos})
+                : t('backup.export_bili_only_short', {
+                    folders: biliFolders,
+                    videos: biliVideos,
+                }));
+        }
+        showToast('success', short.join(' · '), 6000);
     } catch (err) {
         console.error(err);
         showToast('error', t('backup.export_failed'));
@@ -1266,6 +1335,9 @@ async function importAccountBackup() {
         }
         backup.conflicts = plan.conflicts || [];
         backup.summary = plan.summary || {};
+        // Whether a NetEase account is signed in decides if the NetEase half
+        // of the file can be restored at all.
+        backup.neteaseSignedIn = await neteaseSignedIn();
         renderBackupConflicts(plan);
         openModal('backup-conflict-modal');
     } catch (err) {
@@ -1285,7 +1357,7 @@ function renderBackupConflicts(plan) {
     list.innerHTML = '';
     const stats = plan.summary || {};
     if (summary) {
-        summary.textContent = t('backup.conflict_summary', {
+        const lines = [t('backup.conflict_summary', {
             favorites: stats.favorites_to_add || 0,
             playlists: stats.playlists_to_create || 0,
             conflicts: stats.conflicts || 0,
@@ -1296,26 +1368,33 @@ function renderBackupConflicts(plan) {
             mvs: stats.mvs_to_add || 0,
             local: (stats.local_play_counts || 0) + (stats.local_favorites || 0)
                 + (stats.local_recent || 0),
-        });
+        })];
+        // Only Bilibili is signed in: the NetEase half of the file cannot be
+        // restored, and the numbers above would promise otherwise.
+        const neteaseInFile = (stats.favorites_total || 0)
+            + (stats.playlists_total || 0) + (stats.artists_total || 0);
+        if (neteaseInFile && !backup.neteaseSignedIn) {
+            lines.push(t('backup.netease_skip'));
+        }
+        summary.textContent = lines.join(' · ');
     }
+    renderBackupBilibili(plan.bilibili || {});
     (plan.skipped || []).forEach((item) => {
         const row = document.createElement('div');
         row.className = 'folder-row';
-        const name = document.createElement('span');
-        name.textContent = t('backup.skip_' + (item.reason || 'other'), {
+        const name = folderRowName(t('backup.skip_' + (item.reason || 'other'), {
             name: item.name || '',
-        });
+        }));
         row.appendChild(name);
         list.appendChild(row);
     });
     (plan.conflicts || []).forEach((item) => {
         const row = document.createElement('div');
         row.className = 'folder-row';
-        const name = document.createElement('span');
-        name.textContent = t('backup.conflict_row', {
+        const name = folderRowName(t('backup.conflict_row', {
             name: item.name || '',
             count: item.song_count || 0,
-        });
+        }));
         row.appendChild(name);
 
         const select = document.createElement('select');
@@ -1340,6 +1419,49 @@ function renderBackupConflicts(plan) {
         });
         row.appendChild(rename);
 
+        list.appendChild(row);
+    });
+}
+
+/**
+ * The Bilibili half of the backup file.
+ *
+ * The file may carry the Bilibili folders even when nobody is signed in to
+ * Bilibili right now.  The user has to be told which of the two it is: the
+ * folders come back, or they are skipped until the account is signed in.
+ */
+function renderBackupBilibili(bili) {
+    const block = document.getElementById('backup-bili-block');
+    const summary = document.getElementById('backup-bili-summary');
+    const list = document.getElementById('backup-bili-list');
+    if (!block) return;
+    const folders = (bili && bili.folders) || [];
+    const folderCount = Number(bili && bili.folder_count) || folders.length;
+    const videoCount = Number(bili && bili.video_count) || 0;
+    if (list) list.innerHTML = '';
+    if (!folderCount) {
+        // Nothing of Bilibili in the file: there is nothing to say about it.
+        block.hidden = true;
+        return;
+    }
+    block.hidden = false;
+    const signedIn = !!(bili && bili.signed_in);
+    const account = (bili && bili.account) || {};
+    const lines = [t('backup.bili_summary', {folders: folderCount, videos: videoCount})];
+    if (account.uname) {
+        lines.push(t('backup.bili_account', {name: account.uname}));
+    }
+    lines.push(signedIn ? t('backup.bili_restore') : t('backup.bili_skip'));
+    if (summary) summary.textContent = lines.join(' · ');
+    folders.forEach((folder) => {
+        if (!list) return;
+        const row = document.createElement('div');
+        row.className = 'folder-row';
+        const name = folderRowName(t('backup.bili_folder_row', {
+            name: folder.title || '',
+            count: (folder.videos || []).length,
+        }));
+        row.appendChild(name);
         list.appendChild(row);
     });
 }
@@ -1372,7 +1494,8 @@ async function applyBackupConflicts() {
             setBackupProgress(0, 0);
             return;
         }
-        setBackupStatus(t('backup.import_done', {
+        const bili = result.bilibili || {};
+        const status = t('backup.import_done', {
             songs: result.songs_liked || 0,
             playlists: result.playlists_created || 0,
             merged: result.playlists_merged || 0,
@@ -1383,12 +1506,24 @@ async function applyBackupConflicts() {
             mvs: result.mvs_liked || 0,
             local: localRecordCount(result.local_restored || {}),
             failed: result.failed || 0,
-        }));
+        });
+        setBackupStatus(status);
         setBackupProgress(0, 0);
-        showToast('success', t('backup.import_done_short', {
+        const short = t('backup.import_done_short', {
             songs: result.songs_liked || 0,
             playlists: result.playlists_created || 0,
-        }), 6000);
+        });
+        // The Bilibili half is counted on its own: it is a different account.
+        if (bili.folders_created || bili.videos_added) {
+            const biliText = t('backup.import_bili', {
+                folders: bili.folders_created || 0,
+                videos: bili.videos_added || 0,
+            });
+            setBackupStatus(`${status} · ${biliText}`);
+            showToast('success', `${short} · ${biliText}`, 6000);
+        } else {
+            showToast('success', short, 6000);
+        }
     } catch (err) {
         console.error(err);
         showToast('error', t('backup.import_failed'));
@@ -8538,6 +8673,7 @@ async function renderBili(rid) {
     biliSection.exhausted = false;
     updateOfflineBars();
     renderBiliChips();
+    renderBiliDetailButtons();
     renderBiliResults();
     loadBiliPartitions();
     try {
@@ -8618,6 +8754,14 @@ const biliLogin = {
     method: 'qr',
     timer: null,
     captchaKey: '',
+    // The key the SMS send step handed out.  The login has to send it back,
+    // otherwise Bilibili answers 86205（验证码失效）.
+    smsCaptchaKey: '',
+    // The phone number the code was sent to: a key only belongs to that one.
+    smsTel: '',
+    // The page Bilibili wants the slider solved on, when the risk control
+    // fires before the code is sent.
+    smsRiskUrl: '',
     gt: '',
     challenge: '',
     token: ''
@@ -8995,6 +9139,13 @@ async function submitBiliPassword() {
     }
 }
 
+/** Show or hide the hint about the slider Bilibili asks for. */
+function setBiliSmsRisk(visible, url) {
+    const block = document.getElementById('bili-sms-risk');
+    if (block) block.hidden = !visible;
+    biliLogin.smsRiskUrl = visible ? (url || '') : '';
+}
+
 /** Ask for the SMS code of the login. */
 async function sendBiliSmsCode() {
     const tel = biliInputValue('bili-phone');
@@ -9002,16 +9153,44 @@ async function sendBiliSmsCode() {
         showToast('error', t('error.unknown'));
         return;
     }
+    // A code that was not sent leaves no key behind: the old one is dead.
+    biliLogin.smsCaptchaKey = '';
+    biliLogin.smsTel = '';
+    setBiliSmsRisk(false);
     try {
         const result = await state.api.bili_send_sms_code(tel, '86');
         if (!result || !result.success) {
+            // The risk control wants the slider before the code is sent.
+            if (result && result.captcha_required) {
+                setBiliSmsRisk(true, result.recaptcha_url || '');
+                showToast('warning', result.message || t('bili.sms_risk_hint'), 9000);
+                return;
+            }
             showToast('error', biliFailure(result, 'bili.status_failed'));
             return;
         }
+        // The key belongs to this phone number and to this code; the login
+        // step has to send it back.
+        biliLogin.smsCaptchaKey = result.captcha_key || '';
+        biliLogin.smsTel = tel;
         showToast('success', result.message || t('bili.send_code'));
     } catch (err) {
         showToast('error', t('error.network'));
     }
+}
+
+/** Open the page Bilibili wants the slider solved on. */
+function openBiliSmsRiskPage() {
+    const url = biliLogin.smsRiskUrl || '';
+    if (!url) return;
+    if (!state.api || !state.api.open_external) return;
+    state.api.open_external(url);
+}
+
+/** Leave the SMS login and use the QR code instead. */
+function switchToBiliQrLogin() {
+    setBiliSmsRisk(false);
+    switchBiliLoginTab('qr');
 }
 
 /** Sign in with the SMS code. */
@@ -9022,8 +9201,17 @@ async function submitBiliSms() {
         showToast('error', t('error.unknown'));
         return;
     }
+    // The key was handed out for one phone number; a different one has none,
+    // and the old key dies with it.
+    let captchaKey = '';
+    if (biliLogin.smsTel === tel) {
+        captchaKey = biliLogin.smsCaptchaKey;
+    } else {
+        biliLogin.smsCaptchaKey = '';
+        biliLogin.smsTel = '';
+    }
     try {
-        const result = await state.api.bili_login_sms(tel, code, '86');
+        const result = await state.api.bili_login_sms(tel, code, '86', captchaKey);
         if (!result || !result.success) {
             showToast('error', biliFailure(result, 'bili.status_failed'));
             return;
@@ -9562,6 +9750,37 @@ function renderBiliDetailHeader() {
         favorite.textContent = biliDetail.favorited
             ? t('bili.favorite_done') : t('bili.favorite_add');
         favorite.classList.toggle('is-active', biliDetail.favorited);
+    }
+    // The coin buttons carry their label too: an empty button is a button
+    // nobody dares to press.
+    renderBiliDetailButtons();
+}
+
+/**
+ * The plain labels of the buttons of the detail panel.
+ *
+ * The three buttons carry their text only once the details of a video are
+ * loaded, so they stood empty until then -- a button without a word is a
+ * button nobody dares to press.  This puts the plain label on them; the
+ * open video replaces it with the state ("已赞", "已收藏").
+ *
+ * The labels are written every time, not only into an empty button: a
+ * language switch has to change them too.
+ */
+function renderBiliDetailButtons() {
+    const coin = document.getElementById('btn-bili-coin');
+    if (coin) coin.textContent = t('bili.coin');
+    const coinOne = document.getElementById('btn-bili-coin-one');
+    if (coinOne) coinOne.textContent = t('bili.coin_one');
+    const coinTwo = document.getElementById('btn-bili-coin-two');
+    if (coinTwo) coinTwo.textContent = t('bili.coin_two');
+    // The like and the favourite button carry the state of the open video.
+    // Without one they get the plain label, so they are never empty.
+    if (!biliDetail.bvid) {
+        const like = document.getElementById('btn-bili-like');
+        if (like) like.textContent = t('bili.like');
+        const favorite = document.getElementById('btn-bili-favorite');
+        if (favorite) favorite.textContent = t('bili.favorite_add');
     }
 }
 
@@ -10974,6 +11193,21 @@ function bindSectionEvents() {
     if (smsSend) smsSend.addEventListener('click', () => sendBiliSmsCode());
     const smsLogin = document.getElementById('btn-bili-sms-login');
     if (smsLogin) smsLogin.addEventListener('click', () => submitBiliSms());
+    const smsRiskOpen = document.getElementById('btn-bili-sms-risk-open');
+    if (smsRiskOpen) smsRiskOpen.addEventListener('click', openBiliSmsRiskPage);
+    const smsRiskQr = document.getElementById('btn-bili-sms-risk-qr');
+    if (smsRiskQr) smsRiskQr.addEventListener('click', switchToBiliQrLogin);
+    // The key belongs to the number the code was sent to: a new number means
+    // an old key, and the old key is void.
+    const smsPhone = document.getElementById('bili-phone');
+    if (smsPhone) {
+        smsPhone.addEventListener('input', () => {
+            if (biliInputValue('bili-phone') !== biliLogin.smsTel) {
+                biliLogin.smsCaptchaKey = '';
+                biliLogin.smsTel = '';
+            }
+        });
+    }
     const cookieLogin = document.getElementById('btn-bili-cookie-login');
     if (cookieLogin) cookieLogin.addEventListener('click', () => submitBiliCookie());
     const registerSend = document.getElementById('btn-bili-register-send');

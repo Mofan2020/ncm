@@ -19,15 +19,42 @@ B站的接口没有公开文档，能用的信息来自对官方前端 bundle �
 - **二维码状态码和网易云不一样**：网易云是 800/801/802/803，B站是
   `0`（成功）、`86101`（等待扫码）、`86090`（已扫码待确认）、`86038`（过期）。
   拿错一套，界面会一直显示「等待扫码」。
-- **密码登录和短信登录都要极验（geetest）的 challenge。** 先取
-  `/x/passport-login/captcha?source=main_mini`，拿到 `gt`/`challenge`/`token`，
-  提交时带上 `geetest_challenge`/`geetest_validate`/`geetest_seccode`。
-  服务端返回需要验证时，会给 `captcha_key`——这只是个标记，真正的验证动作是
-  服务端在浏览器里做的，第三方客户端拿不到那个弹窗。所以这两个登录方式
-  **有较大概率被风控挡下**，界面必须把失败原因说清楚，而不是显示「登录失败」。
+- **密码和短信登录走 app 端那套路由，不要走 web 端。** 见下面「登录路由」一节。
+  web 端（`/x/passport-login/web/login`）强制校验滑块，客户端拿不到结果；
+  app 端（`/x/passport-login/oauth2/login`）不校验滑块，密码登录因此完全可用。
 - **写接口要 `csrf`**，值就是 cookie 里的 `bili_jct`，少了会回 `-111`。
 - cookie 存在配置目录下的 `bilibili.json`（`src/auth/bili_login.py`），
   和网易云的 `settings.yaml` 分开放：两边的格式、有效期、刷新方式都不一样。
+
+## 登录路由
+
+B站有两套登录路由，**差别就是滑块**。2026-11-01 实测（`src/core/bili_app_login.py`）：
+
+| 路由 | 滑块 | 实测结果 |
+|------|------|----------|
+| `POST /x/passport-login/web/login` | 强制 | 不带滑块一律 `-105`（验证码错误） |
+| `POST /x/passport-login/oauth2/login` | 不校验 | 签名对就进凭据校验，回 `-629`（用户名或密码错误） |
+| `POST /x/passport-login/web/sms/send` | 强制 | 不带滑块 `-105` |
+| `POST /x/passport-login/sms/send` | 不校验 | `code 0`，风控不触发时直接给 `captcha_key` |
+| `POST /x/passport-login/login/sms` | 不校验 | 要 `captcha_key`，缺了 `-400`，过期了 `86205` |
+
+**app 端要签名**：参数按 key 字典序 urlencode，拼上 appkey，再拼 appsecret，
+MD5 之后填进 `sign`。签名串**必须包含 appkey**，不含会被回 `-3`（签名错误）。
+appkey / appsecret 是手机端公开常量，写死在 `src/core/bili_app_login.py` 里。
+
+**密码用 RSA 加密**：`GET /x/passport-login/web/key` 给 `hash`（盐，约 20 秒有效）
+和 PEM 公钥，密码明文前面拼盐，再用 RSA/ECB/PKCS1Padding 加密后 base64。
+自己实现，别引 `cryptography`——打包体积不允许（见 `src/core/aes.py` 的理由）。
+
+**app 端的 cookie 在 JSON 里**，不在 `Set-Cookie` 头里：`data.cookie_info.cookies[]`
+是 `[{name, value}]`。web 端才在响应头。读错地方会拿到「登录成功但其实没登录」。
+
+**短信发码被风控时**回答里没有 `captcha_key`，但有 `recaptcha_url`（B站要滑块的
+那个页面）。这时界面必须给出路：打开那个页面，或者改用扫码登录——扫码不要滑块。
+
+**注册已经被 B站下线**。`/web/reg/tel` 和 `/web/sms/general/v2/send` 都还在，
+但一律回 `code 20000`（该版本已不支持当前功能）。注册实际上是短信登录顺带完成的
+（未注册的手机号登录时会返回 `data.is_new`）。
 
 ## 风控
 
@@ -49,6 +76,14 @@ B站对同一 IP 的写操作频控很紧。收藏夹的写入（建夹、加视
   `/m/<token>/bili?u=<地址>`。这个代理会补上 `Referer` 和 cookie、转发
   `Range`，并且**只放行** `hdslb.com` / `bilivideo.com` / `bilibili.com`
   这几个域名——不限制的话，回环服务器就成了一个开放代理。
+- **单文件（muxed）流的主机换过域名。** B站现在给 muxed 流的主机是
+  `*.edge.mountaintoys.cn:4483`，不在上面的白名单里。代理会回 403，
+  而那个地址**直连是好的**（206）——所以症状是「视频一个都放不了」，
+  看起来像播放器坏了，其实是代理拒绝转发。
+  macOS 上尤其致命：WKWebView 没有 `MediaSource`，只能吃 muxed 单文件流，
+  所以白名单漏了这一个域 = 全部视频都播不了。
+  白名单在 `src/core/mediaserver.py` 的 `_BILI_HOST_SUFFIXES`，
+  加域名时只加明确后缀，别把回环服务变成开放代理。
 - **画质是账号说了算。** `accept_quality` 给出这次登录能看的画质，
   `support_formats` 给出清晰度名称。没有大会员时 1080P 以上拿不到，
   这不是 bug。
@@ -107,6 +142,9 @@ B站对同一 IP 的写操作频控很紧。收藏夹的写入（建夹、加视
   `web_location=1550101`）。
 - 投稿列表：`GET /x/space/wbi/arc/search`（WBI 签名，`mid`、`pn`、`ps`、`order=pubdate`）。
 - 粉丝/关注/投稿数：`GET /x/space/upstat?mid=<mid>`——**这个接口不要签名**。
+- **`acc/info` 对第三方客户端一律回 `-352`（风控校验失败）。** 拿不到资料的时候
+  用 `GET /x/web-interface/card?mid=<mid>` 兜底，它不要签名，能给出头像、昵称、
+  签名和等级。少了这个回落，别人的主页就是一片空白。
 
 ## 私信
 
@@ -146,6 +184,16 @@ B 站的读接口在 `src/core/bili_cache.py` 里按类型分开缓存，寿命�
 
 缓存键是 `"{bvid}|{页码}|{排序}"` 这种带分隔符的形式，作废的时候要按**前缀**
 扔（`"{bvid}|"`），不能只扔裸 bvid——`BV10…` 开头的视频号会互相误伤。
+
+## 分区
+
+- **分区榜比搜索靠谱。** `GET /x/web-interface/ranking/region?rid=<rid>&day=3`
+  对 rid 1、3、4、24、28、29、33、36、160 都有数据，字段跟热门视频一致。
+  按关键词搜索再过滤 `tids` 的做法，在纪录片、番剧这些分区只回 0～1 条——
+  分区页于是空着。
+- **番剧（rid 2）是 PGC 内容**，没有 `bvid`，当前播放器用不了。分区榜对 rid 2
+  也是空的。兜底办法：拿同一个关键词、不带分区过滤再搜一次 UGC 视频。
+  不要把 PGC 条目硬塞进按 `bvid` 播放的模型。
 
 ## 备份
 

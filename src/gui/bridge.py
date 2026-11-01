@@ -2048,9 +2048,11 @@ class GuiBridge:
         """Send a verification code to a phone number."""
         return self.bilibili.send_sms_code(tel, cid=cid)
 
-    def bili_login_sms(self, tel: str, code: str, cid: str = "86") -> dict[str, Any]:
+    def bili_login_sms(self, tel: str, code: str, cid: str = "86",
+                       captcha_key: str = "") -> dict[str, Any]:
         """Sign in to Bilibili with the code sent to a phone number."""
-        return self.bilibili.login_sms(tel, code, cid=cid)
+        return self.bilibili.login_sms(tel, code, cid=cid,
+                                        captcha_key=captcha_key)
 
     def bili_register_send_code(self, tel: str, cid: str = "86") -> dict[str, Any]:
         """Send the code needed to register a new Bilibili account."""

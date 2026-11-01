@@ -596,12 +596,19 @@ _BILI_HEADERS = {
 
 #: Hosts the Bilibili proxy is allowed to fetch from.  Anything else would
 #: turn the loopback server into an open proxy for the whole internet.
+#:
+#: ``.mountaintoys.cn`` is the CDN B站 hands out for the single-file
+#: (muxed) streams lately -- it is where most of the ``fnval=1`` answers
+#: point.  Without it the proxy answers 403 and **no** video plays on macOS,
+#: because that platform has no ``MediaSource`` and can only use the muxed
+#: stream.  The other entries are the picture and the DASH hosts.
 _BILI_HOST_SUFFIXES = (
     ".hdslb.com",
     ".bilivideo.com",
     ".bilivideo.cn",
     ".biliapi.net",
     ".bilibili.com",
+    ".mountaintoys.cn",
 )
 
 

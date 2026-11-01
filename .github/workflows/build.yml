@@ -38,6 +38,14 @@ jobs:
       - name: Unit tests
         run: pytest -q
 
+      # The frontend logic that pytest cannot reach is checked by Node
+      # scripts; they are run through pytest, and the runner has Node.
+      - name: Frontend checks (node)
+        run: |
+          node scripts/check-player-js.mjs
+          node scripts/check-lyrics-scroll.mjs
+          node scripts/check-backup-js.mjs
+
   # --------------------------------------------------------------- macOS
   build-macos:
     name: Build macOS (${{ matrix.arch }})

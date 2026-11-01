@@ -55,6 +55,22 @@
         return text;
     }
 
+    /**
+     * The translation of a key, or nothing when the catalogue does not know it.
+     *
+     * The window paints its labels before the translations arrive.  Writing
+     * the key itself would put "bili.coin" on the button, so an unknown key
+     * leaves the label empty until the catalogue shows up.
+     */
+    function label(key, params) {
+        const text = state.translations[key];
+        if (typeof text !== 'string' || !text) return '';
+        if (!params) return text;
+        return Object.keys(params).reduce(
+            (out, name) => out.split('{' + name + '}').join(String(params[name])),
+            text);
+    }
+
     /** Wait for the pywebview bridge; it is injected after the page loads. */
     function waitForApi(deadline) {
         return new Promise((resolve) => {
@@ -76,25 +92,51 @@
 
     /** Put the fixed labels of the window in place. */
     function applyStaticText() {
-        document.title = t('bili.window_title');
-        el('bp-quality-label').textContent = t('bili.quality');
-        el('bp-danmaku-label').textContent = t('bili.settings_danmaku');
-        el('bp-size-label').textContent = t('bili.settings_danmaku_size');
-        el('bp-opacity-label').textContent = t('bili.settings_danmaku_opacity');
-        el('bp-danmaku-send').textContent = t('bili.danmaku_send');
-        el('bp-comment-send').textContent = t('bili.comment_send');
-        el('bp-comment-input').setAttribute('placeholder', t('bili.comment_placeholder'));
-        el('bp-danmaku-input').setAttribute('placeholder', t('bili.danmaku_placeholder'));
-        el('bp-tab-comments').textContent = t('bili.comments');
-        el('bp-tab-danmaku').textContent = t('bili.danmaku');
-        el('bp-like').textContent = t('bili.like');
-        el('bp-coin').textContent = t('bili.coin');
-        el('bp-favorite').textContent = t('bili.favorite_add');
-        el('bp-coin-one').textContent = t('bili.coin_one');
-        el('bp-coin-two').textContent = t('bili.coin_two');
-        el('bp-fav-title').textContent = t('bili.favorite_pick');
+        const title = label('bili.window_title');
+        if (title) document.title = title;
+        setLabel('bp-quality-label', 'bili.quality');
+        setLabel('bp-danmaku-label', 'bili.settings_danmaku');
+        setLabel('bp-size-label', 'bili.settings_danmaku_size');
+        setLabel('bp-opacity-label', 'bili.settings_danmaku_opacity');
+        setLabel('bp-danmaku-send', 'bili.danmaku_send');
+        setLabel('bp-comment-send', 'bili.comment_send');
+        setPlaceholder('bp-comment-input', 'bili.comment_placeholder');
+        setPlaceholder('bp-danmaku-input', 'bili.danmaku_placeholder');
+        setLabel('bp-tab-comments', 'bili.comments');
+        setLabel('bp-tab-danmaku', 'bili.danmaku');
+        setLabel('bp-like', 'bili.like');
+        setLabel('bp-coin', 'bili.coin');
+        setLabel('bp-favorite', 'bili.favorite_add');
+        setLabel('bp-coin-one', 'bili.coin_one');
+        setLabel('bp-coin-two', 'bili.coin_two');
+        setLabel('bp-fav-title', 'bili.favorite_pick');
         el('bp-close').textContent = '×';
-        el('bp-close').setAttribute('title', t('bili.close_player'));
+        const closeTitle = label('bili.close_player');
+        if (closeTitle) el('bp-close').setAttribute('title', closeTitle);
+    }
+
+    /**
+     * Write a label into an element.
+     *
+     * An unknown key leaves the element alone: the window paints itself
+     * before the catalogue arrives, and a button that reads "bili.coin" is
+     * worse than a button that is still empty.
+     */
+    function setLabel(id, key) {
+        const node = el(id);
+        if (!node) return;
+        const text = label(key);
+        if (!text) return;
+        node.textContent = text;
+    }
+
+    /** The same for a placeholder. */
+    function setPlaceholder(id, key) {
+        const node = el(id);
+        if (!node) return;
+        const text = label(key);
+        if (!text) return;
+        node.setAttribute('placeholder', text);
     }
 
     /** The status of the player, in the words of the interface. */

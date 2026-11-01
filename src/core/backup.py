@@ -1240,7 +1240,9 @@ def _bili_plan(payload: dict[str, Any], bili: Any) -> dict[str, Any]:
     if not folders:
         message = ""
     elif not signed_in:
-        message = "没有登录 B站，B站收藏夹先不恢复"
+        # A key, not a sentence: the interface has its own wording for this
+        # and a Chinese string here would show up in an English window.
+        message = "backup.bili_skip"
     else:
         message = ""
     return {

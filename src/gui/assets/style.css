@@ -1030,7 +1030,13 @@ input[type="range"]::-webkit-slider-thumb {
     background: var(--glass-soft); border: 1px solid var(--glass-border);
     font-size: 12.5px;
 }
+/* The name is clipped from the left, so the end of a long name stays
+   visible.  That needs the row in the right-to-left direction -- but the
+   bidi algorithm then mirrors the brackets of a Chinese name ("收藏（12）"
+   comes out as "12）收藏（").  The text therefore goes into its own
+   isolate: the row keeps the clipping, the name keeps its own order. */
 .folder-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.folder-row span > bdi { unicode-bidi: isolate; direction: auto; }
 
 .about { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--divider); }
 .about h3 { font-size: 13px; }
@@ -2635,6 +2641,12 @@ input[type="range"]::-webkit-slider-thumb {
 .bili-fav-list { display: flex; flex-direction: column; gap: 6px; }
 .bili-section { display: flex; flex-direction: column; gap: 8px; }
 .bili-section-title { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.bili-sms-risk {
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 10px 12px; border-radius: var(--radius-sm);
+    background: var(--sunken);
+}
+.bili-sms-risk .inline-form { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .bili-comment-list { display: flex; flex-direction: column; gap: 10px; }
 .bili-comment { display: flex; flex-direction: column; gap: 4px; }

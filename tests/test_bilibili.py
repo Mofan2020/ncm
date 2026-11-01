@@ -341,13 +341,18 @@ class FakeSession:
         self.cookies = self.jar
         self.calls: list[dict] = []
 
-    def _route(self, url):
+    def _route(self, url, params=None):
         for fragment, payload in self.routes.items():
             if fragment in url:
                 if isinstance(payload, Exception):
                     raise payload
                 if isinstance(payload, FakeResponse):
                     return payload
+                if callable(payload):
+                    # A route may depend on the parameters: the search route
+                    # answers different things for a partition scoped search
+                    # than for an unfiltered one.
+                    return FakeResponse(payload(dict(params or {})))
                 return FakeResponse(payload)
         if self.default is not None:
             if isinstance(self.default, Exception):
@@ -360,12 +365,12 @@ class FakeSession:
     def get(self, url, params=None, headers=None, timeout=None):
         self.calls.append({"url": url, "params": dict(params or {}), "headers": headers,
                            "timeout": timeout, "method": "GET"})
-        return self._route(url)
+        return self._route(url, params)
 
     def post(self, url, data=None, headers=None, timeout=None):
         self.calls.append({"url": url, "params": dict(data or {}), "headers": headers,
                            "timeout": timeout, "method": "POST"})
-        return self._route(url)
+        return self._route(url, data)
 
 
 def make_client(routes=None, default=None, cookie=""):
@@ -795,6 +800,148 @@ def test_ranking_falls_back_to_the_partition_feed_when_the_board_refuses():
     assert call["params"]["tids"] == 28
 
 
+PARTITION_BOARD_PAYLOAD = {
+    "code": 0,
+    "data": [
+        {
+            "aid": 33,
+            "bvid": "BV1board333",
+            "title": "分区一",
+            "pic": "//i1.hdslb.com/bfs/archive/board.jpg",
+            "duration": 300,
+            "author": "分区UP",
+            "mid": 12345,
+            "play": 4567,
+            "typename": "纪录片",
+        },
+    ],
+}
+
+
+def test_a_partition_reads_the_partition_board_first():
+    """The board answers for the partitions the keyword search cannot.
+
+    The keyword search returned 0 or 1 rows for the 纪录片 and the 番剧
+    partition, which is what left those tabs empty.  The board route
+    (``/x/web-interface/ranking/region``) answers for every video
+    partition.
+    """
+    client, session = make_client({
+        "/x/web-interface/ranking/region": PARTITION_BOARD_PAYLOAD,
+    })
+    items = client.popular(rid=33)
+    assert len(items) == 1
+    assert items[0]["bvid"] == "BV1board333"
+    assert items[0]["author"] == "分区UP"
+    assert items[0]["cover"] == "https://i1.hdslb.com/bfs/archive/board.jpg"
+    assert items[0]["play_count"] == 4567
+    call = [c for c in session.calls if "ranking/region" in c["url"]][-1]
+    assert call["params"]["rid"] == 33
+    assert call["params"]["day"] == 3
+
+
+def test_a_partition_falls_back_to_the_search_when_the_board_is_empty():
+    """The 番剧 partition has no board (it is PGC content)."""
+    client, session = make_client({
+        "/x/frontend/finger/spi": SPI_PAYLOAD,
+        "/x/web-interface/nav": NAV_PAYLOAD,
+        "/x/web-interface/ranking/region": {"code": -400, "message": "请求错误"},
+        "/x/web-interface/wbi/search/type": SEARCH_PAYLOAD,
+    })
+    items = client.popular(rid=28)
+    assert items and items[0]["bvid"] == "BV1EHbhz6EHw"
+    assert any("ranking/region" in c["url"] for c in session.calls)
+
+
+def test_the_bangumi_partition_falls_back_to_an_unfiltered_search():
+    """``tids=2`` is PGC content and never answers; the videos do.
+
+    The partition scoped search for 番剧 answers with entries that carry no
+    ``bvid`` at all, so nothing can be played from them.  The same keyword
+    without the partition filter finds the videos people uploaded.
+    """
+
+    def search_route(params):
+        if params.get("tids") == 2:
+            # PGC content: no bvid, nothing to play.
+            return {
+                "code": 0,
+                "data": {
+                    "result": [
+                        {
+                            "aid": 900,
+                            "title": "番剧索引",
+                            "author": "番剧组",
+                            "pic": "//i2.hdslb.com/bfs/archive/pgc.jpg",
+                            "duration": "24:00",
+                            "play": 10,
+                            "typename": "番剧",
+                            "typeid": "2",
+                        },
+                    ],
+                },
+            }
+        return SEARCH_PAYLOAD
+
+    client, session = make_client({
+        "/x/frontend/finger/spi": SPI_PAYLOAD,
+        "/x/web-interface/nav": NAV_PAYLOAD,
+        "/x/web-interface/ranking/region": {"code": -400, "message": "请求错误"},
+        "/x/web-interface/wbi/search/type": search_route,
+    })
+    items = client.popular(rid=2)
+    assert items and items[0]["bvid"] == "BV1EHbhz6EHw"
+    search_calls = [c for c in session.calls if "search/type" in c["url"]]
+    # The first search carries the partition filter, the second does not.
+    assert search_calls[-1]["params"].get("tids") is None
+
+
+SPACE_CARD_PAYLOAD = {
+    "code": 0,
+    "data": {
+        "card": {
+            "mid": 1943648897,
+            "name": "Oo柯蟠桃oO",
+            "face": "//i0.hdslb.com/bfs/face/face.jpg",
+            "sign": "签名内容",
+            "level_info": {"current_level": 6},
+        },
+    },
+}
+
+
+def test_the_profile_falls_back_to_the_card_route_when_the_space_refuses():
+    """``/x/space/wbi/acc/info`` answers ``-352`` for a third party client.
+
+    Without the fallback the avatar and the name stay empty and the
+    profile page of another user shows nothing at all.
+    """
+    client, session = make_client({
+        "/x/web-interface/nav": NAV_PAYLOAD,
+        "/x/space/wbi/acc/info": {"code": -352, "message": "风控校验失败"},
+        "/x/web-interface/card": SPACE_CARD_PAYLOAD,
+        "/x/space/upstat": SPACE_UPSTAT_PAYLOAD,
+    })
+    result = client.space("1943648897")
+    assert result["success"] is True
+    assert result["profile"]["name"] == "Oo柯蟠桃oO"
+    assert result["profile"]["face"] == "https://i0.hdslb.com/bfs/face/face.jpg"
+    assert result["profile"]["level"] == 6
+    assert result["profile"]["fans"] == 1200
+    assert any("web-interface/card" in c["url"] for c in session.calls)
+
+
+def test_the_profile_reports_a_failure_when_both_routes_refuse():
+    client, _ = make_client({
+        "/x/web-interface/nav": NAV_PAYLOAD,
+        "/x/space/wbi/acc/info": {"code": -352, "message": "风控校验失败"},
+        "/x/web-interface/card": {"code": -400, "message": "请求错误"},
+    })
+    result = client.space("1943648897")
+    assert result["success"] is False
+    assert result["message"]
+
+
 # ---------------------------------------------------------------------------
 # contract
 # ---------------------------------------------------------------------------
@@ -1017,28 +1164,55 @@ def test_login_cookie_rejects_a_dead_credential():
     assert "过期" in result["message"]
 
 
+#: A public key the client can parse, so the password really is encrypted
+#: with it.  It is a key pair of the test suite, not a server key.
+LOGIN_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+MFswDQYJKoZIhvcNAQEBBQADSgAwRwJAmtQJMWfTC6I3wGvwGE4aNqDDcqTF9w0+
+iwzVDNAF2VpMhk9qy3zzZLHT2g5Jua33WmYXU+CXeJ0zMMxDLrP8qwIDAQAB
+-----END PUBLIC KEY-----"""
+
+LOGIN_KEY_PAYLOAD = {
+    "code": 0,
+    "data": {"hash": "466b3a14ffed600d", "key": LOGIN_PUBLIC_KEY},
+}
+
+
 def test_login_password_returns_the_credential():
+    """The app route hands the cookies over in the body."""
     client, session = make_client({
-        "/x/passport-login/web/login": FakeResponse(
-            {"code": 0, "data": {"code": 0, "message": "", "url": ""}},
-            headers={"Set-Cookie": "SESSDATA=xyz; Path=/, bili_jct=csrf1; Path=/"},
-        ),
+        "/x/passport-login/web/key": LOGIN_KEY_PAYLOAD,
+        "/x/passport-login/oauth2/login": {
+            "code": 0,
+            "data": {
+                "code": 0,
+                "message": "",
+                "cookie_info": {
+                    "cookies": [
+                        {"name": "SESSDATA", "value": "xyz"},
+                        {"name": "bili_jct", "value": "csrf1"},
+                    ],
+                },
+            },
+        },
     })
     result = client.login_password("user", "pw")
     assert result["success"] is True
     assert result["cookie"] == "SESSDATA=xyz; bili_jct=csrf1"
-    call = session.calls[-1]
-    assert call["url"] == "https://passport.bilibili.com/x/passport-login/web/login"
+    call = [c for c in session.calls if "oauth2/login" in c["url"]][-1]
+    assert call["url"] == "https://passport.bilibili.com/x/passport-login/oauth2/login"
     assert call["params"]["username"] == "user"
-    assert call["params"]["password"] == "pw"
-    assert call["params"]["source"] == "main_mini"
-    assert call["params"]["go"] == "https://www.bilibili.com/"
+    # The password travels encrypted, never in the clear.
+    assert call["params"]["password"] != "pw"
+    # The app key and the signature have to be there.
+    assert call["params"]["appkey"]
+    assert call["params"]["sign"]
     assert "w_rid" not in call["params"]
 
 
 def test_login_password_asks_for_a_captcha():
     client, _ = make_client({
-        "/x/passport-login/web/login": {
+        "/x/passport-login/web/key": LOGIN_KEY_PAYLOAD,
+        "/x/passport-login/oauth2/login": {
             "code": 0,
             "data": {
                 "code": -120,
@@ -1057,7 +1231,8 @@ def test_login_password_asks_for_a_captcha():
 
 def test_login_password_reports_the_server_reason():
     client, _ = make_client({
-        "/x/passport-login/web/login": {
+        "/x/passport-login/web/key": LOGIN_KEY_PAYLOAD,
+        "/x/passport-login/oauth2/login": {
             "code": 0,
             "data": {"code": -3, "message": "密码错误"},
         },
@@ -1089,21 +1264,52 @@ def test_captcha_returns_the_geetest_parameters():
 # ---------------------------------------------------------------------------
 
 def test_send_sms_code_sends_the_phone_number():
+    """The app route: it answers without a slider."""
     client, session = make_client({
-        "/x/passport-login/web/sms/sendcode": {"code": 0, "message": "0"},
+        "/x/passport-login/sms/send": {"code": 0, "message": "0"},
     })
     result = client.send_sms_code("13800000000")
     assert result["success"] is True
     call = session.calls[-1]
-    assert call["url"] == "https://passport.bilibili.com/x/passport-login/web/sms/sendcode"
+    assert call["method"] == "POST"
+    assert call["url"] == "https://passport.bilibili.com/x/passport-login/sms/send"
     assert call["params"]["tel"] == "13800000000"
     assert call["params"]["cid"] == "86"
-    assert call["params"]["source"] == "main_mini"
+    assert call["params"]["appkey"]
+    assert call["params"]["sign"]
+
+
+def test_send_sms_code_hands_out_the_captcha_key():
+    """The login that follows needs the key the send step returned."""
+    client, _ = make_client({
+        "/x/passport-login/sms/send": {
+            "code": 0, "data": {"captcha_key": "key-1"},
+        },
+    })
+    result = client.send_sms_code("13800000000")
+    assert result["captcha_key"] == "key-1"
+
+
+def test_send_sms_code_asks_for_the_slider_when_the_risk_control_fires():
+    """The answer carries the page the user has to solve the slider on."""
+    client, _ = make_client({
+        "/x/passport-login/sms/send": {
+            "code": 0,
+            "data": {
+                "captcha_key": "",
+                "recaptcha_url": "https://www.bilibili.com/h5/project-msg-auth/verify?ct=geetest",
+            },
+        },
+    })
+    result = client.send_sms_code("13800000000")
+    assert result["success"] is False
+    assert result["captcha_required"] is True
+    assert "geetest" in result["recaptcha_url"]
 
 
 def test_send_sms_code_reports_a_failure():
     client, _ = make_client({
-        "/x/passport-login/web/sms/sendcode": {"code": -6, "message": "短信发送过于频繁"},
+        "/x/passport-login/sms/send": {"code": -6, "message": "短信发送过于频繁"},
     })
     result = client.send_sms_code("13800000000")
     assert result["success"] is False
@@ -1111,23 +1317,47 @@ def test_send_sms_code_reports_a_failure():
 
 
 def test_login_sms_returns_the_credential():
+    """The app route hands the cookies over in the body."""
     client, session = make_client({
-        "/x/passport-login/web/sms/login": FakeResponse(
-            {"code": 0, "data": {"code": 0, "message": ""}},
-            headers={"Set-Cookie": "SESSDATA=sms1; Path=/, bili_jct=csrf2; Path=/"},
-        ),
+        "/x/passport-login/login/sms": {
+            "code": 0,
+            "data": {
+                "code": 0,
+                "message": "",
+                "cookie_info": {
+                    "cookies": [
+                        {"name": "SESSDATA", "value": "sms1"},
+                        {"name": "bili_jct", "value": "csrf2"},
+                    ],
+                },
+            },
+        },
     })
     result = client.login_sms("13800000000", "123456")
     assert result["success"] is True
     assert result["cookie"] == "SESSDATA=sms1; bili_jct=csrf2"
     call = session.calls[-1]
-    assert call["url"] == "https://passport.bilibili.com/x/passport-login/web/sms/login"
+    assert call["method"] == "POST"
+    assert call["url"] == "https://passport.bilibili.com/x/passport-login/login/sms"
     assert call["params"]["code"] == "123456"
+    assert call["params"]["appkey"]
+    assert call["params"]["sign"]
+
+
+def test_login_sms_sends_the_captcha_key():
+    """Without it the server answers 86205（验证码失效）."""
+    client, session = make_client({
+        "/x/passport-login/login/sms": {
+            "code": 0, "data": {"code": 0, "message": ""},
+        },
+    })
+    client.login_sms("13800000000", "123456", captcha_key="key-1")
+    assert session.calls[-1]["params"]["captcha_key"] == "key-1"
 
 
 def test_login_sms_reports_a_wrong_code():
     client, _ = make_client({
-        "/x/passport-login/web/sms/login": {"code": 0, "data": {"code": -4, "message": "验证码错误"}},
+        "/x/passport-login/login/sms": {"code": 0, "data": {"code": -4, "message": "验证码错误"}},
     })
     result = client.login_sms("13800000000", "000000")
     assert result["success"] is False
@@ -1136,26 +1366,39 @@ def test_login_sms_reports_a_wrong_code():
 
 def test_register_send_code_sends_the_phone_number():
     client, session = make_client({
-        "/x/passport-register/web/sendcode": {"code": 0, "message": "0"},
+        "/web/sms/general/v2/send": {"code": 0, "message": "0"},
     })
     result = client.register_send_code("13800000000")
     assert result["success"] is True
     call = session.calls[-1]
-    assert call["url"] == "https://passport.bilibili.com/x/passport-register/web/sendcode"
+    assert call["method"] == "POST"
+    assert call["url"] == "https://passport.bilibili.com/web/sms/general/v2/send"
     assert call["params"]["source"] == "main_landing"
+    assert call["params"]["tel"] == "13800000000"
+
+
+def test_register_send_code_says_that_bilibili_retired_the_route():
+    """The answer is 20000（该版本已不支持当前功能）; say it as it is."""
+    client, _ = make_client({
+        "/web/sms/general/v2/send": {"code": 20000, "message": "该版本已不支持当前功能，请升级新版本！"},
+    })
+    result = client.register_send_code("13800000000")
+    assert result["success"] is False
+    assert "第三方客户端" in result["message"]
 
 
 def test_register_posts_the_form():
     client, session = make_client({
-        "/x/passport-register/web/register": {"code": 0, "message": "0"},
+        "/web/reg/tel": {"code": 0, "message": "0"},
     })
     result = client.register("user", "pw", "13800000000", "123456")
     assert result["success"] is True
     assert result["cookie"] == ""
     call = session.calls[-1]
     assert call["method"] == "POST"
-    assert call["url"] == "https://passport.bilibili.com/x/passport-register/web/register"
-    assert call["params"]["username"] == "user"
+    assert call["url"] == "https://passport.bilibili.com/web/reg/tel"
+    assert call["params"]["nickName"] == "user"
+    assert call["params"]["pwd"] == "pw"
     assert call["params"]["tel"] == "13800000000"
     assert call["params"]["code"] == "123456"
     assert call["params"]["source"] == "main_landing"
@@ -1163,7 +1406,7 @@ def test_register_posts_the_form():
 
 def test_register_picks_up_a_session_cookie_when_the_server_signs_in():
     client, _ = make_client({
-        "/x/passport-register/web/register": FakeResponse(
+        "/web/reg/tel": FakeResponse(
             {"code": 0, "message": "0"},
             headers={"Set-Cookie": "SESSDATA=reg1; Path=/, bili_jct=reg2; Path=/"},
         ),
@@ -1175,7 +1418,7 @@ def test_register_picks_up_a_session_cookie_when_the_server_signs_in():
 
 def test_register_reports_the_server_reason():
     client, _ = make_client({
-        "/x/passport-register/web/register": {"code": -1, "message": "该手机号已被注册"},
+        "/web/reg/tel": {"code": -1, "message": "该手机号已被注册"},
     })
     result = client.register("user", "pw", "13800000000", "123456")
     assert result["success"] is False

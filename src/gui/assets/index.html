@@ -1141,6 +1141,11 @@
         </header>
         <div class="modal-body">
             <p class="muted" id="backup-conflict-summary"></p>
+            <div class="group" id="backup-bili-block" hidden>
+                <div class="group-title" data-i18n="backup.bili_title"></div>
+                <p class="muted" id="backup-bili-summary"></p>
+                <div class="folder-list" id="backup-bili-list"></div>
+            </div>
             <div class="folder-list" id="backup-conflict-list"></div>
         </div>
         <footer class="modal-foot">
@@ -1522,6 +1527,15 @@
                     <span data-i18n="bili.sms_code"></span>
                     <input type="text" id="bili-sms-code" autocomplete="off" spellcheck="false">
                 </label>
+                <div class="bili-sms-risk" id="bili-sms-risk" hidden>
+                    <p class="muted" data-i18n="bili.sms_risk_hint"></p>
+                    <div class="inline-form">
+                        <button id="btn-bili-sms-risk-open" class="btn btn-sm btn-secondary" type="button"
+                                data-i18n="bili.sms_risk_open"></button>
+                        <button id="btn-bili-sms-risk-qr" class="btn btn-sm btn-secondary" type="button"
+                                data-i18n="bili.sms_risk_qr"></button>
+                    </div>
+                </div>
                 <button id="btn-bili-sms-login" class="btn btn-primary btn-block" type="button"
                         data-i18n="bili.submit"></button>
             </div>
@@ -1601,15 +1615,20 @@
                 </div>
                 <div class="bili-detail-stats" id="bili-detail-stats"></div>
                 <div class="bili-detail-actions" id="bili-detail-actions">
-                    <button class="btn btn-sm btn-secondary" id="btn-bili-like" type="button"></button>
-                    <button class="btn btn-sm btn-secondary" id="btn-bili-coin" type="button"></button>
-                    <button class="btn btn-sm btn-secondary" id="btn-bili-favorite" type="button"></button>
+                    <button class="btn btn-sm btn-secondary" id="btn-bili-like" type="button"
+                            data-i18n="bili.like"></button>
+                    <button class="btn btn-sm btn-secondary" id="btn-bili-coin" type="button"
+                            data-i18n="bili.coin"></button>
+                    <button class="btn btn-sm btn-secondary" id="btn-bili-favorite" type="button"
+                            data-i18n="bili.favorite_add"></button>
                 </div>
                 <div class="bili-popover" id="bili-coin-panel" hidden>
                     <div class="bili-popover-title" id="bili-coin-balance"></div>
                     <div class="bili-popover-row">
-                        <button class="btn btn-sm btn-secondary" id="btn-bili-coin-one" type="button"></button>
-                        <button class="btn btn-sm btn-secondary" id="btn-bili-coin-two" type="button"></button>
+                        <button class="btn btn-sm btn-secondary" id="btn-bili-coin-one" type="button"
+                                data-i18n="bili.coin_one"></button>
+                        <button class="btn btn-sm btn-secondary" id="btn-bili-coin-two" type="button"
+                                data-i18n="bili.coin_two"></button>
                     </div>
                 </div>
                 <div class="bili-popover" id="bili-fav-panel" hidden>

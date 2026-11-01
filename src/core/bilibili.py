@@ -39,6 +39,13 @@ from typing import Any
 
 import requests
 
+from src.core.bili_app_login import (
+    app_login_params,
+    app_sms_login_params,
+    app_sms_params,
+)
+from src.core.bili_rsa import bili_password_cipher
+
 __all__ = [
     "BiliClient",
     "BILI_RIDS",
@@ -61,6 +68,12 @@ BILI_API_BASE = "https://api.bilibili.com"
 #: a WBI signature -- ``passport`` does not know the key pair and answers
 #: ``-403`` when a stray ``w_rid`` shows up.
 BILI_PASSPORT_BASE = "https://passport.bilibili.com"
+
+#: The registration SMS route wants a fixed ``key`` next to the geetest
+#: parameters.  It is the key the registration page of the website sends;
+#: the route answers ``20000``（该版本已不支持当前功能）for a third party
+#: client no matter what the key is.
+REGISTER_SMS_KEY = "6eeb28e7bbd64b389da2be3a2778c7e3"
 
 #: The order in which the cookies are written back to the caller.  The
 #: session credential comes first because the layer above stores the string
@@ -987,6 +1000,24 @@ class BiliClient:
         return {"success": False, "cookie": "",
                 "message": "Cookie 无效或已过期，请重新登录"}
 
+    def password_key(self) -> dict[str, str]:
+        """Fetch the public key and the salt the password is encrypted with.
+
+        The salt lives about twenty seconds, so it is asked for right before
+        the encryption, not once at startup.
+        """
+        payload, _ = self._passport_request(
+            "/x/passport-login/web/key", {"r": str(int(time.time() * 1000))}
+        )
+        if not payload or payload.get("code") != 0:
+            return {"hash": "", "key": "", "message": "网络异常，取不到公钥"}
+        data = payload.get("data") or {}
+        hash_salt = str(data.get("hash") or "")
+        pem = str(data.get("key") or "")
+        if not hash_salt or not pem:
+            return {"hash": "", "key": "", "message": "取公钥失败：服务端没有返回密钥"}
+        return {"hash": hash_salt, "key": pem, "message": ""}
+
     def login_password(
         self,
         username: str,
@@ -1000,33 +1031,52 @@ class BiliClient:
     ) -> dict[str, Any]:
         """Sign in with a user name and a password.
 
-        The server answers ``captcha_required`` when the risk control wants
-        a captcha; the caller then solves it and calls again with the
-        ``captcha_key`` it received.
+        The web route (``/x/passport-login/web/login``) cannot be used from
+        a desktop client: the server checks the slider and answers ``-105``
+        （验证码错误）for every request without one, so the login used to
+        fail with "网络异常" no matter what the user typed.
+
+        The app route (``/x/passport-login/oauth2/login``) does not check
+        the slider at all.  With a correct signature and the four geetest
+        fields left empty it goes straight to the credential check, so the
+        password login works without a browser.
+
+        The password is encrypted with the public key the server hands out,
+        exactly the way the phone app does it.
         """
-        params = {
-            "username": str(username or ""),
-            "password": str(password or ""),
-            "captcha_key": str(captcha_key or ""),
-            "captcha": str(captcha or ""),
-            "geetest_challenge": str(challenge or ""),
-            "geetest_validate": str(validate or ""),
-            "geetest_seccode": str(seccode or ""),
-            "source": "main_mini",
-            "token": str(token or ""),
-            "go": "https://www.bilibili.com/",
-        }
-        payload, response = self._passport_request("/x/passport-login/web/login", params)
+        key = self.password_key()
+        if not key.get("key"):
+            return {
+                "success": False,
+                "cookie": "",
+                "message": key.get("message") or "网络异常，登录失败，请稍后重试",
+            }
+        try:
+            cipher = bili_password_cipher(str(password or ""), key["hash"], key["key"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bilibili password encryption failed: %s", exc)
+            return {"success": False, "cookie": "",
+                    "message": "登录失败：密码加密出错，请稍后重试"}
+
+        params = app_login_params(str(username or ""), cipher)
+        payload, response = self._passport_request(
+            "/x/passport-login/oauth2/login", params, method="POST"
+        )
         if not payload:
             return {"success": False, "cookie": "", "message": "网络异常，登录失败，请稍后重试"}
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        code = data.get("code", payload.get("code"))
+        raw_data = payload.get("data")
+        data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+        raw_code = data.get("code", payload.get("code"))
         try:
-            code = int(code)
+            code = int(raw_code)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             code = -1
         if code == 0:
-            cookies = self._response_cookies(response)
+            # The app route hands the cookies over in the body, not in a
+            # ``Set-Cookie`` header.
+            cookies = self._cookie_info_cookies(data)
+            if not cookies:
+                cookies = self._response_cookies(response)
             if "SESSDATA" not in cookies:
                 return {"success": False, "cookie": "",
                         "message": "登录未完成：服务端没有下发会话 Cookie"}
@@ -1043,6 +1093,19 @@ class BiliClient:
             }
         reason = str(data.get("message") or payload.get("message") or code)
         return {"success": False, "cookie": "", "message": "登录失败：" + reason}
+
+    def _cookie_info_cookies(self, data: dict[str, Any]) -> dict[str, str]:
+        """Read the cookies out of ``data.cookie_info.cookies``."""
+        info = data.get("cookie_info") if isinstance(data.get("cookie_info"), dict) else {}
+        found: dict[str, str] = {}
+        for item in info.get("cookies") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            value = item.get("value")
+            if name and value is not None:
+                found[name] = str(value)
+        return found
 
     def captcha(self) -> dict[str, Any]:
         """Fetch the parameters of the captcha the risk control asks for."""
@@ -1083,25 +1146,50 @@ class BiliClient:
         seccode: str = "",
         token: str = "",
     ) -> dict[str, Any]:
-        """Ask the server to send a login code to a phone number."""
-        params = {
-            "cid": str(cid or "86"),
-            "tel": str(tel or ""),
-            "source": "main_mini",
-            "token": str(token or ""),
-            "challenge": str(challenge or ""),
-            "seccode": str(seccode or ""),
-            "validate": str(validate or ""),
-        }
-        payload, _ = self._passport_request("/x/passport-login/web/sms/sendcode", params)
+        """Ask the server to send a login code to a phone number.
+
+        The web route (``/x/passport-login/web/sms/send``) needs a slider:
+        without one it answers ``-105``（验证码错误）, so the code never
+        arrives and the interface shows a network error.
+
+        The app route (``/x/passport-login/sms/send``) answers ``code 0``
+        without a slider.  When the risk control does not fire it hands out
+        the ``captcha_key`` right away and the whole login runs without a
+        browser.  When it does fire, the answer carries a ``recaptcha_url``
+        -- the page the user has to solve the slider on; that url is passed
+        back so the interface can open it.
+
+        The ``captcha_key`` is what the login that follows has to send
+        back, otherwise the server answers ``86205``（验证码失效）.
+        """
+        params = app_sms_params(str(tel or ""), cid)
+        payload, _ = self._passport_request(
+            "/x/passport-login/sms/send", params, method="POST"
+        )
         if not payload:
-            return {"success": False, "cookie": "",
+            return {"success": False, "cookie": "", "captcha_key": "",
                     "message": "网络异常，验证码发送失败，请稍后重试"}
+        raw_data = payload.get("data")
+        data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
         if payload.get("code") != 0:
-            return {"success": False, "cookie": "",
+            return {"success": False, "cookie": "", "captcha_key": "",
                     "message": "验证码发送失败："
                     + str(payload.get("message") or payload.get("code"))}
-        return {"success": True, "cookie": "", "message": "验证码已发送"}
+        captcha_key = str(data.get("captcha_key") or "")
+        recaptcha_url = str(data.get("recaptcha_url") or "")
+        if not captcha_key and recaptcha_url:
+            # The risk control wants the slider before the code is sent.
+            return {
+                "success": False,
+                "cookie": "",
+                "captcha_key": "",
+                "captcha_required": True,
+                "recaptcha_url": recaptcha_url,
+                "message": "需要完成滑块验证后才能发送验证码",
+            }
+        return {"success": True, "cookie": "",
+                "captcha_key": captcha_key,
+                "message": "验证码已发送"}
 
     def login_sms(
         self,
@@ -1112,29 +1200,35 @@ class BiliClient:
         validate: str = "",
         seccode: str = "",
         token: str = "",
+        captcha_key: str = "",
     ) -> dict[str, Any]:
-        """Sign in with the code that was sent to a phone number."""
-        params = {
-            "cid": str(cid or "86"),
-            "tel": str(tel or ""),
-            "code": str(code or ""),
-            "source": "main_mini",
-            "token": str(token or ""),
-            "challenge": str(challenge or ""),
-            "seccode": str(seccode or ""),
-            "validate": str(validate or ""),
-        }
-        payload, response = self._passport_request("/x/passport-login/web/sms/login", params)
+        """Sign in with the code that was sent to a phone number.
+
+        The app route (``/x/passport-login/login/sms``) is used: it wants
+        the ``captcha_key`` that the send step handed out, and it answers
+        ``-400`` when that key is missing and ``86205``（验证码失效）when it
+        is stale.
+        """
+        params = app_sms_login_params(
+            str(tel or ""), str(code or ""), str(captcha_key or ""), cid
+        )
+        payload, response = self._passport_request(
+            "/x/passport-login/login/sms", params, method="POST"
+        )
         if not payload:
             return {"success": False, "cookie": "", "message": "网络异常，登录失败，请稍后重试"}
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        code_value = data.get("code", payload.get("code"))
+        raw_data = payload.get("data")
+        data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+        raw_code = data.get("code", payload.get("code"))
         try:
-            code_value = int(code_value)
+            code_value = int(raw_code)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             code_value = -1
         if code_value == 0:
-            cookies = self._response_cookies(response)
+            # The app route hands the cookies over in the body.
+            cookies = self._cookie_info_cookies(data)
+            if not cookies:
+                cookies = self._response_cookies(response)
             if "SESSDATA" not in cookies:
                 return {"success": False, "cookie": "",
                         "message": "登录未完成：服务端没有下发会话 Cookie"}
@@ -1161,8 +1255,23 @@ class BiliClient:
         seccode: str = "",
         token: str = "",
     ) -> dict[str, Any]:
-        """Ask the server to send a registration code to a phone number."""
+        """Ask the server to send a registration code to a phone number.
+
+        The registration route is ``/web/sms/general/v2/send`` -- the old
+        ``/x/passport-register/web/sendcode`` is a 404.  It needs a ``key``
+        (the registration captcha key) besides the geetest parameters, and
+        it only answers ``POST``.
+
+        B站 retired this route for third party clients: the answer is
+        ``code 20000``（该版本已不支持当前功能）.  The reason is passed on
+        to the caller as it is, so the interface can say what happened
+        instead of "网络异常".
+        """
         params = {
+            "key": REGISTER_SMS_KEY,
+            "captchaType": "6",
+            # type 1 is the registration text; the login route uses 21.
+            "type": "1",
             "cid": str(cid or "86"),
             "tel": str(tel or ""),
             "source": "main_landing",
@@ -1171,15 +1280,22 @@ class BiliClient:
             "seccode": str(seccode or ""),
             "validate": str(validate or ""),
         }
-        payload, _ = self._passport_request("/x/passport-register/web/sendcode", params)
+        payload, _ = self._passport_request(
+            "/web/sms/general/v2/send", params, method="POST"
+        )
         if not payload:
-            return {"success": False, "cookie": "",
+            return {"success": False, "cookie": "", "captcha_key": "",
                     "message": "网络异常，验证码发送失败，请稍后重试"}
-        if payload.get("code") != 0:
-            return {"success": False, "cookie": "",
-                    "message": "验证码发送失败："
-                    + str(payload.get("message") or payload.get("code"))}
-        return {"success": True, "cookie": "", "message": "验证码已发送"}
+        code = payload.get("code")
+        if code != 0:
+            message = str(payload.get("message") or code)
+            if code == 20000:
+                message = ("B站已停止对第三方客户端开放注册验证码（服务端答复："
+                           + message + "）。请改用扫码或账号密码登录。")
+            return {"success": False, "cookie": "", "captcha_key": "",
+                    "message": "验证码发送失败：" + message}
+        return {"success": True, "cookie": "", "captcha_key": "",
+                "message": "验证码已发送"}
 
     def register(
         self,
@@ -1193,13 +1309,24 @@ class BiliClient:
         seccode: str = "",
         token: str = "",
     ) -> dict[str, Any]:
-        """Create a new account."""
+        """Create a new account.
+
+        The registration route is ``/web/reg/tel`` -- the old
+        ``/x/passport-register/web/register`` is a 404.  It takes
+        ``nickName`` / ``pwd`` / ``plat`` instead of ``username`` /
+        ``password``, and only answers ``POST``.
+
+        B站 retired this route for third party clients too: the answer is
+        ``code 20000``（该版本已不支持当前功能）.
+        """
         params = {
-            "username": str(username or ""),
-            "password": str(password or ""),
+            "nickName": str(username or ""),
+            "pwd": str(password or ""),
             "tel": str(tel or ""),
             "code": str(code or ""),
             "cid": str(cid or "86"),
+            "plat": "0",
+            "gourl": "https://www.bilibili.com/",
             "source": "main_landing",
             "token": str(token or ""),
             "challenge": str(challenge or ""),
@@ -1207,14 +1334,17 @@ class BiliClient:
             "validate": str(validate or ""),
         }
         payload, response = self._passport_request(
-            "/x/passport-register/web/register", params, method="POST"
+            "/web/reg/tel", params, method="POST"
         )
         if not payload:
             return {"success": False, "cookie": "",
                     "message": "网络异常，注册失败，请稍后重试"}
         if payload.get("code") != 0:
-            return {"success": False, "cookie": "",
-                    "message": "注册失败：" + str(payload.get("message") or payload.get("code"))}
+            reason = str(payload.get("message") or payload.get("code"))
+            if payload.get("code") == 20000:
+                reason = ("B站已停止对第三方客户端开放注册（服务端答复：" + reason
+                          + "）。请改用扫码或账号密码登录。")
+            return {"success": False, "cookie": "", "message": "注册失败：" + reason}
         # The server sometimes signs the new account in right away; when it
         # does, the session cookie comes with the answer.
         cookies = self._response_cookies(response)
@@ -1626,17 +1756,65 @@ class BiliClient:
         page_size: int = 30,
         order: str = "click",
     ) -> list[dict[str, Any]]:
-        """Hot videos of a partition, served by a partition scoped search."""
+        """Hot videos of a partition.
+
+        The partition board (``/x/web-interface/ranking/region``) is the
+        right source: it answers for every video partition (``rid`` 1, 3,
+        4, 24, 28, 29, 33, 36, 160 -- verified live) and carries the same
+        fields the hot list does.  The keyword search that was used before
+        returns nothing for several of them (the 纪录片 partition answered
+        0 or 1 rows, the 番剧 partition always 0), which is what left
+        those tabs empty.
+
+        The board has no paging, so only the first page comes from it; the
+        rest falls back to the search.
+        """
+        rid = int(rid or 0)
+        if page == 1 and rid:
+            board = self._partition_board(rid)
+            if board:
+                return board[:max(1, int(page_size))]
         keyword = BILI_RID_KEYWORDS.get(rid) or BILI_RID_NAMES.get(rid) or ""
         if not keyword:
             return []
-        return self.search(
+        items = self.search(
             keyword,
             page=page,
             page_size=page_size,
             order=order,
             category=_RID_CATEGORY.get(rid, "all"),
         )
+        if items:
+            return items
+        # 番剧 (rid 2) is PGC content: it has no ``bvid`` at all, so the
+        # partition scoped search answers nothing for it.  The videos people
+        # upload about anime do carry a ``bvid``, and the same keyword
+        # without the partition filter finds them.
+        if rid == 2:
+            return self.search(
+                keyword,
+                page=page,
+                page_size=page_size,
+                order=order,
+                category="all",
+            )
+        return items
+
+    def _partition_board(self, rid: int) -> list[dict[str, Any]]:
+        """The partition board of one partition (``[]`` when it has none)."""
+        payload = self._get("/x/web-interface/ranking/region",
+                            {"rid": int(rid or 0), "day": 3})
+        if not payload or payload.get("code") != 0:
+            return []
+        entries = payload.get("data")
+        if not isinstance(entries, list):
+            return []
+        items = [
+            self._from_archive_item(entry, int(rid or 0))
+            for entry in entries
+            if isinstance(entry, dict)
+        ]
+        return [item for item in items if item.get("bvid")]
 
     # ------------------------------------------------------------------
     # normalisation
@@ -2114,22 +2292,37 @@ class BiliClient:
                 "web_location": "1550101",
             },
         )
-        if not payload:
-            result["message"] = "空间信息获取失败，请稍后重试"
-            return result
-        if payload.get("code") != 0:
-            result["message"] = _error_message(payload, "空间信息获取失败")
-            return result
-        data = payload.get("data") or {}
-        profile["mid"] = str(data.get("mid") or mid)
-        profile["name"] = str(data.get("name") or "")
-        profile["face"] = _absolute_url(data.get("face"))
-        profile["sign"] = str(data.get("sign") or "")
-        level = data.get("level")
-        if isinstance(level, dict):
-            profile["level"] = _as_int(level.get("current_level"))
+        if payload and payload.get("code") == 0:
+            data = payload.get("data") or {}
+            profile["mid"] = str(data.get("mid") or mid)
+            profile["name"] = str(data.get("name") or "")
+            profile["face"] = _absolute_url(data.get("face"))
+            profile["sign"] = str(data.get("sign") or "")
+            level = data.get("level")
+            if isinstance(level, dict):
+                profile["level"] = _as_int(level.get("current_level"))
+            else:
+                profile["level"] = _as_int(level)
         else:
-            profile["level"] = _as_int(level)
+            # ``/x/space/wbi/acc/info`` answers ``-352``（风控校验失败）when
+            # the request comes from a third party client -- the avatar and
+            # the name then stay empty and the profile page shows nothing.
+            # The card route answers the same fields and is not behind the
+            # space risk control, so it is the fallback.
+            card = self._get("/x/web-interface/card", {"mid": mid})
+            card_data = (card.get("data") or {}) if card and card.get("code") == 0 else {}
+            inner = card_data.get("card") if isinstance(card_data.get("card"), dict) else {}
+            if not inner:
+                result["message"] = (_error_message(payload, "空间信息获取失败")
+                                     if payload else "空间信息获取失败，请稍后重试")
+                return result
+            profile["mid"] = str(inner.get("mid") or mid)
+            profile["name"] = str(inner.get("name") or "")
+            profile["face"] = _absolute_url(inner.get("face"))
+            profile["sign"] = str(inner.get("sign") or "")
+            level_info = inner.get("level_info")
+            if isinstance(level_info, dict):
+                profile["level"] = _as_int(level_info.get("current_level"))
         # 粉丝数、关注数、投稿数在另一个路由上；它失败就留 0。
         upstat = self._get("/x/space/upstat", {"mid": mid})
         if upstat and upstat.get("code") == 0:

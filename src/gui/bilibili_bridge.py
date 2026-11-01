@@ -406,16 +406,31 @@ class BilibiliBridge:
         }
 
     def send_sms_code(self, tel: str, cid: str = "86") -> dict[str, Any]:
-        """Send a verification code to a phone number."""
+        """Send a verification code to a phone number.
+
+        The answer carries the ``captcha_key`` that the login step has to
+        send back, so it is handed to the frontend.
+        """
         result = self._client.send_sms_code(tel, cid=cid) or {}
         return {
             "success": bool(result.get("success")),
+            "captcha_key": str(result.get("captcha_key") or ""),
+            # When the risk control fires, the server hands out the page
+            # the user has to solve the slider on.
+            "captcha_required": bool(result.get("captcha_required")),
+            "recaptcha_url": str(result.get("recaptcha_url") or ""),
             "message": str(result.get("message") or ""),
         }
 
-    def login_sms(self, tel: str, code: str, cid: str = "86") -> dict[str, Any]:
-        """Sign in with the code sent to a phone number."""
-        result = self._client.login_sms(tel, code, cid=cid) or {}
+    def login_sms(self, tel: str, code: str, cid: str = "86",
+                  captcha_key: str = "") -> dict[str, Any]:
+        """Sign in with the code sent to a phone number.
+
+        ``captcha_key`` is the one the send step handed out; without it the
+        server answers ``86205``（验证码失效）.
+        """
+        result = self._client.login_sms(tel, code, cid=cid,
+                                         captcha_key=captcha_key) or {}
         ok = bool(result.get("success"))
         if ok:
             self._remember(str(result.get("cookie") or ""))
