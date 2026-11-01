@@ -370,6 +370,25 @@ def _duration_seconds(value: Any) -> int:
     return total
 
 
+def _codec_rank(codecs: Any) -> int:
+    """Rank a codec string so that the one every webview can decode wins.
+
+    B站 hands out the same quality three times, once as avc1 (H.264), once
+    as hvc1 (HEVC) and once as av01 (AV1).  WKWebView plays H.264 and
+    nothing else, so a HEVC or AV1 stream decodes into a black picture
+    while the sound keeps playing.  Higher is better, and the sort in
+    ``_pick_video`` is descending, so avc1 has to carry the largest number.
+    """
+    text = str(codecs or "").lower()
+    if "avc1" in text or "avc" in text:
+        return 3
+    if "hev" in text or "hvc" in text:
+        return 2
+    if "av01" in text:
+        return 1
+    return 0
+
+
 def _absolute_url(url: Any) -> str:
     """Turn ``//i0.hdslb.com/x.jpg`` and ``http://`` into an ``https://`` URL."""
     text = str(url or "").strip()
@@ -1637,6 +1656,12 @@ class BiliClient:
         The ``id`` of a DASH video entry is the quality code; the entries
         the server sends may also carry a resolution the caller did not
         ask for, so the filter comes first.
+
+        The same quality is offered more than once, once per codec: avc1
+        (H.264), hvc1 (HEVC) and av01 (AV1).  Only H.264 plays in every
+        webview, so it comes first: picking HEVC or AV1 gives a stream the
+        player cannot decode, and the video stays black while the sound
+        plays.
         """
         wanted = int(quality or 0)
         usable = [
@@ -1647,11 +1672,9 @@ class BiliClient:
         ]
         if not usable:
             return None
-        # Same resolution is offered more than once (different bitrates and
-        # different CDN hosts).  Taking the first entry in the answer picks a
-        # 750 kB/s stream where a 2.6 MB/s one was right next to it.
         usable.sort(
             key=lambda entry: (int(entry.get("height") or 0),
+                               _codec_rank(entry.get("codecs")),
                                int(entry.get("bandwidth") or 0),
                                int(entry.get("id") or 0)),
             reverse=True,
@@ -2617,18 +2640,23 @@ class BiliClient:
             progress = 0
         # 这里的上传者是一个对象，不是字符串。
         author = item.get("author") if isinstance(item.get("author"), dict) else {}
+        # 稿件号藏在 history 子对象里：bvid / oid(aid) / cid / business 都在那
+        # 儿，顶层只有标题、封面和进度。取顶层的话 bvid 一直是空串，
+        # 历史列表里的条目就点不开。
+        raw_history = item.get("history")
+        history: dict[str, Any] = raw_history if isinstance(raw_history, dict) else {}
         return {
-            "bvid": str(item.get("bvid") or ""),
-            "aid": _as_int(item.get("aid")),
+            "bvid": str(item.get("bvid") or history.get("bvid") or ""),
+            "aid": _as_int(item.get("aid")) or _as_int(history.get("oid")),
             "title": str(item.get("title") or ""),
             "cover": _absolute_url(item.get("cover")),
             "author": str(author.get("name") or item.get("author_name") or ""),
-            "author_mid": str(author.get("mid") or ""),
+            "author_mid": str(author.get("mid") or item.get("author_mid") or ""),
             "duration": duration,
             "viewed_at": _as_int(item.get("view_at")),
             "progress": progress,
-            "business": str(item.get("business") or ""),
-            "cid": _as_int(item.get("cid")),
+            "business": str(item.get("business") or history.get("business") or ""),
+            "cid": _as_int(item.get("cid")) or _as_int(history.get("cid")),
         }
 
     def _from_space_video(self, item: dict[str, Any]) -> dict[str, Any]:

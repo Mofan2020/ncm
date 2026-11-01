@@ -18,6 +18,7 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -306,6 +307,11 @@ class GuiBridge:
                 "background_dim": self.settings.ui.background_dim,
                 "glass": self.settings.ui.glass,
                 "accent_from_background": self.settings.ui.accent_from_background,
+                # 自动更新的两个开关和「跳过的版本」：漏进回包的话，
+                # 设置面板读回来永远是默认值。
+                "check_updates_on_start": self.settings.ui.check_updates_on_start,
+                "auto_install_updates": self.settings.ui.auto_install_updates,
+                "skipped_update_versions": list(self.settings.ui.skipped_update_versions or []),
             },
             "auth": {
                 "remember_login": self.settings.auth.remember_login,
@@ -319,6 +325,11 @@ class GuiBridge:
                 "merge_audio": self.settings.bili.merge_audio,
                 "download_dir": self.settings.bili.download_dir or self._download_dir(),
                 "separate_player_window": self.settings.bili.separate_player_window,
+                # 这三个是新加的，漏掉的话设置面板读回来永远是「没勾选」，
+                # 用户点保存看着像生效了，其实什么都没存。
+                "report_playback": self.settings.bili.report_playback,
+                "interest_tags": list(self.settings.bili.interest_tags),
+                "blocked_tags": list(self.settings.bili.blocked_tags),
             },
             "debug": self.settings.debug,
         }
@@ -335,7 +346,9 @@ class GuiBridge:
                 self.settings.update_bili(**self._clean(data, {
                     "quality", "danmaku_enabled", "danmaku_font_size",
                     "danmaku_opacity", "download_audio", "merge_audio",
-                    "download_dir", "separate_player_window"}))
+                    "download_dir", "separate_player_window",
+                    # 少了这三个，播放上报的开关和两个关键词栏点保存就没反应。
+                    "report_playback", "interest_tags", "blocked_tags"}))
             elif category == "ui":
                 self.settings.update_ui(**self._clean(data, {
                     "language", "theme", "remember_window_size", "background_image",
@@ -346,7 +359,10 @@ class GuiBridge:
                     # dropped and never persisted.
                     "desktop_lyrics_font_size", "desktop_lyrics_color",
                     "desktop_lyrics_opacity", "desktop_lyrics_show_translation",
-                    "desktop_lyrics_background", "desktop_lyrics_text_style"}))
+                    "desktop_lyrics_background", "desktop_lyrics_text_style",
+                    # 自动更新：同样要在白名单里，否则开关点了也存不下。
+                    "check_updates_on_start", "auto_install_updates",
+                    "skipped_update_versions"}))
                 if "language" in data:
                     self.i18n.set_language(str(data["language"]))
                 if "theme" in data:
@@ -1177,6 +1193,112 @@ class GuiBridge:
                 subprocess.Popen(["xdg-open", path])
             return True
         except Exception as exc:
+            self.logger.warning("cannot open %s: %s", path, exc)
+            return False
+
+    # -- application update ----------------------------------------------------
+    def check_app_update(self, include_prerelease: bool = False) -> dict[str, Any]:
+        """Ask GitHub whether a newer release exists.
+
+        The user can skip a version; a skipped tag is reported back as
+        ``skipped: true`` so the UI can stay quiet about it instead of
+        asking the same question on every start.
+        """
+        from src.core.updater import check_for_update
+        from src.version import __version__
+
+        try:
+            result = check_for_update(__version__, include_prerelease=include_prerelease)
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("update check failed: %s", exc)
+            return {"success": False, "message": str(exc), "skipped": False}
+        skipped = str(result.get("latest") or "") in [
+            str(item) for item in (self.settings.ui.skipped_update_versions or [])
+        ]
+        result["skipped"] = skipped
+        # The frontend has to pick the file for this machine; it needs the
+        # platform and the CPU it is running on to do that.
+        result["platform"] = "windows" if os.name == "nt" else "macos"
+        machine = platform.machine().lower()
+        if machine in ("arm64", "aarch64"):
+            result["arch"] = "arm64"
+        elif machine in ("x86_64", "amd64"):
+            result["arch"] = "x64"
+        else:
+            result["arch"] = machine
+        # Only a really newer version is worth a popup.
+        result["available"] = bool(result.get("success")
+                                   and result.get("version")
+                                   and result.get("version") != __version__
+                                   and result.get("message", "").startswith("发现新版本"))
+        return result
+
+    def skip_app_update(self, version: str = "") -> dict[str, Any]:
+        """Remember that this release is not wanted."""
+        tag = str(version or "").strip()
+        if not tag:
+            return {"success": False, "message": "缺少版本号"}
+        versions = [str(item) for item in (self.settings.ui.skipped_update_versions or [])]
+        if tag not in versions:
+            versions.append(tag)
+        self.settings.update_ui(skipped_update_versions=versions[-20:])
+        return {"success": True, "message": ""}
+
+    def download_app_update(self, url: str = "", filename: str = "") -> dict[str, Any]:
+        """Download one release asset into the temp folder and return its path.
+
+        The bytes never go through the webview: the UI only ever sees the
+        path on disk, and only then can it ask to install it.
+        """
+        from src.core.updater import download_asset
+
+        target_url = str(url or "").strip()
+        if not target_url:
+            return {"success": False, "message": "缺少下载地址", "path": ""}
+        name = str(filename or "").strip() or target_url.rsplit("/", 1)[-1] or "update.bin"
+        # 只取文件名部分，别让服务器给的路径跳出临时目录。
+        name = Path(name).name
+        dest = Path(tempfile.gettempdir()) / "skycmedia-update" / name
+        try:
+            result = download_asset(target_url, str(dest))
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("update download failed: %s", exc)
+            return {"success": False, "message": str(exc), "path": ""}
+        return result
+
+    def install_app_update(self, path: str = "") -> dict[str, Any]:
+        """Replace the running application with the downloaded artefact."""
+        from src.core.updater import install_update
+
+        source = str(path or "").strip()
+        if not source:
+            return {"success": False, "message": "缺少更新文件", "needs_restart": False}
+        try:
+            return install_update(source)
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("update install failed: %s", exc)
+            return {"success": False, "message": str(exc), "needs_restart": False}
+
+    # -- application update (end) ---------------------------------------------
+
+    def open_bili_download_folder(self) -> bool:
+        """Open the folder the Bilibili videos are downloaded to.
+
+        Bilibili has a download directory of its own; the NetEase one is
+        often a different place, and opening that one would show the user
+        the wrong folder.
+        """
+        path = str(self.settings.bili.download_dir or self._download_dir())
+        try:
+            system = platform.system()
+            if system == "Darwin":
+                subprocess.Popen(["open", path])
+            elif system == "Windows":
+                subprocess.Popen(["explorer", str(Path(path))])
+            else:
+                subprocess.Popen(["xdg-open", path])
+            return True
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
             self.logger.warning("cannot open %s: %s", path, exc)
             return False
 
@@ -3159,15 +3281,25 @@ class GuiBridge:
     def check_for_update(self, force: bool = False) -> dict[str, Any]:
         """Ask GitHub whether a newer release exists.
 
-        Advisory only: the app never downloads or installs anything, so the
-        UI just shows a corner notice.  Every failure is swallowed -- being
-        offline must not produce an error the user did not ask for.
+        Kept for the corner notice of the main window; the settings page
+        calls :meth:`check_app_update`, which returns the same facts plus
+        the files to download.  Both go through ``src/core/updater`` so the
+        two places can never disagree about what the newest version is.
         """
+        from src.core.updater import check_for_update as _check
+        from src.version import __version__
+
         try:
-            return self._update_checker.check(force=force)
+            result = _check(__version__)
         except Exception as exc:  # pragma: no cover - defensive
             self.logger.info("update check failed: %s", exc)
             return {"success": False, "available": False, "current": __version__}
+        # The notice only knows "available" and the page to open.
+        result["available"] = bool(
+            result.get("success") and result.get("version")
+            and result.get("message", "").startswith("发现新版本")
+        )
+        return result
 
     # ------------------------------------------------------------- disclaimer
     def quit_app(self) -> dict[str, Any]:

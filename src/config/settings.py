@@ -184,6 +184,15 @@ class UISettings:
     #: version that was shown, so a new disclaimer is shown again after an
     #: update that changes the text.
     disclaimer_accepted_version: str = ""
+    #: Look for a new release when the app starts.  Off by default: checking
+    #: costs a request to GitHub on every launch, and the answer is only
+    #: useful when the user actually wants to upgrade.
+    check_updates_on_start: bool = False
+    #: 发现新版本后自动下载并替换，还是先问一句。默认先问：
+    #: 自动替换会在用户没看着的时候换掉他正在用的程序。
+    auto_install_updates: bool = False
+    #: Tags of the releases the user said "skip this one" to, newest last.
+    skipped_update_versions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -359,8 +368,15 @@ class Settings:
             ui.desktop_lyrics_text_style = "white"
         ui.background_blur = self._clamp_range(ui.background_blur, 0, 40, 24)
         ui.background_dim = self._clamp_range(ui.background_dim, 0, 80, 30)
-        for flag in ("remember_window_size", "glass", "accent_from_background"):
+        for flag in ("remember_window_size", "glass", "accent_from_background",
+                     "check_updates_on_start", "auto_install_updates"):
             setattr(ui, flag, _as_bool(getattr(ui, flag)))
+        if not isinstance(ui.skipped_update_versions, list):
+            ui.skipped_update_versions = []
+        ui.skipped_update_versions = [
+            str(item).strip() for item in ui.skipped_update_versions
+            if str(item or "").strip()
+        ]
         ui.desktop_lyrics_font_size = self._clamp_range(ui.desktop_lyrics_font_size, 10, 36, 18)
         ui.desktop_lyrics_opacity = self._clamp_float(ui.desktop_lyrics_opacity, 0.1, 1.0, 0.9)
         if not ui.desktop_lyrics_color or not str(ui.desktop_lyrics_color).startswith("#"):

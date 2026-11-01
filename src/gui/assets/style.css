@@ -2812,3 +2812,19 @@ input[type="range"]::-webkit-slider-thumb {
     height: 100%; width: 0; border-radius: 2px; background: var(--accent, #c4302b);
     transition: width 0.2s linear;
 }
+
+/* ------------------------------------------------- B站下载页 + 更新面板 */
+
+/* 下载队列复用 song-row 的骨架，只是勾选框在最前面。 */
+#bili-download-list .song-row { align-items: center; gap: 10px; }
+#bili-download-list .song-row input[type="checkbox"] { flex: 0 0 auto; }
+
+/* 更新说明是纯文本，保留 GitHub 发来的换行。 */
+.update-notes {
+    margin: 8px 0 0; padding: 10px 12px; max-height: 220px; overflow: auto;
+    font-size: 12px; line-height: 1.6; white-space: pre-wrap;
+    border-radius: var(--radius-sm); background: var(--sunken);
+    border: 1px solid var(--glass-border);
+}
+
+#update-status { display: block; margin-bottom: 6px; }

@@ -44,9 +44,11 @@
         <nav class="top-tabs" id="top-tabs" role="tablist">
             <button class="top-tab is-active" type="button" data-view="home"
                     data-sections="home" data-i18n="tabs.home"></button>
-            <button class="top-tab" type="button" data-view="player"
+            <!-- data-bili-view：B站分区里这两个按钮要停在 B站自己的页面，
+                 不然点「下载」会跳到网易云的下载页。 -->
+            <button class="top-tab" type="button" data-view="player" data-bili-view="bili"
                     data-sections="netease bili" data-i18n="tabs.player"></button>
-            <button class="top-tab" type="button" data-view="download"
+            <button class="top-tab" type="button" data-view="download" data-bili-view="bili-download"
                     data-sections="netease bili" data-i18n="tabs.download"></button>
             <button class="top-tab" type="button" data-view="bili-space" data-sections="bili"
                     data-i18n="bili.tab_space"></button>
@@ -371,6 +373,85 @@
                             data-i18n="bili.load_more"></button>
                     <div class="result-end" id="bili-history-end" hidden></div>
                 </div>
+            </div>
+        </section>
+
+        <!-- ======================== B站下载页 ======================== -->
+        <section class="view" id="view-bili-download">
+            <div class="bili-page">
+                <div class="page-head">
+                    <button class="btn btn-icon" id="btn-bili-download-back" type="button"
+                            data-icon="back" data-i18n-title="home.back_home" aria-label="back"></button>
+                    <h1 class="page-title" id="bili-download-title" tabindex="-1" data-i18n="bili.download_title"></h1>
+                    <div class="page-actions">
+                        <button class="btn btn-icon" id="btn-bili-download-refresh" type="button"
+                                data-icon="refresh" data-i18n-title="bili.refresh" aria-label="refresh"></button>
+                    </div>
+                </div>
+
+                <section class="card glass">
+                    <div class="card-body">
+                        <div class="option-grid">
+                            <label class="option">
+                                <span data-i18n="bili.download_quality_label"></span>
+                                <select id="bili-download-quality">
+                                    <option value="0" data-i18n="bili.quality_auto"></option>
+                                    <option value="16" data-i18n="bili.quality_360"></option>
+                                    <option value="32" data-i18n="bili.quality_480"></option>
+                                    <option value="64" data-i18n="bili.quality_720"></option>
+                                    <option value="80" data-i18n="bili.quality_1080"></option>
+                                    <option value="112" data-i18n="bili.quality_1080plus"></option>
+                                    <option value="120" data-i18n="bili.quality_4k"></option>
+                                </select>
+                            </label>
+                            <label class="option">
+                                <span data-i18n="bili.download_concurrent_label"></span>
+                                <select id="bili-download-concurrent">
+                                    <option value="1">1</option>
+                                    <option value="2">2</option>
+                                    <option value="3">3</option>
+                                </select>
+                            </label>
+                            <label class="option checkbox">
+                                <input type="checkbox" id="bili-download-overwrite">
+                                <span data-i18n="bili.download_overwrite_label"></span>
+                            </label>
+                            <label class="option checkbox">
+                                <input type="checkbox" id="bili-download-merge" checked>
+                                <span data-i18n="bili.download_merge_label"></span>
+                            </label>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 待下载的队列：勾选后可以一次全下 -->
+                <section class="card glass">
+                    <div class="card-head">
+                        <h2>
+                            <span data-i18n="bili.download_queue_title"></span>
+                            <span id="bili-download-count" class="muted"></span>
+                        </h2>
+                        <div class="card-head-actions">
+                            <button id="btn-bili-download-select-all" class="btn btn-sm" type="button"
+                                    data-i18n="download.select_all"></button>
+                            <button id="btn-bili-download-select-none" class="btn btn-sm" type="button"
+                                    data-i18n="download.deselect_all"></button>
+                            <button id="btn-bili-download-clear" class="btn btn-sm" type="button"
+                                    data-i18n="bili.download_clear"></button>
+                        </div>
+                    </div>
+                    <div class="song-list" id="bili-download-list"></div>
+                    <div class="card-body">
+                        <div class="download-controls">
+                            <button id="btn-bili-download-start" class="btn btn-primary btn-lg" type="button"
+                                    disabled data-i18n="bili.download_start_btn"></button>
+                            <button id="btn-bili-download-open-folder" class="btn btn-ghost" type="button"
+                                    data-i18n="download.open_folder"></button>
+                        </div>
+                        <!-- 进度走右下角那个全局浮层，两边看到的进度是同一份。 -->
+                        <p class="muted" data-i18n="bili.download_progress_hint"></p>
+                    </div>
+                </section>
             </div>
         </section>
 
@@ -814,6 +895,30 @@
                         <input type="checkbox" id="accent-check">
                         <span data-i18n="settings.accent_from_background"></span>
                     </label>
+                </div>
+
+                <div class="group">
+                    <h3 class="group-title" data-i18n="settings.updates"></h3>
+                    <label class="option checkbox">
+                        <input type="checkbox" id="update-on-start-check">
+                        <span data-i18n="settings.update_on_start"></span>
+                    </label>
+                    <label class="option checkbox indent">
+                        <input type="checkbox" id="update-auto-install-check">
+                        <span data-i18n="settings.update_auto_install"></span>
+                    </label>
+                    <div class="option">
+                        <span id="update-status" class="muted"></span>
+                        <div class="inline-form">
+                            <button id="btn-check-update" class="btn btn-secondary" type="button"
+                                    data-i18n="settings.update_check_btn"></button>
+                            <button id="btn-download-update" class="btn btn-primary" type="button"
+                                    disabled data-i18n="settings.update_download_btn"></button>
+                            <button id="btn-install-update" class="btn btn-danger" type="button"
+                                    hidden data-i18n="settings.update_install_btn"></button>
+                        </div>
+                    </div>
+                    <pre class="update-notes muted" id="update-notes" hidden></pre>
                 </div>
             </div>
 

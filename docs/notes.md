@@ -3235,3 +3235,77 @@ GET https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs
   点过一遍**。
 - 「不感兴趣」按钮没做：接口参数拿到了，但那是写操作，要单独加确认再上。
 - 心跳上报的真实返回没验（写操作，不拿用户账号试）。
+
+## 2026-11-01 第三批：编码选择、B站下载页、自动更新
+
+### 只剩声音没有画面：挑错了编码
+
+B站 `/x/player/wbi/playurl` 对**同一个画质**会返回三条 `dash.video`：avc1（H.264）、
+hvc1（HEVC）、av01（AV1），带宽各不相同。`_pick_video` 原来按 `(height, bandwidth, id)`
+倒序取第一条——AV1 的带宽常常最高，于是挑中了它。
+
+实测本机 WKWebView 的 MediaSource：
+
+```
+avc1.640033        true
+hvc1.1.6.L150.90   true
+av01.0.08M...      false     ← 解不出来
+```
+
+解码失败不会抛错，只是画面不更新：声音照放，图是黑的。这就是「只有声音没有画面」。
+修法是加 `_codec_rank()`，把编码偏好插进排序键的**第二位**（height 之后、bandwidth 之前），
+H.264 优先、HEVC 次之、AV1 最后。画质档位不变（`id` 的过滤在前），只是同档位内换编码。
+**代价**：同档位内 H.264 的码率通常低于 HEVC/AV1，画面细节会略降——能播比码率高重要。
+
+### 顶部菜单把 B站用户踢回网易云
+
+`#top-tabs` 里「播放」「下载」两个按钮 `data-sections="netease bili"`，两个分区都显示，
+但 `data-view` 指向 `player`/`download`——那是网易云的视图。B站分区里点「下载」就跳到
+网易云的下载页。现在按钮多带一个 `data-bili-view`，点击时先看当前分区（`currentSection()`
+认 `bili-download`），在 B站就切到 B站的目标视图。`showView`/`showSection` 同时维护
+`lastView`，否则点击处理器不知道自己在哪个分区。
+
+### B站下载页与批量
+
+- 后端本来就是批量的：`BiliDownloader.download(items)` 走 `ThreadPoolExecutor`，
+  `bilibili_bridge.download(tracks, options)` 直接吃数组。**这次没改后端**。
+- 前端加了 `biliDownloadQueue`：卡片按钮从「下载」改成「加入下载」，下载页里勾选 + 批量启动。
+  单个下载和批量走同一条路径，只是选中集大小不同，行为不会分叉。
+- 进度复用右下角全局浮层 `#bili-download-stack`，没有另起一套进度显示。
+- 「打开目录」新增 `open_bili_download_folder()`：B站有独立的 `bili.download_dir`，
+  用网易云那个会开错文件夹。
+
+### 自动更新
+
+- 核心是 `src/core/updater.py`（新），**删掉了 `src/core/updates.py`（旧）和它的测试**。
+  旧的只提示、不下载；两套并存会漂移。旧的 13 个测试全部被新的 38 个覆盖。
+- **根因**：旧 `bridge.check_for_update()` 调 `self._update_checker`，而那个属性
+  **从来没被初始化过**——一调就 `AttributeError`，被 `except` 吞掉返回 `success: False`。
+  也就是说启动时那次检查**永远是失败的**，功能从来没工作过。
+- 现在 `check_for_update`（角落提示）和 `check_app_update`（设置页）都走
+  `src/core/updater`，两处答案不可能不一致。
+- 默认两个开关都关：`ui.check_updates_on_start` / `ui.auto_install_updates`。
+  自动装更新会在用户没看着的时候换掉正在用的程序，这得他自己选。
+- `checkForUpdates(false)` 从 `loadSettings()` **之前**挪到之后：开关存在设置里，
+  读早了 `state.settings` 还是空的，永远是关。
+- 设置回包和白名单都补了这三个字段（`check_updates_on_start` / `auto_install_updates` /
+  `skipped_update_versions`）——跟 `report_playback` 那次是同一个坑：回包漏字段，
+  设置面板读回来永远是默认值。
+
+### PyInstaller 里的 TLS
+
+`urllib` 的 TLS 上下文来自编译进解释器的 OpenSSL 路径，**打包后那些路径不存在**，
+冻结应用里每个 HTTPS 请求都会 `certificate verify failed`。`requests` 靠 `certifi`
+绕开了这个，`updater.py` 也加了同样的兜底（`_ssl_context()`，`try/except ImportError`，
+不加依赖）。
+
+### 没做 / 验不了的
+
+- 全量 `1154 passed, 6 skipped`、`ruff 0.12.12 All checks passed!`（与 CI 同版本）。
+- **没有在真实应用窗口里点过**这批 UI：下载页的勾选/批量、更新面板的三步、
+  顶部菜单在 B站分区里的跳转。只过了 `node --check`、i18n 校验和 Python 测试。
+- 真实 GitHub API 从 Python 没打通：本机 MITM 代理的证书没有被任何 CA bundle 信任，
+  `requests` 一样失败。逻辑用关闭校验的临时脚本验证过（返回 v3.5.4、6 个资产分类正确；
+  预发布路径返回 v3.9.2、新资产名 `SkycMedia-*`）。**真实 TLS 和冻结应用的安装流程没验。**
+- `.dmg` 安装路径（走 `hdiutil attach`）没验，没有 dmg fixture。
+- 写操作（投币、发私信、上报播放）都没拿真实账号试。

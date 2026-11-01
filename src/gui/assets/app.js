@@ -130,8 +130,9 @@ async function boot() {
         state.mediaBaseUrl = state.appInfo.media_base_url;
     }
         // Fire and forget: a slow or offline GitHub must not delay the boot.
-        checkForUpdates(false);
+        // 放在 loadSettings 之后：开关本身存在设置里，读早了永远是关。
         await loadSettings();
+        checkForUpdates(false);
         const loginStatus = await state.api.get_login_status();
         state.loggedIn = !!(loginStatus && loginStatus.is_logged_in);
         await refreshLoginStatus();
@@ -663,6 +664,10 @@ function formatAccountDate(value) {
  */
 async function checkForUpdates(force) {
     if (!state.api || !state.api.check_for_update) return;
+    // 主动检查是用户自己开的开关；启动时这一次只在开关打开时跑。
+    const wanted = force || (state.settings && state.settings.ui
+        && state.settings.ui.check_updates_on_start === true);
+    if (!wanted) return;
     let result;
     try {
         result = await state.api.check_for_update(Boolean(force));
@@ -827,6 +832,10 @@ function fillSettingsForm() {
     setValue('bili-blocked-tags', (bili.blocked_tags || []).join('，'));
     updateBiliSettingsLabels();
     renderBiliSettingsAccount();
+
+    // updates
+    setChecked('update-on-start-check', s.ui.check_updates_on_start === true);
+    setChecked('update-auto-install-check', s.ui.auto_install_updates === true);
 
     // desktop lyrics
     setValue('desktop-lyrics-font-size', s.ui.desktop_lyrics_font_size || 18);
@@ -1054,6 +1063,8 @@ async function saveSettings() {
             desktop_lyrics_show_translation: document.getElementById('desktop-lyrics-translation-check').checked,
             desktop_lyrics_background: document.getElementById('desktop-lyrics-background').value,
             desktop_lyrics_text_style: document.getElementById('desktop-lyrics-text-style').value,
+            check_updates_on_start: document.getElementById('update-on-start-check').checked,
+            auto_install_updates: document.getElementById('update-auto-install-check').checked,
         },
         auth: {
             remember_login: document.getElementById('remember-login-check').checked,
@@ -1089,6 +1100,136 @@ async function saveSettings() {
     applyPlaybackSettings();
     showToast('success', t('settings.saved'));
     closeModal('settings-modal');
+}
+
+/* ------------------------------------------------------- application update */
+
+/** What the update panel knows right now. */
+const appUpdate = {
+    latest: '',
+    version: '',
+    notes: '',
+    assetUrl: '',
+    assetName: '',
+    stage: 'idle',   // idle|available|downloaded|installing
+    busy: false
+};
+
+/** Draw the update panel from ``appUpdate`` and the last answer. */
+function renderAppUpdate(message) {
+    const status = document.getElementById('update-status');
+    const notes = document.getElementById('update-notes');
+    const download = document.getElementById('btn-download-update');
+    const install = document.getElementById('btn-install-update');
+    const check = document.getElementById('btn-check-update');
+    if (status && message) status.textContent = message;
+    if (notes) {
+        notes.hidden = !appUpdate.notes;
+        notes.textContent = appUpdate.notes || '';
+    }
+    if (download) {
+        download.hidden = appUpdate.stage === 'downloaded' || appUpdate.stage === 'installing';
+        download.disabled = appUpdate.busy || !appUpdate.assetUrl;
+    }
+    if (install) install.hidden = appUpdate.stage !== 'downloaded';
+    if (check) check.disabled = appUpdate.busy;
+}
+
+/** Ask GitHub whether a newer release exists. */
+async function checkAppUpdate(options) {
+    const opts = options || {};
+    if (appUpdate.busy) return;
+    if (!bridgeHas('check_app_update')) return;
+    appUpdate.busy = true;
+    renderAppUpdate(t('settings.update_checking'));
+    try {
+        const result = await state.api.check_app_update(!!opts.includePrerelease);
+        if (!result || !result.success) {
+            renderAppUpdate(t('settings.update_check_failed', {
+                message: (result && result.message) || ''
+            }));
+            return;
+        }
+        appUpdate.latest = result.latest || '';
+        appUpdate.version = result.version || '';
+        appUpdate.notes = result.notes || '';
+        // Pick the asset for this machine.  The backend classifies every
+        // file as "macos-arm64" / "windows-x64" / "other", so the frontend
+        // only has to compare that against the running platform instead of
+        // parsing file names itself.
+        const assets = result.assets || [];
+        const platform = result.platform || '';
+        const arch = result.arch || '';
+        const exact = assets.find((asset) =>
+            String(asset.kind || '') === platform + '-' + arch);
+        const loose = assets.find((asset) =>
+            String(asset.kind || '').split('-')[0] === platform);
+        const chosen = exact || loose || assets[0] || null;
+        appUpdate.assetUrl = chosen ? String(chosen.url || chosen.browser_url || '') : '';
+        appUpdate.assetName = chosen ? String(chosen.name || '') : '';
+        appUpdate.stage = result.available ? 'available' : 'idle';
+        renderAppUpdate(result.available
+            ? t('settings.update_available', { version: appUpdate.version })
+            : t('settings.update_up_to_date', { version: result.current || '' }));
+    } catch (err) {
+        renderAppUpdate(t('settings.update_check_failed', { message: String(err) }));
+    } finally {
+        appUpdate.busy = false;
+        renderAppUpdate();
+    }
+}
+
+/** Download the release asset into the temp folder. */
+async function downloadAppUpdate() {
+    if (appUpdate.busy || !appUpdate.assetUrl) return;
+    if (!bridgeHas('download_app_update')) return;
+    appUpdate.busy = true;
+    renderAppUpdate(t('settings.update_downloading'));
+    try {
+        const result = await state.api.download_app_update(appUpdate.assetUrl, appUpdate.assetName);
+        if (!result || !result.success) {
+            renderAppUpdate(t('settings.update_download_failed', {
+                message: (result && result.message) || ''
+            }));
+            return;
+        }
+        appUpdate.assetPath = result.path || '';
+        appUpdate.stage = 'downloaded';
+        renderAppUpdate(t('settings.update_downloaded'));
+    } catch (err) {
+        renderAppUpdate(t('settings.update_download_failed', { message: String(err) }));
+    } finally {
+        appUpdate.busy = false;
+        renderAppUpdate();
+    }
+}
+
+/** Put the downloaded files in place and tell the user to restart. */
+async function installAppUpdate() {
+    if (appUpdate.busy || !appUpdate.assetPath) return;
+    if (!bridgeHas('install_app_update')) return;
+    if (!await confirmDialog('settings.update_install_confirm')) return;
+    appUpdate.busy = true;
+    appUpdate.stage = 'installing';
+    renderAppUpdate(t('settings.update_installing'));
+    try {
+        const result = await state.api.install_app_update(appUpdate.assetPath);
+        if (!result || !result.success) {
+            appUpdate.stage = 'downloaded';
+            renderAppUpdate(t('settings.update_install_failed', {
+                message: (result && result.message) || ''
+            }));
+            return;
+        }
+        showToast('success', t('settings.update_installed'), 10000);
+        renderAppUpdate(t('settings.update_restart_hint'));
+    } catch (err) {
+        appUpdate.stage = 'downloaded';
+        renderAppUpdate(t('settings.update_install_failed', { message: String(err) }));
+    } finally {
+        appUpdate.busy = false;
+        renderAppUpdate();
+    }
 }
 
 /** Re-read the playback settings after they changed. */
@@ -2170,12 +2311,23 @@ function upsertQueueItem(task) {
 
 const audio = document.getElementById('audio');
 
+/**
+ * The view that is on screen right now.
+ *
+ * The header tabs need it to know which section the user is in: the same
+ * tab means "play" in the NetEase half and something else in the Bilibili
+ * half, so the click handler has to know where it is coming from.
+ */
+let lastView = 'home';
+
 /** Switch between the download and the player view. */
 function showView(name) {
+    lastView = name;
     // Only the header tabs follow the view; the segmented control inside the
     // search page carries the class too and must keep its own state.
     document.querySelectorAll('#top-tabs .top-tab').forEach((tab) =>
-        tab.classList.toggle('is-active', tab.dataset.view === name));
+        tab.classList.toggle('is-active', tab.dataset.view === name
+            || tab.dataset.biliView === name));
     document.querySelectorAll('.view').forEach((view) =>
         view.classList.toggle('is-active', view.id === 'view-' + name));
     syncTopTabs(name);
@@ -2188,6 +2340,11 @@ function showView(name) {
     if (name === 'player') {
         selectSource(player.sourceTab);
     }
+    // The download page is drawn from the queue, which may have changed
+    // while another view was on screen.
+    if (name === 'bili-download') {
+        renderBiliDownloadQueue();
+    }
 }
 
 /**
@@ -2198,7 +2355,7 @@ function showView(name) {
  * of visible tabs follows the view instead of being fixed in the markup.
  */
 function currentSection(name) {
-    if (name === 'bili') return 'bili';
+    if (name === 'bili' || name === 'bili-download') return 'bili';
     if (name === 'home' || name === 'search') return name === 'search' ? 'search' : 'home';
     return 'netease';
 }
@@ -7062,7 +7219,12 @@ function bindStaticEvents() {
             else openBiliMessages();
             return;
         }
-        showView(view);
+        // 「播放」和「下载」在 B站分区里指向 B站自己的页面：那两个视图是
+        // 网易云的，直接跳过去就等于把用户踢回另一个分区。
+        const section = currentSection(lastView);
+        const target = (section === 'bili' && tab.dataset.biliView)
+            ? tab.dataset.biliView : view;
+        showView(target);
         // The section picker refreshes its counters every time it is opened.
         if (view === 'home') showHome();
     });
@@ -7912,13 +8074,15 @@ function focusPageTitle(id) {
 
 /** Show a sub view; the "home" tab stays lit because it is its parent. */
 function showSection(name) {
+    lastView = name;
     document.querySelectorAll('.view').forEach((view) => {
         view.classList.toggle('is-active', view.id === 'view-' + name);
     });
     // Which header tabs exist (and which of them reads as active) is decided
     // by the section, not by the view: see syncTopTabs.
     document.querySelectorAll('#top-tabs .top-tab').forEach((tab) => {
-        tab.classList.toggle('is-active', tab.dataset.view === name);
+        tab.classList.toggle('is-active', tab.dataset.view === name
+            || tab.dataset.biliView === name);
     });
     syncTopTabs(name);
     updateOfflineBars();
@@ -8661,8 +8825,8 @@ function biliCardElement(track) {
     const downloadButton = document.createElement('button');
     downloadButton.className = 'btn btn-sm btn-secondary';
     downloadButton.type = 'button';
-    downloadButton.textContent = t('bili.download');
-    downloadButton.addEventListener('click', () => downloadBiliTrack(track));
+    downloadButton.textContent = t('bili.download_add');
+    downloadButton.addEventListener('click', () => queueBiliDownload(track));
     actions.appendChild(playButton);
     actions.appendChild(downloadButton);
     wrap.appendChild(actions);
@@ -9961,6 +10125,131 @@ async function downloadBiliTrack(track) {
     }
 }
 
+/* ------------------------------------------------- B站下载页：队列与批量 */
+
+/**
+ * 待下载的 B站视频。
+ *
+ * 一条视频可以先放进队列，再在下载页里勾选、一起下。单个下载走的是同一条
+ * 队列，只是把勾选留在这一个上——两条路径调的是同一个后端方法，
+ * 行为不会分叉。
+ */
+const biliDownloadQueue = {
+    items: [],
+    selected: new Set()
+};
+
+/** Put one video into the queue.  The same video is only queued once. */
+function queueBiliDownload(track) {
+    if (!track || !track.bvid) return false;
+    if (biliDownloadQueue.items.some((item) => item.bvid === track.bvid)) {
+        showToast('info', t('bili.download_already_queued'));
+        return false;
+    }
+    biliDownloadQueue.items.push({
+        bvid: track.bvid,
+        name: track.name || track.title || track.bvid,
+        artists: track.artists || track.author || '',
+        cover_url: track.cover_url || '',
+        duration: track.duration || 0
+    });
+    biliDownloadQueue.selected.add(track.bvid);
+    renderBiliDownloadQueue();
+    showToast('success', t('bili.download_queued'));
+    return true;
+}
+
+/** Draw the queue of the download page. */
+function renderBiliDownloadQueue() {
+    const list = document.getElementById('bili-download-list');
+    if (!list) return;
+    const count = document.getElementById('bili-download-count');
+    const start = document.getElementById('btn-bili-download-start');
+    list.innerHTML = '';
+    if (!biliDownloadQueue.items.length) {
+        const empty = document.createElement('p');
+        empty.className = 'empty';
+        empty.textContent = t('bili.download_queue_empty');
+        list.appendChild(empty);
+    } else {
+        biliDownloadQueue.items.forEach((item) => {
+            const row = document.createElement('div');
+            row.className = 'song-row';
+            const check = document.createElement('input');
+            check.type = 'checkbox';
+            check.className = 'option checkbox';
+            check.checked = biliDownloadQueue.selected.has(item.bvid);
+            check.addEventListener('change', () => {
+                if (check.checked) biliDownloadQueue.selected.add(item.bvid);
+                else biliDownloadQueue.selected.delete(item.bvid);
+                renderBiliDownloadQueue();
+            });
+            const label = document.createElement('label');
+            label.className = 'song-main';
+            const name = document.createElement('span');
+            name.className = 'song-name';
+            name.textContent = item.name;
+            label.appendChild(name);
+            if (item.artists) {
+                const artist = document.createElement('span');
+                artist.className = 'song-artist';
+                artist.textContent = item.artists;
+                label.appendChild(artist);
+            }
+            row.appendChild(check);
+            row.appendChild(label);
+            // One video can leave the queue on its own; the rest stay.
+            const remove = document.createElement('button');
+            remove.className = 'btn btn-sm btn-ghost';
+            remove.type = 'button';
+            remove.textContent = t('bili.download_remove');
+            remove.addEventListener('click', () => {
+                biliDownloadQueue.items = biliDownloadQueue.items
+                    .filter((entry) => entry.bvid !== item.bvid);
+                biliDownloadQueue.selected.delete(item.bvid);
+                renderBiliDownloadQueue();
+            });
+            row.appendChild(remove);
+            list.appendChild(row);
+        });
+    }
+    const chosen = biliDownloadQueue.selected.size;
+    if (count) count.textContent = chosen ? '(' + chosen + ')' : '';
+    if (start) start.disabled = chosen === 0;
+}
+
+/** Download every checked video.  The backend takes the whole list. */
+async function startBiliDownloads() {
+    if (!bridgeHas('download_bilibili_tracks')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const chosen = biliDownloadQueue.items
+        .filter((item) => biliDownloadQueue.selected.has(item.bvid));
+    if (!chosen.length) return;
+    const options = {
+        quality: Number(document.getElementById('bili-download-quality')?.value || 0),
+        max_concurrent: Number(document.getElementById('bili-download-concurrent')?.value || 2),
+        overwrite: !!document.getElementById('bili-download-overwrite')?.checked,
+        merge_audio: !!document.getElementById('bili-download-merge')?.checked
+    };
+    try {
+        const result = await state.api.download_bilibili_tracks(chosen, options);
+        if (result && result.success) {
+            showToast('success', t('bili.downloading'));
+            // 清掉已经下好的，剩下的还留在队列里。
+            biliDownloadQueue.items = biliDownloadQueue.items
+                .filter((item) => !biliDownloadQueue.selected.has(item.bvid));
+            biliDownloadQueue.selected.clear();
+            renderBiliDownloadQueue();
+            return;
+        }
+        showToast('error', biliFailure(result, 'bili.download_failed'));
+    } catch (err) {
+        showToast('error', t('bili.download_failed'));
+    }
+}
+
 /* --------------------------------------- bili detail: counters, comments, danmaku */
 
 /**
@@ -10092,6 +10381,9 @@ async function openBiliDetail(bvid, info) {
     biliDetail.stat = {};
     biliDetail.liked = false;
     biliDetail.favorited = false;
+    // 投币上限是「每个视频两枚」，所以这个数字跟着视频走：换一个视频就得
+    // 从零开始，之前那个视频的枚数不该留在这里。
+    biliDetail.coinGiven = 0;
     biliDetail.comments = [];
     biliDetail.commentPage = 1;
     biliDetail.commentHasMore = false;
@@ -10192,6 +10484,9 @@ async function coinBiliVideo(count) {
         showToast('error', t('error.unknown'));
         return;
     }
+    // 先问一次服务器：这个视频已经投了几枚。数目是按视频算的，本地记着
+    // 的那个数可能是上一个视频的，或者是上次点投币之前读到的旧值。
+    await refreshBiliCoinState();
     if (count > Math.max(0, 2 - Number(biliDetail.coinGiven || 0))) {
         showToast('warning', t('bili.coin_maxed'));
         return;
@@ -11394,6 +11689,62 @@ function bindSectionEvents() {
     }
     const biliMore = document.getElementById('btn-bili-more');
     if (biliMore) biliMore.addEventListener('click', () => loadMoreBili());
+
+    // The Bilibili download page.
+    const biliDownloadBack = document.getElementById('btn-bili-download-back');
+    if (biliDownloadBack) {
+        biliDownloadBack.addEventListener('click', () => showView('bili'));
+    }
+    const biliDownloadRefresh = document.getElementById('btn-bili-download-refresh');
+    if (biliDownloadRefresh) {
+        biliDownloadRefresh.addEventListener('click', () => {
+            renderBiliDownloadQueue();
+        });
+    }
+    const biliDownloadStart = document.getElementById('btn-bili-download-start');
+    if (biliDownloadStart) {
+        biliDownloadStart.addEventListener('click', () => startBiliDownloads());
+    }
+    const biliDownloadAll = document.getElementById('btn-bili-download-select-all');
+    if (biliDownloadAll) {
+        biliDownloadAll.addEventListener('click', () => {
+            biliDownloadQueue.items.forEach((item) => {
+                biliDownloadQueue.selected.add(item.bvid);
+            });
+            renderBiliDownloadQueue();
+        });
+    }
+    const biliDownloadNone = document.getElementById('btn-bili-download-select-none');
+    if (biliDownloadNone) {
+        biliDownloadNone.addEventListener('click', () => {
+            biliDownloadQueue.selected.clear();
+            renderBiliDownloadQueue();
+        });
+    }
+    const biliDownloadClear = document.getElementById('btn-bili-download-clear');
+    if (biliDownloadClear) {
+        biliDownloadClear.addEventListener('click', () => {
+            biliDownloadQueue.items = [];
+            biliDownloadQueue.selected.clear();
+            renderBiliDownloadQueue();
+        });
+    }
+    const biliDownloadFolder = document.getElementById('btn-bili-download-open-folder');
+    if (biliDownloadFolder) {
+        biliDownloadFolder.addEventListener('click', () => {
+            if (bridgeHas('open_bili_download_folder')) {
+                state.api.open_bili_download_folder();
+            }
+        });
+    }
+
+    // The update panel.
+    const updateCheck = document.getElementById('btn-check-update');
+    if (updateCheck) updateCheck.addEventListener('click', () => checkAppUpdate());
+    const updateDownload = document.getElementById('btn-download-update');
+    if (updateDownload) updateDownload.addEventListener('click', () => downloadAppUpdate());
+    const updateInstall = document.getElementById('btn-install-update');
+    if (updateInstall) updateInstall.addEventListener('click', () => installAppUpdate());
 
     // The Bilibili settings tab.
     const biliSize = document.getElementById('bili-danmaku-size');
