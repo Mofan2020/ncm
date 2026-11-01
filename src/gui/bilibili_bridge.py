@@ -627,11 +627,24 @@ class BilibiliBridge:
         """Throw one or two coins at a video."""
         result = self._call_core("coin_video", self._client.coin_video, bvid,
                                  count, also_like)
+        # The counters changed, so the cached ones are stale; and the video may
+        # now be at the two-coin limit, which the interface has to know about.
+        self._cache.discard("stat", str(bvid or ""))
+        given = 0
         if result.get("success"):
-            self._cache.discard("stat", str(bvid or ""))
+            state = self._call_core("coins_given", self._client.coins_given, bvid)
+            given = int(state.get("given") or 0)
         return {"success": bool(result.get("success")),
                 "message": str(result.get("message") or ""),
-                "balance": int(result.get("balance") or 0)}
+                "balance": int(result.get("balance") or 0),
+                "given": given}
+
+    def coins_given(self, bvid: str) -> dict[str, Any]:
+        """How many coins this account already gave the video (0-2)."""
+        result = self._call_core("coins_given", self._client.coins_given, bvid)
+        return {"success": bool(result.get("success")),
+                "given": int(result.get("given") or 0),
+                "message": str(result.get("message") or "")}
 
     def coin_balance(self) -> dict[str, Any]:
         """The coin balance of the signed-in account."""
@@ -741,6 +754,40 @@ class BilibiliBridge:
             "has_more": bool(result.get("has_more")),
             "message": str(result.get("message") or ""),
         }
+
+    # ------------------------------------------------------------ 推荐
+    def recommend(self, page_size: int = 12, fresh_index: int = 1) -> dict[str, Any]:
+        """The home feed, as B站 thinks it should look for this account."""
+        try:
+            rows = self._client.recommend(page_size=page_size, fresh_index=fresh_index) or []
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            log.warning("bilibili recommend failed: %s", exc)
+            return {"success": False, "items": [], "count": 0,
+                    "message": "推荐加载失败，请稍后重试"}
+        items = [track_payload(item) for item in rows if isinstance(item, dict)]
+        return {"success": True, "items": items, "count": len(items), "message": ""}
+
+    def report_playback(self, bvid: str, cid: int = 0, played_time: int = 0,
+                        video_duration: int = 0, quality: int = 0,
+                        start_ts: int = 0, session: str = "",
+                        play_type: int = 0) -> dict[str, Any]:
+        """Tell B站 what is being watched -- only when the user asked for it."""
+        from src.config.settings import get_settings
+
+        if not get_settings().bili.report_playback:
+            return {"success": False, "message": "", "skipped": True}
+        if not str(bvid or "").strip():
+            return {"success": False, "message": "缺少视频号"}
+        try:
+            result = self._client.report_playback(
+                bvid, cid=cid, played_time=played_time,
+                video_duration=video_duration, quality=quality,
+                start_ts=start_ts, session=session, play_type=play_type) or {}
+        except Exception as exc:  # noqa: BLE001 - the player must not break
+            log.warning("bilibili playback report failed: %s", exc)
+            return {"success": False, "message": str(exc)}
+        return {"success": bool(result.get("success")),
+                "message": str(result.get("message") or "")}
 
     # ------------------------------------------------------------ 个人主页
     def space(self, mid: str) -> dict[str, Any]:
@@ -903,16 +950,23 @@ class BilibiliBridge:
             return {"success": False, "count": 0, "message": "没有要下载的内容"}
         options = options or {}
         download_dir = str(options.get("download_dir") or "")
-        if not download_dir:
+        merge_audio = options.get("merge_audio")
+        if not download_dir or merge_audio is None:
             from src.config.settings import get_settings
 
-            download_dir = get_settings().download.download_dir
+            settings = get_settings()
+            if not download_dir:
+                # B站在设置里有自己的目录；没设过就和网易云共用一个。
+                download_dir = settings.bili.download_dir or settings.download.download_dir
+            if merge_audio is None:
+                merge_audio = settings.bili.merge_audio
         downloader = BiliDownloader(
             download_dir,
             self._client,
             quality=_as_int(options.get("quality"), 0),
             overwrite=bool(options.get("overwrite")),
             max_concurrent=_as_int(options.get("max_concurrent"), 2),
+            merge_audio=bool(merge_audio),
         )
         if progress is not None:
             downloader.set_progress_callback(progress)

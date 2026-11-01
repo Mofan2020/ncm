@@ -1935,9 +1935,10 @@ def test_favorite_video_uses_add_media_ids():
     assert result["folder_id"] == "98765"
     call = [c for c in session.calls if "resource/deal" in c["url"]][-1]
     assert call["method"] == "POST"
-    assert call["params"]["rid"] == "98765"
+    # rid 是稿件的 aid，收藏夹 id 走 add_media_ids（纯 mlid，不带 ":2"）。
+    assert int(call["params"]["rid"]) == 115021136794799
     assert call["params"]["type"] == 2
-    assert call["params"]["add_media_ids"] == "115021136794799:2"
+    assert call["params"]["add_media_ids"] == "98765"
     assert "del_media_ids" not in call["params"]
     assert call["params"]["csrf"] == "def"
 
@@ -1950,7 +1951,8 @@ def test_favorite_video_uses_del_media_ids_to_cancel():
     result = client.favorite_video("BV1EHbhz6EHw", folder_id="98765", remove=True)
     assert result["success"] is True
     call = [c for c in session.calls if "resource/deal" in c["url"]][-1]
-    assert call["params"]["del_media_ids"] == "115021136794799:2"
+    assert call["params"]["del_media_ids"] == "98765"
+    assert int(call["params"]["rid"]) == 115021136794799
     assert "add_media_ids" not in call["params"]
 
 
@@ -1965,7 +1967,8 @@ def test_favorite_video_takes_the_default_folder_when_none_is_given():
     assert result["success"] is True
     assert result["folder_id"] == "98765"
     call = [c for c in session.calls if "resource/deal" in c["url"]][-1]
-    assert call["params"]["rid"] == "98765"
+    assert int(call["params"]["rid"]) == 115021136794799
+    assert call["params"]["add_media_ids"] == "98765"
 
 
 def test_favorite_video_reports_a_failure_instead_of_raising():

@@ -17,6 +17,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -315,6 +316,8 @@ class GuiBridge:
                 "danmaku_font_size": self.settings.bili.danmaku_font_size,
                 "danmaku_opacity": self.settings.bili.danmaku_opacity,
                 "download_audio": self.settings.bili.download_audio,
+                "merge_audio": self.settings.bili.merge_audio,
+                "download_dir": self.settings.bili.download_dir or self._download_dir(),
                 "separate_player_window": self.settings.bili.separate_player_window,
             },
             "debug": self.settings.debug,
@@ -331,8 +334,8 @@ class GuiBridge:
             elif category == "bili":
                 self.settings.update_bili(**self._clean(data, {
                     "quality", "danmaku_enabled", "danmaku_font_size",
-                    "danmaku_opacity", "download_audio",
-                    "separate_player_window"}))
+                    "danmaku_opacity", "download_audio", "merge_audio",
+                    "download_dir", "separate_player_window"}))
             elif category == "ui":
                 self.settings.update_ui(**self._clean(data, {
                     "language", "theme", "remember_window_size", "background_image",
@@ -2002,6 +2005,24 @@ class GuiBridge:
         result["tracks"] = [self._bilibili_track_payload(item) for item in items]
         return result
 
+    def get_bilibili_recommend(self, page_size: int = 12,
+                                fresh_index: int = 1) -> dict[str, Any]:
+        """The Bilibili home feed (personalised when the account is signed in)."""
+        result = self.bilibili.recommend(page_size=page_size, fresh_index=fresh_index)
+        items = result.get("items") or []
+        result["tracks"] = [self._bilibili_track_payload(item) for item in items]
+        return result
+
+    def bili_report_playback(self, bvid: str = "", cid: int = 0,
+                             played_time: int = 0, video_duration: int = 0,
+                             quality: int = 0, start_ts: int = 0,
+                             session: str = "", play_type: int = 0) -> dict[str, Any]:
+        """Report what is playing to B站 (no-op unless the setting is on)."""
+        return self.bilibili.report_playback(
+            bvid, cid=cid, played_time=played_time,
+            video_duration=video_duration, quality=quality,
+            start_ts=start_ts, session=session, play_type=play_type)
+
     def get_bilibili_audio_url(self, bvid: str, quality: int = 0) -> dict[str, Any]:
         """Resolve the audio stream of one Bilibili video."""
         return self.bilibili.audio_url(bvid, quality=quality)
@@ -2130,7 +2151,41 @@ class GuiBridge:
             window.events.closed += self._bili_player_closed(video_id)
         except Exception:  # noqa: BLE001 - a missing event is not fatal
             pass
+        self._ensure_window_bridge(window)
         return {"success": True, "opened": True, "message": "", "url": url}
+
+    def _ensure_window_bridge(self, window: Any) -> None:
+        """Make sure a window created at run time got its JS bridge.
+
+        pywebview injects ``window.pywebview`` when the page finishes loading.
+        For a window opened from a JS call that step sometimes never runs: the
+        page then has no API at all, its own scripts give up after a few
+        seconds, and the user is left looking at an empty window -- the
+        separate video window came up black for exactly this reason.
+
+        So: wait for the injection, and if it does not come, do it here.  The
+        injection goes through ``run_js``, which does not wait for the loaded
+        event, so this cannot deadlock on the event it is about to set.
+        """
+        try:
+            if window.events.loaded.wait(6):
+                return
+        except Exception:  # noqa: BLE001 - no events object at all
+            return
+        try:
+            from webview.util import inject_pywebview
+
+            platform = "cocoa" if sys.platform == "darwin" else None
+            if platform is None:
+                # The other backends are not exercised here; the page falls
+                # back to its own timeout, which stays long enough to cover
+                # a slow injection.
+                self.logger.warning("no manual bridge injection for %s", sys.platform)
+                return
+            self.logger.warning("window bridge was not injected; injecting by hand")
+            inject_pywebview(platform, window)
+        except Exception as exc:  # noqa: BLE001 - never break the window
+            self.logger.warning("could not inject the bridge by hand: %s", exc)
 
     def close_bili_player_window(self, bvid: str = "") -> dict[str, Any]:
         """Close the player window of one video (all of them without a id)."""
@@ -2198,6 +2253,10 @@ class GuiBridge:
     def get_bilibili_coin_balance(self) -> dict[str, Any]:
         """The coin balance of the signed-in Bilibili account."""
         return self.bilibili.coin_balance()
+
+    def get_bilibili_coins_given(self, bvid: str = "") -> dict[str, Any]:
+        """How many coins this account already gave one video (0-2)."""
+        return self.bilibili.coins_given(bvid)
 
     def bili_favorite_video(self, bvid: str, folder_id: str = "",
                             remove: bool = False) -> dict[str, Any]:

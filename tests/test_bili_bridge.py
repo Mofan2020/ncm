@@ -107,6 +107,11 @@ class FakeClient:
         self._record("coin_video", bvid, count, also_like)
         return {"success": True, "message": "", "balance": 42}
 
+    def coins_given(self, bvid) -> dict:
+        """B站给同一个稿件最多投两枚，这里按已投一枚回答。"""
+        self._record("coins_given", bvid)
+        return {"success": True, "given": 1, "message": ""}
+
     def coin_balance(self) -> dict:
         self._record("coin_balance")
         return {"success": True, "balance": 42, "coin": 7, "message": ""}
@@ -338,7 +343,16 @@ def test_the_like_and_the_coin_reach_the_core(bridge):
 
     names = [name for name, _ in bridge.client.calls]
     assert "like_video" in names
-    assert "coin_video" in names
+    # 投完必须把「这个视频已经投了几枚」带回去，界面据此禁用按钮。
+    assert "coins_given" in names
+    assert bridge.coin_video("BV1aa", count=1)["given"] == 1
+
+
+def test_the_coins_already_given_can_be_asked_for(bridge):
+    result = bridge.coins_given("BV1aa")
+
+    assert result["success"] is True
+    assert result["given"] == 1
 
 
 def test_the_favourite_write_reaches_the_core(bridge):

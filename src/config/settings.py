@@ -127,8 +127,24 @@ class BiliSettings:
     danmaku_opacity: float = 0.9
     #: Download the picture and the sound as two files.
     download_audio: bool = True
+    #: Put the picture and the sound back together into one .mp4 after the
+    #: download (needs ffmpeg; falls back to two files when it is missing).
+    merge_audio: bool = True
+    #: Where Bilibili downloads go.  Empty means the NetEase download folder,
+    #: so an existing install keeps working; the Bilibili half can be pointed
+    #: somewhere else without touching the music one.
+    download_dir: str = ""
     #: Play the video in its own window instead of inside the app.
     separate_player_window: bool = True
+    #: Report playback to B站 so its watch history and recommendations keep up.
+    #: Off by default: it writes to the account and it tells a third party what
+    #: is being watched, which is the user's call, not the app's.
+    report_playback: bool = False
+    #: Words the user wants more of / less of in the recommendation feed.
+    #: B站网页端没有「兴趣标签」接口，所以这些词只在本地对推荐结果做筛选：
+    #: 命中的留下并排前面，被屏蔽的直接不显示。
+    interest_tags: list[str] = field(default_factory=list)
+    blocked_tags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -378,8 +394,15 @@ class Settings:
         bili.quality = self._clamp_range(bili.quality, 0, 127, 0)
         bili.danmaku_font_size = self._clamp_range(bili.danmaku_font_size, 12, 40, 18)
         bili.danmaku_opacity = self._clamp_float(bili.danmaku_opacity, 0.2, 1.0, 0.9)
-        for flag in ("danmaku_enabled", "download_audio", "separate_player_window"):
+        for flag in ("danmaku_enabled", "download_audio", "separate_player_window",
+                     "merge_audio", "report_playback"):
             setattr(bili, flag, _as_bool(getattr(bili, flag)))
+        bili.download_dir = str(bili.download_dir or "")
+        for name in ("interest_tags", "blocked_tags"):
+            value = getattr(bili, name)
+            if not isinstance(value, list):
+                value = []
+            setattr(bili, name, [str(item).strip() for item in value if str(item or "").strip()])
 
     @staticmethod
     def _clamp_range(value: Any, low: int, high: int, fallback: int) -> int:

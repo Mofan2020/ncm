@@ -28,6 +28,7 @@
         danmakuOpacity: 0.9,
         stat: {},
         liked: false,
+        coinGiven: 0,
         comments: [],
         commentPage: 1,
         commentHasMore: false,
@@ -80,7 +81,7 @@
                     resolve(window.pywebview.api);
                     return;
                 }
-                if (Date.now() - started > (deadline || 8000)) {
+                if (Date.now() - started > (deadline || 20000)) {
                     resolve(null);
                     return;
                 }
@@ -576,7 +577,7 @@
         }
     }
 
-    /** The coin panel: the balance and the two buttons. */
+    /** The coin panel: the balance, what is already given, and the buttons. */
     async function openCoinPanel() {
         const panel = el('bp-coin-panel');
         if (!panel) return;
@@ -593,12 +594,57 @@
         } catch (err) {
             /* the balance stays empty */
         }
+        await refreshCoinState();
+    }
+
+    /**
+     * How many coins this account already gave the video.
+     *
+     * B站 allows two coins per submission; throwing more is refused by the
+     * server.  The buttons follow the number that is left instead of letting
+     * the user find out through an error message.
+     */
+    async function refreshCoinState() {
+        if (!state.api || !state.bvid) return;
+        let given = Number(state.coinGiven || 0);
+        try {
+            const result = await state.api.get_bilibili_coins_given(state.bvid);
+            if (result && result.success) given = Number(result.given || 0);
+        } catch (err) {
+            /* keep the last known number */
+        }
+        state.coinGiven = given;
+        const left = Math.max(0, 2 - given);
+        const one = el('bp-coin-one');
+        const two = el('bp-coin-two');
+        if (one) one.disabled = left < 1;
+        if (two) two.disabled = left < 2;
+        const panel = el('bp-coin-panel');
+        const tip = el('bp-coin-hint');
+        if (tip) {
+            tip.textContent = left > 0
+                ? t('bili.coin_left', { count: left })
+                : t('bili.coin_maxed');
+        }
+        if (panel && left === 0) {
+            // Nothing left to throw; the panel stays with the explanation.
+            if (one) one.hidden = true;
+            if (two) two.hidden = true;
+        }
     }
 
     /** Throw coins at the video. */
     async function throwCoins(count) {
         if (!state.api || !state.bvid) return;
         const panel = el('bp-coin-panel');
+        const left = Math.max(0, 2 - Number(state.coinGiven || 0));
+        if (count > left) {
+            // Asking for more than the server allows is the one thing that must
+            // not even be attempted: it answers with an error that reads like a
+            // failure of the app.
+            el('bp-status').textContent = t('bili.coin_maxed');
+            return;
+        }
         try {
             const result = await state.api.bili_coin_video(state.bvid, count, false);
             if (!result || !result.success) {
@@ -606,7 +652,10 @@
                 return;
             }
             if (panel) panel.hidden = true;
+            // The balance and the counters both changed: redraw them instead of
+            // leaving the old numbers on screen.
             await loadStat();
+            await refreshCoinState();
         } catch (err) {
             el('bp-status').textContent = t('bili.coin_failed');
         }
@@ -715,7 +764,9 @@
         const fatal = el('bp-fatal');
         if (!fatal) return;
         fatal.hidden = false;
-        fatal.textContent = message;
+        // An empty text means the translations never arrived either -- which is
+        // the same failure.  Say something rather than leave a blank window.
+        fatal.textContent = message || 'SkycMedia 窗口没能连上后台，请关掉这个窗口再打开一次。';
     }
 
     async function boot() {
@@ -762,13 +813,68 @@
         loadStat();
     }
 
-    /** The buttons of the window. */
+    /* -------------------------------------------------------------- 播放数据 */
+
+    /**
+     * Tell B站 what is playing, once every 15 seconds.
+     *
+     * This is what fills the Bilibili watch history and what the recommendation
+     * feed learns from.  It writes to the account, so the backend refuses it
+     * unless the user turned "report playback" on in the settings -- the player
+     * can call it blindly.
+     */
+    const playbackReport = { timer: null, session: '', startTs: 0 };
+
+    function reportOnce(playType) {
+        const videoEl = el('bp-video');
+        if (!state.api || !state.bvid || !videoEl) return;
+        if (typeof state.api.bili_report_playback !== 'function') return;
+        const played = Math.max(0, Math.floor(Number(videoEl.currentTime) || 0));
+        const duration = Math.floor(Number(videoEl.duration)
+            || Number(state.streams && state.streams.duration) || 0);
+        try {
+            state.api.bili_report_playback(
+                state.bvid,
+                Number((state.streams && state.streams.cid) || 0),
+                played, duration,
+                Number(state.quality || 0), playbackReport.startTs,
+                playbackReport.session, Number(playType || 0)
+            ).catch(() => {});
+        } catch (err) {
+            /* the report must never break the picture */
+        }
+    }
+
+    function startPlaybackReport() {
+        if (!state.api || !state.bvid) return;
+        if (!playbackReport.session) {
+            playbackReport.session = Math.random().toString(16).slice(2)
+                + Date.now().toString(16);
+            playbackReport.startTs = Math.floor(Date.now() / 1000);
+        }
+        reportOnce(1);
+        if (playbackReport.timer) return;
+        playbackReport.timer = setInterval(() => reportOnce(0), 15000);
+    }
+
+    function stopPlaybackReport(playType) {
+        if (playbackReport.timer) {
+            clearInterval(playbackReport.timer);
+            playbackReport.timer = null;
+        }
+        if (playType) reportOnce(playType);
+        if (playType === 4) playbackReport.session = '';
+    }
+
     function bindEvents() {
         const videoEl = el('bp-video');
         if (videoEl) {
             videoEl.addEventListener('timeupdate', () => {
                 updateLiveDanmaku(videoEl.currentTime);
             });
+            videoEl.addEventListener('playing', () => startPlaybackReport());
+            videoEl.addEventListener('pause', () => stopPlaybackReport(2));
+            videoEl.addEventListener('ended', () => stopPlaybackReport(4));
             videoEl.addEventListener('seeked', () => {
                 clearLiveDanmaku();
                 const now = Number(videoEl.currentTime || 0);

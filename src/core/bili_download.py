@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 import os
 import random
+import shutil
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -74,6 +76,7 @@ class BiliDownloader:
         max_concurrent: int = DEFAULT_CONCURRENT,
         timeout: int = 60,
         max_retries: int = 3,
+        merge_audio: bool = False,
     ) -> None:
         self.download_dir = Path(download_dir).expanduser()
         self.client = client
@@ -82,6 +85,8 @@ class BiliDownloader:
         self.max_concurrent = max(1, min(int(max_concurrent), 3))
         self.timeout = int(timeout)
         self.max_retries = max(1, int(max_retries))
+        #: Put the picture and the sound back into one file after the download.
+        self.merge_audio = bool(merge_audio)
         self.logger = logging.getLogger("ncm.bili.downloader")
 
         self._lock = threading.RLock()
@@ -215,6 +220,54 @@ class BiliDownloader:
         except OSError:
             pass
 
+    def _merge_pair(self, video: "BiliDownloadResult",
+                    audio: "BiliDownloadResult") -> str:
+        """Put the picture and the sound back into one mp4.
+
+        B站 serves high qualities as two streams, so a download without this
+        step is a silent video plus a loose .m4a.  Merging needs ffmpeg; when
+        it is not installed the two files stay and the caller is told why --
+        pretending it worked would leave the user with a silent video and no
+        explanation.
+
+        Returns an empty string on success, otherwise the reason for the user.
+        """
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return "没有找到 ffmpeg，画面和声音保持两个文件"
+        video_path = Path(video.path)
+        audio_path = Path(audio.path)
+        if not video_path.is_file() or not audio_path.is_file():
+            return "文件不齐，没有合并"
+        stem = video_path.stem
+        # ffmpeg cannot write over one of its own inputs, so an existing .mp4
+        # is written next to it first and swapped in afterwards.
+        out = video_path if video_path.suffix.lower() != ".mp4" else \
+            video_path.with_name(stem + ".merged.mp4")
+        if out.suffix.lower() != ".mp4":
+            out = out.with_suffix(".mp4")
+        self._notify({"status": "merging", "kind": "merge", "path": str(out),
+                      "filename": out.name, "progress": 100.0})
+        command = [ffmpeg, "-y", "-loglevel", "error",
+                   "-i", str(video_path), "-i", str(audio_path),
+                   "-c", "copy", "-movflags", "+faststart", str(out)]
+        try:
+            proc = subprocess.run(command, capture_output=True, text=True, timeout=600)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._discard(out)
+            return f"合并失败：{exc}"
+        if proc.returncode != 0 or not out.is_file() or out.stat().st_size == 0:
+            self._discard(out)
+            detail = (proc.stderr or "").strip().splitlines()
+            return "合并失败：" + (detail[-1][:160] if detail else "ffmpeg 报错")
+        if out != video_path:
+            self._discard(video_path)
+        self._discard(audio_path)
+        self._notify({"status": "merged", "kind": "merge", "path": str(out),
+                      "filename": out.name, "downloaded": out.stat().st_size,
+                      "total": out.stat().st_size, "progress": 100.0})
+        return ""
+
     # ------------------------------------------------------------------ batch
     def _resolve(self, bvid: str) -> dict[str, Any]:
         try:
@@ -311,6 +364,19 @@ class BiliDownloader:
                     self._done_callback(item.to_dict())
                 except Exception:  # pragma: no cover
                     self.logger.debug("done callback failed")
+
+        # Both halves landed: put them back together when the user asked for it.
+        if self.merge_audio and len(results) == 2:
+            video = next((item for item in results if item.kind == "video"), None)
+            audio = next((item for item in results if item.kind == "audio"), None)
+            if (video is not None and audio is not None
+                    and video.status == "completed" and audio.status == "completed"):
+                reason = self._merge_pair(video, audio)
+                if reason:
+                    self.logger.info("merge skipped for %s: %s", bvid, reason)
+                    self._notify({"status": "merge_skipped", "kind": "merge",
+                                  "path": video.path, "message": reason,
+                                  "progress": 100.0})
         return results
 
     def download(self, tracks: list[dict[str, Any]]) -> list[BiliDownloadResult]:

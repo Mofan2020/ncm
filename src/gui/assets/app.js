@@ -819,7 +819,12 @@ function fillSettingsForm() {
     setValue('bili-danmaku-size', String(bili.danmaku_font_size || 18));
     setValue('bili-danmaku-opacity', String(Math.round((bili.danmaku_opacity ?? 0.9) * 100)));
     setChecked('bili-download-audio-check', bili.download_audio !== false);
+    setChecked('bili-merge-audio-check', bili.merge_audio !== false);
     setChecked('bili-separate-window-check', bili.separate_player_window !== false);
+    setChecked('bili-report-playback-check', bili.report_playback === true);
+    setValue('bili-download-dir', bili.download_dir || '');
+    setValue('bili-interest-tags', (bili.interest_tags || []).join('，'));
+    setValue('bili-blocked-tags', (bili.blocked_tags || []).join('，'));
     updateBiliSettingsLabels();
     renderBiliSettingsAccount();
 
@@ -1059,7 +1064,12 @@ async function saveSettings() {
             danmaku_font_size: parseInt(document.getElementById('bili-danmaku-size').value, 10),
             danmaku_opacity: parseInt(document.getElementById('bili-danmaku-opacity').value, 10) / 100,
             download_audio: document.getElementById('bili-download-audio-check').checked,
+            merge_audio: document.getElementById('bili-merge-audio-check').checked,
+            download_dir: (document.getElementById('bili-download-dir').value || '').trim(),
             separate_player_window: document.getElementById('bili-separate-window-check').checked,
+            report_playback: document.getElementById('bili-report-playback-check').checked,
+            interest_tags: splitTagWords(document.getElementById('bili-interest-tags').value),
+            blocked_tags: splitTagWords(document.getElementById('bili-blocked-tags').value),
         },
         debug: document.getElementById('debug-check').checked,
     };
@@ -1123,6 +1133,24 @@ async function chooseDirectory() {
         document.getElementById('download-dir-input').value = dir;
         if (state.settings) state.settings.download.download_dir = dir;
     }
+}
+
+/** Split a comma/space separated list of words, keeping the order. */
+function splitTagWords(text) {
+    return String(text || '')
+        .split(/[,，;；\s]+/)
+        .map((word) => word.trim())
+        .filter((word, index, all) => word && all.indexOf(word) === index);
+}
+
+/** Pick a folder for the Bilibili downloads (separate from the music one). */
+async function chooseBiliDirectory() {
+    if (!bridgeHas('choose_directory')) return;
+    const dir = await state.api.choose_directory();
+    if (!dir) return;
+    const input = document.getElementById('bili-download-dir');
+    if (input) input.value = dir;
+    if (state.settings && state.settings.bili) state.settings.bili.download_dir = dir;
 }
 
 /* ------------------------------------------------------------ account backup */
@@ -2150,6 +2178,7 @@ function showView(name) {
         tab.classList.toggle('is-active', tab.dataset.view === name));
     document.querySelectorAll('.view').forEach((view) =>
         view.classList.toggle('is-active', view.id === 'view-' + name));
+    syncTopTabs(name);
     // Always refresh the current source when the player view becomes active.
     // When the queue was non-empty (e.g. a restored session) we used to skip
     // this reload, so #playlist-list / #track-list stayed at whatever stale
@@ -2159,6 +2188,37 @@ function showView(name) {
     if (name === 'player') {
         selectSource(player.sourceTab);
     }
+}
+
+/**
+ * Which section the user is in: home, the NetEase half or the Bilibili half.
+ *
+ * The header tabs are not the same everywhere -- the Bilibili section has its
+ * own (space, messages) and a first start has no section at all -- so the set
+ * of visible tabs follows the view instead of being fixed in the markup.
+ */
+function currentSection(name) {
+    if (name === 'bili') return 'bili';
+    if (name === 'home' || name === 'search') return name === 'search' ? 'search' : 'home';
+    return 'netease';
+}
+
+/** Show the tabs that belong to the section the user is in. */
+function syncTopTabs(name) {
+    const section = currentSection(name);
+    const tabs = document.getElementById('top-tabs');
+    if (tabs) {
+        tabs.querySelectorAll('.top-tab').forEach((tab) => {
+            const sections = (tab.dataset.sections || '').split(' ').filter(Boolean);
+            // On the home page and in the combined search nothing is shown:
+            // there is no section to switch within yet.
+            const show = section !== 'home' && section !== 'search'
+                && sections.indexOf(section) >= 0;
+            tab.hidden = !show;
+        });
+    }
+    const exit = document.getElementById('btn-exit-section');
+    if (exit) exit.hidden = section === 'home';
 }
 
 /* ------------------------------------------------------------- sources */
@@ -6993,10 +7053,27 @@ function bindStaticEvents() {
     document.getElementById('top-tabs').addEventListener('click', (event) => {
         const tab = event.target.closest('.top-tab');
         if (!tab) return;
-        showView(tab.dataset.view);
+        const view = tab.dataset.view;
+        if (view === 'bili-space' || view === 'bili-messages') {
+            // These two live inside the Bilibili section as panels of their own;
+            // the header tab is the way in, the panel is the way back out.
+            showView('bili');
+            if (view === 'bili-space') openBiliSpace(biliAccount.mid || '');
+            else openBiliMessages();
+            return;
+        }
+        showView(view);
         // The section picker refreshes its counters every time it is opened.
-        if (tab.dataset.view === 'home') showHome();
+        if (view === 'home') showHome();
     });
+
+    const exitSection = document.getElementById('btn-exit-section');
+    if (exitSection) {
+        exitSection.addEventListener('click', () => {
+            showView('home');
+            showHome();
+        });
+    }
 
     // download view
     document.getElementById('btn-fetch').addEventListener('click', fetchPlaylist);
@@ -7064,6 +7141,8 @@ function bindStaticEvents() {
 
     // settings
     document.getElementById('btn-choose-dir').addEventListener('click', chooseDirectory);
+    const biliDir = document.getElementById('btn-bili-download-dir');
+    if (biliDir) biliDir.addEventListener('click', chooseBiliDirectory);
     document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
     document.getElementById('btn-reset-settings').addEventListener('click', resetSettings);
     document.getElementById('language-select').addEventListener('change', (event) => {
@@ -7625,8 +7704,8 @@ const biliSection = {
     error: '',
     loading: false,
     exhausted: false,
-    // 'hot' is the partition list, 'favorites' is the account's own list.
-    tab: 'hot'
+    // 'recommend' is the B站 feed; 'hot' is the partition list.
+    tab: 'recommend'
 };
 
 /** The home card the user came from, so the way back lands on it. */
@@ -7792,7 +7871,10 @@ function openHomeEntry(entry, byKeyboard) {
     }
     if (entry === 'bili') {
         showSection('bili');
-        renderBili(0);
+        // The B站 section opens on the recommendation feed; the hot list is one
+        // tab away.  The feed is what makes the section feel like it knows the
+        // user, and the hot list is fine as a fallback.
+        setBiliTab(biliSection.tab || 'recommend');
         // The account bar is asked for every time the page is opened: the
         // session may have ended in the meantime.
         loadBiliAccount();
@@ -7833,9 +7915,12 @@ function showSection(name) {
     document.querySelectorAll('.view').forEach((view) => {
         view.classList.toggle('is-active', view.id === 'view-' + name);
     });
+    // Which header tabs exist (and which of them reads as active) is decided
+    // by the section, not by the view: see syncTopTabs.
     document.querySelectorAll('#top-tabs .top-tab').forEach((tab) => {
-        tab.classList.toggle('is-active', tab.dataset.view === 'home');
+        tab.classList.toggle('is-active', tab.dataset.view === name);
     });
+    syncTopTabs(name);
     updateOfflineBars();
 }
 
@@ -9312,21 +9397,88 @@ async function logoutBili() {
 
 /* --------------------------------------------------------- bili favourites */
 
-/** Switch between the hot list, the favourites and the watch history. */
+/** Switch between the recommendation feed, the hot list, the favourites and the history. */
 function setBiliTab(tab) {
-    biliSection.tab = ['favorites', 'history'].indexOf(tab) >= 0 ? tab : 'hot';
+    const known = ['recommend', 'hot', 'favorites', 'history'];
+    biliSection.tab = known.indexOf(tab) >= 0 ? tab : 'recommend';
     document.querySelectorAll('#bili-tabs .top-tab').forEach((el) =>
         el.classList.toggle('is-active', el.dataset.tab === biliSection.tab));
-    ['bili-chips', 'bili-results', 'bili-state', 'btn-bili-more', 'bili-end'].forEach((id) => {
+    const listTab = biliSection.tab === 'hot' || biliSection.tab === 'recommend';
+    ['bili-chips', 'bili-results', 'bili-state', 'bili-end'].forEach((id) => {
         const el = document.getElementById(id);
-        if (el) el.hidden = biliSection.tab !== 'hot';
+        if (el) el.hidden = !listTab;
     });
+    const more = document.getElementById('btn-bili-more');
+    if (more) more.hidden = biliSection.tab !== 'hot';
     const favorites = document.getElementById('bili-favorites');
     if (favorites) favorites.hidden = biliSection.tab !== 'favorites';
     const history = document.getElementById('bili-history');
     if (history) history.hidden = biliSection.tab !== 'history';
     if (biliSection.tab === 'favorites') loadBiliFolders();
     if (biliSection.tab === 'history') loadBiliHistory(true);
+    if (biliSection.tab === 'recommend') loadBiliRecommend(true);
+    if (biliSection.tab === 'hot' && !biliSection.items.length) renderBili(biliSection.rid);
+}
+
+/**
+ * The recommendation feed, narrowed down by the user's own words.
+ *
+ * B站网页端没有「兴趣标签」这套接口（只有逐条的「不感兴趣」），所以偏好只能
+ * 在本地生效：屏蔽词命中的条目不显示，兴趣词命中的排到前面。
+ */
+function applyBiliPreferences(items) {
+    const bili = (state.settings && state.settings.bili) || {};
+    const words = (value) => (Array.isArray(value) ? value : [])
+        .map((word) => String(word || '').trim().toLowerCase())
+        .filter(Boolean);
+    const blocked = words(bili.blocked_tags);
+    const interest = words(bili.interest_tags);
+    if (!blocked.length && !interest.length) return items;
+    const textOf = (item) => ((item && (item.name || '')) + ' ' + (item && (item.artists || '')))
+        .toLowerCase();
+    const kept = items.filter((item) => {
+        const text = textOf(item);
+        return !blocked.some((word) => text.indexOf(word) >= 0);
+    });
+    if (!interest.length) return kept;
+    const score = (item) => {
+        const text = textOf(item);
+        return interest.reduce((total, word) => total + (text.indexOf(word) >= 0 ? 1 : 0), 0);
+    };
+    // Stable: the ones that match stay in the order B站 sent them.
+    return kept
+        .map((item, index) => ({ item, index, score: score(item) }))
+        .sort((a, b) => (b.score - a.score) || (a.index - b.index))
+        .map((entry) => entry.item);
+}
+
+/** Read a new batch of recommendations. */
+async function loadBiliRecommend(reset) {
+    if (!bridgeHas('get_bilibili_recommend')) return;
+    if (reset) {
+        biliSection.items = [];
+        biliSection.error = '';
+        biliSection.page = 1;
+    }
+    biliSection.loading = true;
+    biliSection.exhausted = false;
+    renderBiliResults();
+    try {
+        const result = await state.api.get_bilibili_recommend(24, biliSection.page);
+        if (!result || !result.success) {
+            biliSection.error = biliFailure(result, 'error.network');
+            biliSection.loading = false;
+            renderBiliResults();
+            return;
+        }
+        const rows = result.tracks || result.items || [];
+        biliSection.items = applyBiliPreferences(rows);
+        biliSection.exhausted = true;
+    } catch (err) {
+        biliSection.error = t('error.network');
+    }
+    biliSection.loading = false;
+    renderBiliResults();
 }
 
 /** Draw the row of favourite folders. */
@@ -9564,9 +9716,62 @@ async function loadBiliStreams(bvid, quality) {
             onStatus: (code) => setBiliPlayerStatus(code)
         });
         if (!played) setBiliPlayerStatus('error');
+        else armBiliPlaybackReport(videoEl);
     } catch (err) {
         setBiliPlayerStatus('error');
     }
+}
+
+/**
+ * Report what the inline player is playing, once every 15 seconds.
+ *
+ * The backend refuses these unless "report playback" is on, so the player can
+ * call it without asking first; what it buys is the Bilibili watch history and
+ * a recommendation feed that knows what the user actually watches.
+ */
+const biliInlineReport = { timer: null, session: '', startTs: 0 };
+
+function reportBiliInline(playType) {
+    const bvid = (biliPlayer.track && biliPlayer.track.bvid) || biliDetail.bvid || '';
+    const videoEl = document.getElementById('bili-video');
+    if (!bvid || !videoEl || !bridgeHas('bili_report_playback')) return;
+    const streams = biliPlayer.streams || {};
+    const played = Math.max(0, Math.floor(Number(videoEl.currentTime) || 0));
+    const duration = Math.floor(Number(videoEl.duration) || Number(streams.duration) || 0);
+    try {
+        state.api.bili_report_playback(
+            bvid, Number(streams.cid || 0), played, duration,
+            Number(biliPlayer.quality || 0), biliInlineReport.startTs,
+            biliInlineReport.session, Number(playType || 0)
+        ).catch(() => {});
+    } catch (err) { /* 上报不能影响播放 */ }
+}
+
+function armBiliPlaybackReport(videoEl) {
+    if (!videoEl || videoEl.dataset.reportBound === '1') return;
+    videoEl.dataset.reportBound = '1';
+    const start = () => {
+        if (!biliInlineReport.session) {
+            biliInlineReport.session = Math.random().toString(16).slice(2)
+                + Date.now().toString(16);
+            biliInlineReport.startTs = Math.floor(Date.now() / 1000);
+        }
+        reportBiliInline(1);
+        if (!biliInlineReport.timer) {
+            biliInlineReport.timer = setInterval(() => reportBiliInline(0), 15000);
+        }
+    };
+    const stop = (playType) => {
+        if (biliInlineReport.timer) {
+            clearInterval(biliInlineReport.timer);
+            biliInlineReport.timer = null;
+        }
+        if (playType) reportBiliInline(playType);
+        if (playType === 4) biliInlineReport.session = '';
+    };
+    videoEl.addEventListener('playing', start);
+    videoEl.addEventListener('pause', () => stop(2));
+    videoEl.addEventListener('ended', () => stop(4));
 }
 
 /** Play one video in the client. */
@@ -9649,13 +9854,91 @@ function closeBiliPlayer() {
 }
 
 /** Download one video (and its audio track). */
-/** The download progress of a Bilibili file, pushed by the backend. */
+/** The Bilibili downloads that are on screen right now, keyed by file path. */
+const biliDownloads = new Map();
+
+function formatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value < 1024) return value + ' B';
+    if (value < 1024 * 1024) return (value / 1024).toFixed(0) + ' KB';
+    if (value < 1024 * 1024 * 1024) return (value / 1024 / 1024).toFixed(1) + ' MB';
+    return (value / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+/** Draw the download stack; it disappears once nothing is left in it. */
+function renderBiliDownloads() {
+    const stack = document.getElementById('bili-download-stack');
+    const rows = document.getElementById('bili-downloads-rows');
+    const head = document.getElementById('bili-downloads-head');
+    if (!stack || !rows) return;
+    if (head) head.textContent = t('bili.download_progress_title');
+    rows.innerHTML = '';
+    biliDownloads.forEach((entry) => {
+        const row = document.createElement('div');
+        row.className = 'bili-download-row';
+        const name = document.createElement('div');
+        name.className = 'bili-download-name';
+        name.textContent = entry.name || entry.path || '';
+        name.title = entry.path || '';
+        const bar = document.createElement('div');
+        bar.className = 'bili-download-bar';
+        const fill = document.createElement('div');
+        fill.className = 'bili-download-fill';
+        fill.style.width = Math.max(0, Math.min(100, entry.percent)) + '%';
+        bar.appendChild(fill);
+        const meta = document.createElement('div');
+        meta.className = 'bili-download-meta';
+        const done = entry.status === 'completed' || entry.status === 'merged';
+        const failed = entry.status === 'failed' || entry.status === 'merge_skipped';
+        if (entry.status === 'merging') {
+            meta.textContent = t('bili.download_merging');
+        } else if (failed) {
+            meta.textContent = entry.message || t('bili.download_failed');
+        } else if (done) {
+            meta.textContent = t('bili.download_done') + ' · ' + formatBytes(entry.total);
+        } else {
+            meta.textContent = formatBytes(entry.downloaded) + ' / '
+                + (entry.total ? formatBytes(entry.total) : '?')
+                + ' · ' + Math.round(entry.percent) + '%';
+        }
+        row.appendChild(name);
+        row.appendChild(bar);
+        row.appendChild(meta);
+        rows.appendChild(row);
+    });
+    stack.hidden = biliDownloads.size === 0;
+}
+
+/** One progress event from the backend (one per file). */
 function onBiliDownloadProgress(payload) {
     if (!payload) return;
-    if (payload.status === 'completed') {
-        showToast('success', t('bili.download_done'), 6000);
-    } else if (payload.status === 'failed') {
-        showToast('error', biliFailure(payload, 'bili.download_failed'), 6000);
+    const key = String(payload.path || payload.filename || payload.kind || 'bili');
+    const status = String(payload.status || 'downloading');
+    const entry = biliDownloads.get(key) || {
+        path: payload.path || '', name: payload.filename || String(payload.path || '').split('/').pop(),
+        percent: 0, downloaded: 0, total: 0, status: 'downloading', message: ''
+    };
+    entry.status = status;
+    if (payload.filename) entry.name = String(payload.filename);
+    if (payload.downloaded !== undefined) entry.downloaded = Number(payload.downloaded) || 0;
+    if (payload.total) entry.total = Number(payload.total) || 0;
+    if (payload.progress !== undefined) entry.percent = Number(payload.progress) || 0;
+    if (payload.message) entry.message = String(payload.message);
+    biliDownloads.set(key, entry);
+    renderBiliDownloads();
+    if (status === 'completed' || status === 'merged' || status === 'failed'
+        || status === 'merge_skipped') {
+        if (status === 'completed' || status === 'merged') {
+            showToast('success', t('bili.download_done'), 4000);
+        }
+        if (status === 'merge_skipped') {
+            showToast('warning', entry.message || t('bili.download_failed'), 8000);
+        }
+        // Leave the finished row on screen for a moment, then drop it.
+        setTimeout(() => {
+            biliDownloads.delete(key);
+            renderBiliDownloads();
+        }, status === 'failed' ? 12000 : 6000);
     }
 }
 
@@ -9694,6 +9977,7 @@ const biliDetail = {
     authorMid: '',
     stat: {},
     liked: false,
+    coinGiven: 0,
     favorited: false,
     comments: [],
     commentPage: 1,
@@ -9869,6 +10153,35 @@ async function openBiliCoinPanel() {
     } catch (err) {
         if (box) box.textContent = t('bili.coin_failed');
     }
+    await refreshBiliCoinState();
+}
+
+/**
+ * How many coins this account already gave the open video.
+ *
+ * B站 allows two coins per submission.  The buttons show what is left instead
+ * of letting the server refuse the click, and the hint says why they are gone.
+ */
+async function refreshBiliCoinState() {
+    const bvid = biliDetail.bvid;
+    if (!bvid || !bridgeHas('get_bilibili_coins_given')) return;
+    let given = Number(biliDetail.coinGiven || 0);
+    try {
+        const result = await state.api.get_bilibili_coins_given(bvid);
+        if (result && result.success) given = Number(result.given || 0);
+    } catch (err) {
+        /* keep the last known number */
+    }
+    biliDetail.coinGiven = given;
+    const left = Math.max(0, 2 - given);
+    const one = document.getElementById('btn-bili-coin-one');
+    const two = document.getElementById('btn-bili-coin-two');
+    if (one) one.disabled = left < 1;
+    if (two) two.disabled = left < 2;
+    const hint = document.getElementById('bili-coin-hint');
+    if (hint) {
+        hint.textContent = left > 0 ? t('bili.coin_left', { count: left }) : t('bili.coin_maxed');
+    }
 }
 
 /** Throw one or two coins at the video that is open. */
@@ -9877,6 +10190,10 @@ async function coinBiliVideo(count) {
     if (!bvid) return;
     if (!bridgeHas('bili_coin_video')) {
         showToast('error', t('error.unknown'));
+        return;
+    }
+    if (count > Math.max(0, 2 - Number(biliDetail.coinGiven || 0))) {
+        showToast('warning', t('bili.coin_maxed'));
         return;
     }
     try {

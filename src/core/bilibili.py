@@ -35,6 +35,7 @@ import logging
 import re
 import time
 import urllib.parse
+import uuid
 from typing import Any
 
 import requests
@@ -1784,6 +1785,130 @@ class BiliClient:
             return [item for item in items if item.get("bvid")]
         return self._partition_feed(rid, page, page_size)
 
+    def recommend(self, page_size: int = 12, fresh_index: int = 1,
+                  session_id: str = "") -> list[dict[str, Any]]:
+        """The personalised home feed of this account.
+
+        ``/x/web-interface/wbi/index/top/feed/rcmd`` is the route the web home
+        page uses.  Without a login it still answers -- with the site wide feed
+        instead of a personal one -- so the caller gets rows either way and can
+        say so in the interface.
+
+        ``fresh_index`` is "the n-th refresh"; reusing 1 keeps the feed stable
+        while the user scrolls, which is what the page does too.
+        """
+        self._ensure_buvid()
+        page_size = max(1, min(int(page_size or 12), 30))
+        params = {
+            # The home slot; the route wants it even though it is not in any
+            # public parameter list.
+            "web_location": "1430650",
+            "y_num": "8",
+            "last_y_num": "8",
+            "fresh_type": str(max(1, int(fresh_index))),
+            "fresh_idx": str(max(1, int(fresh_index))),
+            "fresh_idx_1h": "1",
+            "brush": str(max(1, int(fresh_index))),
+            "fetch_row": "1",
+            "feed_version": "V8",
+            "homepage_ver": "1",
+            "ps": str(page_size),
+            "screen": "1920-1080",
+            "seo_info": "",
+            "uniq_id": session_id or str(int(time.time())),
+        }
+        payload = self.get_wbi("/x/web-interface/wbi/index/top/feed/rcmd", params)
+        if not payload or payload.get("code") != 0:
+            return []
+        data = payload.get("data") or {}
+        items = data.get("item") if isinstance(data.get("item"), list) else []
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            # An advertisement slot carries the real video one level down.
+            business = item.get("business_info") if isinstance(item.get("business_info"), dict) else {}
+            archive = business.get("archive") if isinstance(business.get("archive"), dict) else {}
+            source = archive or item
+            entry = self._from_archive_item(source, 0)
+            # An ad has no bvid of its own; without one it cannot be played.
+            if not entry.get("bvid"):
+                continue
+            owner = source.get("owner") if isinstance(source.get("owner"), dict) else {}
+            entry["author"] = str(owner.get("name") or entry.get("author") or "")
+            entry["author_mid"] = str(owner.get("mid") or "")
+            reason = item.get("rcmd_reason") if isinstance(item.get("rcmd_reason"), dict) else {}
+            entry["reason"] = str(reason.get("content") or "")
+            entry["followed"] = bool(_as_int(item.get("is_followed")))
+            rows.append(entry)
+        return rows
+
+    def report_playback(
+        self,
+        bvid: str,
+        cid: int = 0,
+        played_time: int = 0,
+        video_duration: int = 0,
+        quality: int = 0,
+        start_ts: int = 0,
+        session: str = "",
+        play_type: int = 0,
+        realtime: int = 0,
+    ) -> dict[str, Any]:
+        """Tell B站 that a video is being watched.
+
+        This is what fills the Bilibili watch history and what gives the
+        recommendation feed something to work with.  It also writes to the
+        account, so it only ever runs when the user turned it on in the
+        settings -- the caller decides, not this method.
+
+        The web player sends one of these every 15 seconds; ``play_type`` is
+        0 while playing, 1 on start, 2 on pause, 3 on resume, 4 on end.
+        """
+        result: dict[str, Any] = {"success": False, "message": ""}
+        bvid = str(bvid or "").strip()
+        if not bvid or not self.is_logged_in:
+            return result
+        aid = int(self.video(bvid).get("aid") or 0)
+        if not aid:
+            return result
+        duration = max(0, _as_int(video_duration, 0))
+        played = max(0, _as_int(played_time, 0))
+        real = max(0, _as_int(realtime, 0)) or played
+        form = {
+            "aid": aid,
+            "bvid": bvid,
+            "cid": _as_int(cid, 0),
+            "played_time": played,
+            "realtime": real,
+            "real_played_time": real,
+            "video_duration": duration,
+            "last_play_progress_time": played,
+            "max_play_progress_time": played,
+            "start_ts": _as_int(start_ts, 0) or int(time.time()),
+            # 3 = 投稿视频, 0 = 普通视频
+            "type": 3,
+            "sub_type": 0,
+            "dt": 2,
+            "play_type": _as_int(play_type, 0),
+            "mid": str(self._cookie.get("DedeUserID") or ""),
+            "refer_url": "https://www.bilibili.com/",
+            "quality": _as_int(quality, 0),
+            "session": str(session or uuid.uuid4().hex),
+            "outer": 0,
+            "spmid": "333.788.0.0",
+            "extra": json.dumps({"player_version": "4.8.36"}),
+        }
+        payload = self.post_form("/x/click-interface/web/heartbeat", form)
+        if not payload:
+            result["message"] = "网络异常，播放数据没有上报"
+            return result
+        if payload.get("code") != 0:
+            result["message"] = _error_message(payload, "播放数据上报失败")
+            return result
+        result["success"] = True
+        return result
+
     def ranking(self, rid: int = 28) -> list[dict[str, Any]]:
         """Return the ranking of one partition.  The partition id is mandatory.
 
@@ -1961,7 +2086,7 @@ class BiliClient:
     # 出错时把错误码翻译成给用户看的中文，绝不把原始 code 抛出去。
     # ------------------------------------------------------------------
     #: 观看历史的游标：第一页之后要用上一页回答里的 ``cursor.max``。
-    _history_cursor: str = ""
+    _history_cursor: dict[str, str] | None = None
     _history_page: int = 0
 
     def video_stat(self, bvid: str) -> dict[str, Any]:
@@ -2092,6 +2217,26 @@ class BiliClient:
         result["message"] = f"投币成功，投了{multiply}个币"
         return result
 
+    def coins_given(self, bvid: str) -> dict[str, Any]:
+        """How many coins this account already gave the video (0-2).
+
+        B站 lets one account put at most two coins on a submission.  Without
+        asking, the interface cannot tell "one more is fine" from "the second
+        click will be refused", so it asks before drawing the buttons.
+        """
+        result: dict[str, Any] = {"success": False, "given": 0, "message": ""}
+        bvid = str(bvid or "").strip()
+        if not bvid or not self.is_logged_in:
+            return result
+        payload = self._get("/x/web-interface/archive/coins", {"bvid": bvid})
+        if not payload or payload.get("code") != 0:
+            return result
+        data = payload.get("data")
+        given = _as_int((data or {}).get("multiply")) if isinstance(data, dict) else 0
+        result["success"] = True
+        result["given"] = max(0, min(given, 2))
+        return result
+
     def coin_balance(self) -> dict[str, Any]:
         """Return the coin balance of the signed in account.
 
@@ -2161,17 +2306,17 @@ class BiliClient:
             result["message"] = "无法获取视频信息，收藏失败"
             return result
         data: dict[str, Any] = {
-            "rid": folder_id,
+            # ``rid`` 是资源 id（稿件的 aid），``add_media_ids`` / ``del_media_ids``
+            # 才是收藏夹 id。这两样以前装反了，收藏一律回「请求错误」。
+            "rid": aid,
             # 2 = 视频。
             "type": 2,
             "platform": "web",
         }
-        # 收藏夹里的条目格式是 "<aid>:<type>"。
-        media_ids = f"{aid}:2"
         if remove:
-            data["del_media_ids"] = media_ids
+            data["del_media_ids"] = folder_id
         else:
-            data["add_media_ids"] = media_ids
+            data["add_media_ids"] = folder_id
         payload = self.post_form("/x/v3/fav/resource/deal", data)
         if not payload:
             result["message"] = "网络异常，收藏失败，请稍后重试"
@@ -2276,22 +2421,22 @@ class BiliClient:
         if not self.is_logged_in:
             result["message"] = "请先登录B站账号"
             return result
-        if page == 1:
-            cursor = "0"
-        elif self._history_page == page - 1 and self._history_cursor:
-            cursor = self._history_cursor
+        # 游标是「max + view_at + business」三件套，必须整体回填：只回填 max、
+        # 自己编一个 view_at，翻到后面就会重复或者跳条。第一次用 max=0。
+        if page == 1 or not self._history_cursor:
+            cursor = {"max": "0", "view_at": "", "business": ""}
         else:
-            # 没有上一页的游标时只能按页码估一个，服务端会自己纠正。
-            cursor = str(page - 1)
-        payload = self.get_wbi(
-            "/x/web-interface/history/cursor",
-            {
-                "max": cursor,
-                # 每一个视频最后观看的秒级时间戳，用来定位游标。
-                "view_at": str(int(time.time())),
-                "type": "archive",
-            },
-        )
+            cursor = dict(self._history_cursor)
+        params = {
+            "max": str(cursor.get("max") or "0"),
+            "type": "archive",
+            "ps": str(page_size),
+        }
+        if cursor.get("view_at"):
+            params["view_at"] = str(cursor["view_at"])
+        if cursor.get("business"):
+            params["business"] = str(cursor["business"])
+        payload = self.get_wbi("/x/web-interface/history/cursor", params)
         if not payload:
             result["message"] = "观看历史获取失败，请稍后重试"
             return result
@@ -2308,13 +2453,19 @@ class BiliClient:
             if isinstance(entry, dict)
         ]
         cursor_data = data.get("cursor") or {}
-        next_cursor = str(cursor_data.get("max") or "") if isinstance(cursor_data, dict) else ""
-        self._history_cursor = next_cursor
+        if isinstance(cursor_data, dict):
+            self._history_cursor = {
+                "max": str(cursor_data.get("max") or ""),
+                "view_at": str(cursor_data.get("view_at") or ""),
+                "business": str(cursor_data.get("business") or ""),
+            }
+        else:
+            self._history_cursor = None
         self._history_page = page
         result["success"] = True
         result["items"] = items
         result["count"] = len(items)
-        result["has_more"] = bool(next_cursor) and next_cursor != cursor
+        result["has_more"] = bool(self._history_cursor and self._history_cursor.get("max"))
         return result
 
     def space(self, mid: str) -> dict[str, Any]:
@@ -2650,8 +2801,10 @@ class BiliClient:
             "rpid": str(reply.get("rpid") or ""),
             "mid": mid,
             "uname": str(member.get("uname") or ""),
-            "face": _absolute_url(member.get("face")),
-            "level": _as_int(member.get("level")),
+            "face": _absolute_url(member.get("avatar") or member.get("face")),
+            "level": _as_int((member.get("level_info") or {}).get("current_level")
+                             if isinstance(member.get("level_info"), dict)
+                             else member.get("level")),
             "content": str(content.get("message") or ""),
             "like": _as_int(reply.get("like")),
             "reply_count": _as_int(reply.get("rcount")),

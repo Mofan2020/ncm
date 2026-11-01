@@ -3149,3 +3149,89 @@ GET https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs
 - GUI 没有完整跑一遍：验证用的是真实 WKWebView + 真实 B站流 + 真实回环代理，
   但没有在完整的应用窗口里点过按钮。
 - B站画质选择（1080P/4K 那些）在本次改动里没碰，仍然受账号权限限制。
+
+## 2026-11-01 B站第二批：独立窗口、收藏、投币、推荐、下载
+
+用户报的六条加三条功能。逐条查到的根因记在下面，**没有一条是「网络问题」**。
+
+### 独立窗口黑屏：子窗口有时候拿不到 JS 桥
+
+用真实 `GuiBridge` 跑了完整路径（主窗口点播放 → 子窗口），两次结果不一样：
+
+```
+成功：子窗口 src=blob:... status=正在缓冲，Python 侧打印 get_bilibili_video_streams
+失败：子窗口 src="" title="" status 显示成裸 key bili.video_error
+```
+
+失败那次的页面根本没拿到 `window.pywebview.api`（连 `get_translations` 都没发出），
+`waitForApi()` 等 8 秒后放弃，窗口就是一片黑，而且因为翻译也没拿到，连提示文字都是空。
+
+根因在 pywebview：运行期新建的窗口，`webView_didFinishNavigation_` 里
+`BrowserView.get_instance('webview', ...)` 查不到实例时会**整段跳过注入**，于是
+`window.pywebview` 永远不会出现，`events.loaded` 也永远不会 fire。
+
+修法（`src/gui/bridge.py::_ensure_window_bridge`）：窗口建好后等 `loaded` 最多 6 秒，
+没等到就自己调 `webview.util.inject_pywebview('cocoa', window)`。这条注入走的是
+`run_js`，不检查 `loaded`，所以不会自我死锁。页面那边把等待时间从 8 秒放到 20 秒，
+并且翻译缺失时也要有兜底文案（以前黑屏连一句「连不上后台」都没有）。
+
+**验证**：独立探针三轮，`loaded=True api=True`；真实 GuiBridge 路径下子窗口拿到了流。
+
+### 评论头像：字段叫 avatar
+
+`/x/v2/reply/main` 的 `member` 里，头像是 `avatar`（实测
+`https://i1.hdslb.com/bfs/face/f1d9...jpg`），`face` 是 `None`。取错名字，整片评论
+头像都是空的。等级同理，在 `level_info.current_level`。
+
+### 收藏：rid 和收藏夹 id 装反了
+
+`/x/v3/fav/resource/deal` 的正确形状是
+`rid=<稿件 aid>`、`type=2`、`add_media_ids=<收藏夹 mlid>`（纯数字，逗号分隔）。
+旧代码是 `rid=<folder_id>` + `add_media_ids="<aid>:2"` —— 两个都错，必回「请求错误」。
+`:2` 那个格式属于 `/x/v3/fav/resource/{copy,move,batch-del}` 的 `resources`，不是这里。
+另外 `list-all` 回来的 `id` 是 mlid（= fid + mid 尾两位），`deal` 吃的是 mlid。
+
+### 投币：余额不刷新 + 上限没告知
+
+`/x/web-interface/archive/coins?bvid=` 能读到「这个视频已投几枚」（实测 `{"multiply":0}`）。
+现在打开投币面板先问一次，按钮按剩余名额禁用，面板写明「还可以投 N 枚 / 已经投满 2 枚」，
+投完立刻刷新余额和统计。以前是点下去让服务器回错误，用户以为没投成。
+
+### 推荐：网页端没有兴趣标签接口
+
+查了首页 bundle 全部 38 条 `/x/` 路径，`preference`、`tag_id` 出现 0 次；
+16 条候选路径（`/x/web-interface/preference`、`.../feed/rcmd/tag/list`、
+`api.vc.bilibili.com/x/feed/tag` 等）匿名探测全是 openresty HTML 404 —— 路由不存在。
+网页端能用的只有 `/x/web-interface/wbi/index/top/feed/rcmd`（推荐）和
+`/x/web-interface/feedback/dislike`（逐条「不感兴趣」）。
+
+所以：B站分区默认进「推荐」页（实测拿到 11 条真实推荐），偏好做成**本地关键词**——
+屏蔽词命中的不显示、兴趣词命中的排前面，设置里可编辑，界面上写清「只在本地生效」。
+
+### 播放历史与播放上报
+
+读历史本来就有（`/x/web-interface/history/cursor`），空是因为**从来没上报过播放**。
+现在加了 `POST /x/click-interface/web/heartbeat`（15 秒一次，播完发 −1），
+并且**默认关闭**——打开才写账号。历史翻页的游标改成整体回填
+`cursor{max, view_at, business}`：以前只回填 `max` 又自己编一个 `view_at`，翻页会重复。
+
+### B站下载：独立目录、进度、合并
+
+- 目录：`bili.download_dir`，空则跟网易云共用一个；设置里有单独的「选择目录」。
+- 进度：以前只有完成/失败一个 toast。现在右下角常驻面板（文件名 + 进度条 + 字节数），
+  合并阶段显示「正在合并音视频」。
+- 合并：设 `bili.merge_audio`（默认开）时用 ffmpeg `-c copy` 合成一个 mp4，成功后删掉
+  两个分片；**没有 ffmpeg 就明说「画面和声音保持两个文件」**，不装作成功。
+
+### 顶部导航
+
+- 首页隐藏导航，进分区才出现：网易云「播放 / 下载」，B站「播放 / 下载 / 我的 / 私信」。
+- 标题左边加了退出分区的返回按钮。
+- 标题下的描述删掉。
+
+### 没做 / 验不了的
+
+- 这批 UI 改动只过了 `node --check`、i18n 校验和 Python 测试，**没有在完整应用窗口里
+  点过一遍**。
+- 「不感兴趣」按钮没做：接口参数拿到了，但那是写操作，要单独加确认再上。
+- 心跳上报的真实返回没验（写操作，不拿用户账号试）。

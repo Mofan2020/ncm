@@ -36,17 +36,22 @@
 <div id="app">
     <header class="app-header glass">
         <div class="brand">
+            <button class="btn btn-icon brand-exit" id="btn-exit-section" type="button"
+                    data-icon="back" data-i18n-title="home.back_home" aria-label="back" hidden></button>
             <h1 data-i18n="app.title">SkycMedia</h1>
-            <p class="subtitle" data-i18n="app.subtitle"></p>
         </div>
 
         <nav class="top-tabs" id="top-tabs" role="tablist">
             <button class="top-tab is-active" type="button" data-view="home"
-                    data-i18n="tabs.home"></button>
-            <button class="top-tab" type="button" data-view="download"
-                    data-i18n="tabs.download"></button>
+                    data-sections="home" data-i18n="tabs.home"></button>
             <button class="top-tab" type="button" data-view="player"
-                    data-i18n="tabs.player"></button>
+                    data-sections="netease bili" data-i18n="tabs.player"></button>
+            <button class="top-tab" type="button" data-view="download"
+                    data-sections="netease bili" data-i18n="tabs.download"></button>
+            <button class="top-tab" type="button" data-view="bili-space" data-sections="bili"
+                    data-i18n="bili.tab_space"></button>
+            <button class="top-tab" type="button" data-view="bili-messages" data-sections="bili"
+                    data-i18n="bili.tab_messages"></button>
         </nav>
 
         <div class="header-actions">
@@ -82,7 +87,6 @@
     </header>
 
     <main class="app-main">
-        <!-- ======================== home view ======================== -->
         <section class="view is-active" id="view-home">
             <div class="home-wrap">
                 <div class="offline-bar" id="home-offline" hidden data-i18n="home.offline"></div>
@@ -331,6 +335,8 @@
 
                 <div class="top-tabs filter-seg" id="bili-tabs" role="tablist">
                     <button class="top-tab is-compact is-active" type="button" role="tab"
+                            data-tab="recommend" data-i18n="bili.tab_recommend"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
                             data-tab="hot" data-i18n="bili.tab_hot"></button>
                     <button class="top-tab is-compact" type="button" role="tab"
                             data-tab="favorites" data-i18n="bili.tab_favorites"></button>
@@ -521,6 +527,12 @@
             <div class="queue-drawer-backdrop" id="queue-drawer-backdrop" hidden></div>
         </section>
     </main>
+
+    <!-- Bilibili downloads: a file at a time, with the bytes it has so far -->
+    <aside class="bili-downloads" id="bili-download-stack" hidden>
+        <div class="bili-downloads-head" id="bili-downloads-head"></div>
+        <div class="bili-downloads-rows" id="bili-downloads-rows"></div>
+    </aside>
 
     <!-- ====================== persistent player bar ====================== -->
     <div class="player-bar glass" id="player-bar">
@@ -1032,9 +1044,36 @@
                     <span data-i18n="bili.settings_download_audio"></span>
                 </label>
                 <label class="option checkbox">
+                    <input type="checkbox" id="bili-merge-audio-check">
+                    <span data-i18n="bili.settings_merge_audio"></span>
+                </label>
+                <label class="option">
+                    <span data-i18n="bili.settings_download_dir"></span>
+                    <span class="inline-form">
+                        <input type="text" id="bili-download-dir" class="text-input" spellcheck="false" readonly>
+                        <button id="btn-bili-download-dir" class="btn btn-secondary" type="button"
+                                data-i18n="settings.choose_dir"></button>
+                    </span>
+                </label>
+                <label class="option checkbox">
                     <input type="checkbox" id="bili-separate-window-check">
                     <span data-i18n="bili.settings_separate_window"></span>
                 </label>
+                <label class="option checkbox">
+                    <input type="checkbox" id="bili-report-playback-check">
+                    <span data-i18n="bili.settings_report_playback"></span>
+                </label>
+                <label class="option">
+                    <span data-i18n="bili.settings_interest_tags"></span>
+                    <input type="text" id="bili-interest-tags" class="text-input"
+                           spellcheck="false" autocomplete="off">
+                </label>
+                <label class="option">
+                    <span data-i18n="bili.settings_blocked_tags"></span>
+                    <input type="text" id="bili-blocked-tags" class="text-input"
+                           spellcheck="false" autocomplete="off">
+                </label>
+                <p class="muted" data-i18n="bili.settings_tags_hint"></p>
             </div>
 
             <div class="tab-panel" data-panel="account">
@@ -1624,6 +1663,7 @@
                 </div>
                 <div class="bili-popover" id="bili-coin-panel" hidden>
                     <div class="bili-popover-title" id="bili-coin-balance"></div>
+                    <div class="bili-popover-hint" id="bili-coin-hint"></div>
                     <div class="bili-popover-row">
                         <button class="btn btn-sm btn-secondary" id="btn-bili-coin-one" type="button"
                                 data-i18n="bili.coin_one"></button>
