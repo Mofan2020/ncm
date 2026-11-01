@@ -371,32 +371,45 @@
         try {
             videoEl.addEventListener('playing', () => status('streaming'), { once: true });
         } catch (err) { /* 没有播放器的测试环境 */ }
-        if (streams.video && streams.audio) {
-            try {
-                const played = await playWithMse(videoEl, streams, status);
-                if (played) return true;
-            } catch (err) {
-                // The MSE path failed: the merged stream is the fallback.
-                console.error('bilibili MSE failed:', err);
-            }
-            stopSession();
-        }
+        // The merged file first: the browser plays it natively, with no
+        // MSE involved.  This is the path that always works on macOS; the
+        // DASH route below needs the webview to composite progressive
+        // SourceBuffer data, and feedback from a real window was "sound
+        // plays, the picture stays black" even though the decoder had
+        // already produced frames (canvas.drawImage read a normal picture).
+        // Quality tops out at 720P here, which is the price of a picture.
         if (streams.muxed && streams.muxed.url) {
             videoEl.src = streams.muxed.url;
             try { await videoEl.play(); } catch (err) { /* 自动播放被拦下 */ }
             status('ready');
             return true;
         }
-        if (streams.video && streams.video.url && !streams.audio) {
-            // A video without a sound track: the picture is still worth it.
+        if (streams.video && streams.audio) {
+            try {
+                const played = await playWithMse(videoEl, streams, status);
+                if (played) return true;
+            } catch (err) {
+                // The MSE path failed: nothing else left.
+                console.error('bilibili MSE failed:', err);
+            }
+            stopSession();
+        }
+        if (streams.video && streams.video.url) {
+            // The two DASH halves could not be put together (no MSE, or the
+            // merged file is missing).  A picture without sound still beats
+            // sound without a picture: before this ran only when there was
+            // no audio track at all, so a failed MSE fell through to the
+            // audio-only branch below and the window played the sound with
+            // nothing on screen.
             videoEl.src = streams.video.url;
             try { await videoEl.play(); } catch (err) { /* 自动播放被拦下 */ }
             status('ready');
             return true;
         }
         if (streams.audio && streams.audio.url) {
-            // Audio only: there is no picture, but the track is still worth it.
-            // The video element is emptied, so no dead blob is left behind.
+            // Audio only: nothing else came through.  The video element is
+            // emptied, so no dead blob is left behind, and the status says so
+            // instead of leaving the user staring at a black frame.
             try {
                 videoEl.removeAttribute('src');
                 videoEl.load();

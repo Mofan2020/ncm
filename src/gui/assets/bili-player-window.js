@@ -72,12 +72,28 @@
             text);
     }
 
+    /**
+     * Whether the bridge is not just there but *callable*.
+     *
+     * pywebview creates ``window.pywebview.api`` as an object first and
+     * injects the methods into it a moment later.  Polling for the object
+     * alone therefore returns a handle whose every call resolves to
+     * ``undefined``: the window then has no translations (buttons keep empty
+     * labels), no quality list, an empty comment panel and no streams.  That
+     * is exactly the "only sound, no picture" window that was reported.
+     * The main window has always checked for a real method; this one did not.
+     */
+    function apiReady() {
+        return !!(window.pywebview && window.pywebview.api
+            && typeof window.pywebview.api.get_settings === 'function');
+    }
+
     /** Wait for the pywebview bridge; it is injected after the page loads. */
     function waitForApi(deadline) {
         return new Promise((resolve) => {
             const started = Date.now();
             const check = () => {
-                if (window.pywebview && window.pywebview.api) {
+                if (apiReady()) {
                     resolve(window.pywebview.api);
                     return;
                 }

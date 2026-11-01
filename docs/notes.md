@@ -3332,3 +3332,60 @@ H.264 优先、HEVC 次之、AV1 最后。画质档位不变（`id` 的过滤在
 用真实应用窗口验证过：账号头像 `naturalWidth 1792 / complete true`，
 私信面板 20 个会话、20 张头像、19 张加载成功（第 20 张是对方没有头像）、
 消息正文正常渲染、`#bili-im-state` 无错误。**没有代码要改。**
+
+### 「独立窗口没有评论/没有互动/没有画质」的真根因：bridge 提前放行
+
+先纠正上一节的说法：**AV1 不是「只有声音没画面」的原因**。实测 AV1 被
+`MediaSource.isTypeSupported` 拒绝后会回退到 muxed 单文件流并正常播放
+（512x384，mean_luma 120.44）；HEVC 在本机也能解（mean_luma 80.76）。
+`_codec_rank` 仍然是好改动（避免回退到 512x384 的低清 muxed），但它不是这条症状的根因。
+
+真正的 bug 在 `bili-player-window.js` 的 `waitForApi()`：
+
+```js
+if (window.pywebview && window.pywebview.api) { resolve(...); }   // 旧
+```
+
+pywebview **先建出 `window.pywebview.api` 这个对象，过一会儿才把方法注进去**。
+只判对象存在，就会拿到一个「每个方法都返回 undefined」的句柄。于是：
+
+- `get_translations()` → undefined → 按钮标签全空（看起来像「没有互动按钮」）
+- `get_settings()` → undefined → 画质列表 0 项（看起来像「没有画质调节」）
+- `get_bilibili_comments()` → undefined → 评论只剩占位（看起来像「没有评论」）
+- `get_bilibili_video_streams()` → undefined → 没有流 → 不放画面
+- `#bp-status` 显示原始 i18n key `bili.video_error`（翻译没加载，只能显示 key）
+
+主窗口的 `app.js:apiReady()` 一直有这层检查（`typeof api.get_settings === 'function'`），
+独立窗口那份没有。现在两份用同一个判据。
+
+同一窗口里事后 replay 同一批 API 调用全部 success=true 并播放成功——这就是
+「等一会儿再点就好了」的真相。
+
+### 「只有声音没画面」的兜底顺序
+
+`bili-player.js` 的 `play()` 原来这样收尾：
+
+```js
+if (streams.video && streams.video.url && !streams.audio) { ... }  // 只在没有音轨时才用画面
+if (streams.audio && streams.audio.url) { status('audio_only'); }  // 否则落到纯音频
+```
+
+MSE 失败、muxed 又没取到（`bilibili upstream error: no host answered` /
+`mcdn.bilivideo.cn:8082 Read timed out` 是旁证）时，它会**安静地播纯音频**，
+用户看到的就是黑屏加声音。现在去掉 `&& !streams.audio`：画面优先于声音，
+`audio_only` 只作为最后一档兜底。
+
+### 实测（真 pywebview 窗口，修复后）
+
+```
+docTitle         B站播放器          （翻译加载了）
+apiCallable      true              （bridge 方法可调用）
+qualityOptions   2                 （自动 / 480P 标清）
+commentRows      10                （真实用户名和正文）
+like/coin/fav    点赞 / 投币 / 收藏
+video            readyState=4, 1280x720, currentTime=19.03, paused=false, error=null
+```
+
+另外：用户机器上 `settings.yaml` 的 `separate_player_window=false`，所以实际走的是
+主窗口弹窗那条路。那个弹窗**功能是齐的**（统计、点赞/投币/收藏、评论列表、评论输入、
+弹幕都在，实测评论 17 条、`mean_luma` 161.41），它之前也受同一个「数据没加载」的影响。
