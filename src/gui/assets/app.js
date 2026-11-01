@@ -135,6 +135,9 @@ async function boot() {
         const loginStatus = await state.api.get_login_status();
         state.loggedIn = !!(loginStatus && loginStatus.is_logged_in);
         await refreshLoginStatus();
+        // The Bilibili account belongs in the header as well, so read it
+        // right away instead of waiting for the Bilibili page to open.
+        loadBiliAccount();
         showHome();
         watchSystemTheme();
         initMediaSession();
@@ -805,6 +808,17 @@ function fillSettingsForm() {
     setValue('exclusive-mode-select', s.playback.exclusive_mode || 'off');
     setValue('sleep-timer-select', String(s.playback.sleep_timer_minutes || 0));
 
+    // bilibili
+    const bili = s.bili || {};
+    setValue('bili-quality-select', String(bili.quality || 0));
+    setChecked('bili-danmaku-check', bili.danmaku_enabled !== false);
+    setValue('bili-danmaku-size', String(bili.danmaku_font_size || 18));
+    setValue('bili-danmaku-opacity', String(Math.round((bili.danmaku_opacity ?? 0.9) * 100)));
+    setChecked('bili-download-audio-check', bili.download_audio !== false);
+    setChecked('bili-separate-window-check', bili.separate_player_window !== false);
+    updateBiliSettingsLabels();
+    renderBiliSettingsAccount();
+
     // desktop lyrics
     setValue('desktop-lyrics-font-size', s.ui.desktop_lyrics_font_size || 18);
     setValue('desktop-lyrics-color', s.ui.desktop_lyrics_color || '#ffffff');
@@ -1036,10 +1050,18 @@ async function saveSettings() {
         auth: {
             remember_login: document.getElementById('remember-login-check').checked,
         },
+        bili: {
+            quality: parseInt(document.getElementById('bili-quality-select').value, 10) || 0,
+            danmaku_enabled: document.getElementById('bili-danmaku-check').checked,
+            danmaku_font_size: parseInt(document.getElementById('bili-danmaku-size').value, 10),
+            danmaku_opacity: parseInt(document.getElementById('bili-danmaku-opacity').value, 10) / 100,
+            download_audio: document.getElementById('bili-download-audio-check').checked,
+            separate_player_window: document.getElementById('bili-separate-window-check').checked,
+        },
         debug: document.getElementById('debug-check').checked,
     };
 
-    for (const category of ['download', 'playback', 'ui', 'auth']) {
+    for (const category of ['download', 'playback', 'ui', 'auth', 'bili']) {
         const result = await state.api.update_settings(category, payload[category]);
         if (result && result.success) state.settings = result.settings;
     }
@@ -4185,6 +4207,23 @@ function buildCoverUrl(raw) {
 }
 
 /**
+ * A Bilibili image URL, served through the loopback server.
+ *
+ * The webview does not talk to the Bilibili CDN on its own: the images
+ * (covers and avatars live on ``*.hdslb.com``) are fetched by the backend
+ * and handed over from there, the same way the sound is.  A direct CDN URL
+ * in an ``<img>`` tag simply comes up empty.
+ */
+function biliImageSrc(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw;
+    const base = state.mediaBaseUrl;
+    if (!base) return '';
+    return base + '/bili?u=' + encodeURIComponent(raw);
+}
+
+/**
  * Convenience wrapper for ``<img>`` sources.  Returns a synchronous
  * ``src`` value when the cover is already cached, otherwise an empty
  * string so the browser shows nothing rather than a broken icon while the
@@ -6334,6 +6373,35 @@ function initCrossfade() {
     updateCrossfadeLabel();
 }
 
+/** The numbers next to the Bilibili sliders. */
+function updateBiliSettingsLabels() {
+    const size = document.getElementById('bili-danmaku-size-value');
+    if (size) {
+        size.textContent = document.getElementById('bili-danmaku-size').value + 'px';
+    }
+    const opacity = document.getElementById('bili-danmaku-opacity-value');
+    if (opacity) {
+        opacity.textContent = document.getElementById('bili-danmaku-opacity').value + '%';
+    }
+}
+
+/** The account line in the Bilibili settings. */
+function renderBiliSettingsAccount() {
+    const line = document.getElementById('bili-settings-account');
+    if (!line) return;
+    if (biliAccount.loggedIn) {
+        line.textContent = t('bili.settings_signed_in', {
+            name: biliAccount.uname || biliAccount.mid || ''
+        });
+    } else {
+        line.textContent = t('bili.settings_signed_out');
+    }
+    const login = document.getElementById('btn-bili-settings-login');
+    const logout = document.getElementById('btn-bili-settings-logout');
+    if (login) login.hidden = biliAccount.loggedIn;
+    if (logout) logout.hidden = !biliAccount.loggedIn;
+}
+
 function updateCrossfadeLabel() {
     const label = document.getElementById('crossfade-value');
     if (label) {
@@ -8317,7 +8385,7 @@ function biliCardElement(track) {
     thumb.className = 'vc-thumb';
     if (track.cover_url) {
         const image = document.createElement('img');
-        image.src = track.cover_url;
+        image.src = biliImageSrc(track.cover_url);
         image.alt = '';
         image.loading = 'lazy';
         image.addEventListener('error', () => { image.remove(); });
@@ -8609,6 +8677,82 @@ function biliFailure(result, fallbackKey) {
     return result.message || t(fallbackKey || 'error.unknown');
 }
 
+/**
+ * The Bilibili account in the header.
+ *
+ * The NetEase account has its own button up there, and the Bilibili account
+ * used to be visible only inside the Bilibili page -- so the header looked
+ * like the app had one account.  Both belong there.
+ */
+function renderBiliHeaderAccount() {
+    const button = document.getElementById('btn-bili-account');
+    const menu = document.getElementById('bili-account-menu');
+    if (!button) return;
+    button.innerHTML = '';
+    if (!biliAccount.loggedIn) {
+        button.classList.add('btn-primary');
+        button.classList.remove('btn-secondary');
+        button.textContent = t('bili.login_button');
+        button.title = '';
+        button.onclick = () => {
+            closeBiliAccountMenu();
+            openBiliLoginModal();
+        };
+        if (menu) menu.hidden = true;
+        return;
+    }
+    button.classList.remove('btn-primary');
+    button.classList.add('btn-secondary');
+    const face = document.createElement('img');
+    face.className = 'bili-header-face';
+    face.alt = '';
+    face.loading = 'lazy';
+    if (biliAccount.face) {
+        face.src = biliImageSrc(biliAccount.face);
+        face.addEventListener('error', () => { face.remove(); });
+    }
+    button.appendChild(face);
+    const name = document.createElement('span');
+    name.className = 'bili-header-name';
+    name.textContent = biliAccount.uname || biliAccount.mid || '';
+    button.appendChild(name);
+    button.title = t('bili.signed_in', { name: biliAccount.uname || '' });
+    button.onclick = () => toggleBiliAccountMenu();
+}
+
+/** Show or hide the account menu under the header button. */
+function toggleBiliAccountMenu() {
+    const menu = document.getElementById('bili-account-menu');
+    if (!menu) return;
+    const showing = menu.hidden;
+    menu.hidden = !showing;
+    if (!showing) return;
+    const face = document.getElementById('bili-menu-face');
+    const name = document.getElementById('bili-menu-name');
+    const meta = document.getElementById('bili-menu-meta');
+    if (face) {
+        if (biliAccount.face) {
+            face.src = biliImageSrc(biliAccount.face);
+            face.hidden = false;
+        } else {
+            face.hidden = true;
+        }
+    }
+    if (name) name.textContent = biliAccount.uname || biliAccount.mid || '';
+    if (meta) {
+        const parts = [];
+        if (biliAccount.level) parts.push(t('bili.level', { level: biliAccount.level }));
+        if (biliAccount.vipLabel) parts.push(t('bili.vip', { name: biliAccount.vipLabel }));
+        meta.textContent = parts.join(' · ');
+    }
+}
+
+/** Close the account menu. */
+function closeBiliAccountMenu() {
+    const menu = document.getElementById('bili-account-menu');
+    if (menu) menu.hidden = true;
+}
+
 /** The account bar: the avatar, the name, the level and the way out. */
 function renderBiliAccount() {
     const face = document.getElementById('bili-account-face');
@@ -8619,7 +8763,7 @@ function renderBiliAccount() {
     actions.innerHTML = '';
     if (biliAccount.loggedIn) {
         if (face) {
-            face.src = biliAccount.face || '';
+            face.src = biliImageSrc(biliAccount.face);
             face.hidden = !biliAccount.face;
         }
         // Without a nickname the account number is the only thing left.
@@ -8695,6 +8839,8 @@ async function loadBiliAccount() {
         biliAccount.loggedIn = false;
     }
     renderBiliAccount();
+    renderBiliHeaderAccount();
+    renderBiliSettingsAccount();
     // The favourites need the account, so they are read again when the tab
     // is open and the account has just changed.
     if (biliSection.tab === 'favorites') loadBiliFolders();
@@ -8737,7 +8883,11 @@ async function refreshBiliQrcode() {
             if (status) status.textContent = biliFailure(result, 'error.unknown');
             return;
         }
-        if (image) image.src = result.qrcode_url || '';
+        // 二维码是自己画的（后端返回 data URL）：B站给的地址是扫码确认页，
+        // 直接塞进 <img> 是什么都显示不出来。
+        if (image) {
+            image.src = result.qrcode_data_url || biliImageSrc(result.qrcode_url);
+        }
         if (status) status.textContent = t('bili.status_waiting');
         startBiliLoginPolling();
     } catch (err) {
@@ -9244,6 +9394,19 @@ async function playBiliTrack(track) {
     }
     biliPlayer.track = track || null;
     biliPlayer.quality = 0;
+    // The video plays in a window of its own, so the main window stays
+    // usable while it runs.  The window carries the comments and the
+    // danmaku.  The setting can turn that off.
+    const separate = !state.settings || !state.settings.bili
+        || state.settings.bili.separate_player_window !== false;
+    if (separate && bridgeHas('open_bili_player_window')) {
+        try {
+            const opened = await state.api.open_bili_player_window(bvid, 1, 0);
+            if (opened && opened.success) return;
+        } catch (err) {
+            /* The window could not be opened: fall back to the old player. */
+        }
+    }
     openBiliPlayer(track);
     await loadBiliStreams(bvid, 0);
     // The detail panel lives inside the player, so it is filled once the
@@ -9253,6 +9416,20 @@ async function playBiliTrack(track) {
         author: biliPlayer.author,
         authorMid: biliPlayer.authorMid
     });
+}
+
+/**
+ * Dev-only path: a plain browser cannot open a native window, so the
+ * player page is opened as a tab.  It has no bridge there and says so.
+ */
+function openBiliPlayerWindowFallback(payload) {
+    const url = (payload && payload.url) || '';
+    if (!url) return;
+    try {
+        window.open(url, '_blank', 'width=1180,height=780');
+    } catch (err) {
+        /* The browser refused to open the tab. */
+    }
 }
 
 /** Switch to another quality and keep the place in the video. */
@@ -9343,6 +9520,8 @@ const biliDetail = {
 
 /** The danmaku that are on the picture at the moment. */
 const biliDanmakuLive = [];
+/** The lines the scrolling danmaku may use, and until when they are busy. */
+const biliDanmakuRows = [];
 
 /** The numbers of the video that is open. */
 function renderBiliDetailStats() {
@@ -9593,7 +9772,7 @@ function biliCommentElement(comment, child) {
     face.alt = '';
     face.loading = 'lazy';
     if (comment.face) {
-        face.src = comment.face;
+        face.src = biliImageSrc(comment.face);
         face.addEventListener('error', () => { face.remove(); });
     }
     head.appendChild(face);
@@ -9908,8 +10087,26 @@ function biliVideoTime() {
 /** Take every danmaku off the picture. */
 function clearBiliDanmakuLive() {
     biliDanmakuLive.length = 0;
+    biliDanmakuRows.length = 0;
     const layer = document.getElementById('bili-danmaku-layer');
     if (layer) layer.innerHTML = '';
+}
+
+/**
+ * The row a new danmaku may use.
+ *
+ * Two danmaku that scroll over the same line at the same time would sit on
+ * top of each other, so every row remembers until when it is busy.
+ */
+function pickBiliDanmakuRow(now) {
+    for (let index = 0; index < biliDanmakuRows.length; index += 1) {
+        if (biliDanmakuRows[index] <= now) {
+            biliDanmakuRows[index] = now + 8;
+            return index;
+        }
+    }
+    biliDanmakuRows.push(now + 8);
+    return biliDanmakuRows.length - 1;
 }
 
 /**
@@ -9942,6 +10139,15 @@ function updateBiliDanmakuLive(currentTime) {
         if (mode === 5) el.classList.add('is-top');
         el.textContent = item.text || '';
         el.style.color = '#' + ('000000' + (Number(item.color || 16777215)).toString(16)).slice(-6);
+        if (mode === 1 || mode === 0) {
+            // The danmaku starts at the right edge of the picture, not at the
+            // right edge of the window: the layer is narrower than the
+            // window, and starting further away only made the danmaku fly
+            // in so slowly that it looked like nothing was happening.
+            el.style.setProperty('--bili-start', (layer.clientWidth || 640) + 'px');
+            const row = pickBiliDanmakuRow(now);
+            el.style.top = (6 + row * 24) + 'px';
+        }
         layer.appendChild(el);
         biliDanmakuLive.push({ el: el, start: now });
     }
@@ -10133,7 +10339,7 @@ function renderBiliSpace() {
     const profile = biliSpace.profile || {};
     if (face) {
         if (profile.face) {
-            face.src = profile.face;
+            face.src = biliImageSrc(profile.face);
             face.hidden = false;
         } else {
             face.hidden = true;
@@ -10625,6 +10831,62 @@ function bindSectionEvents() {
     }
     const biliMore = document.getElementById('btn-bili-more');
     if (biliMore) biliMore.addEventListener('click', () => loadMoreBili());
+
+    // The Bilibili settings tab.
+    const biliSize = document.getElementById('bili-danmaku-size');
+    if (biliSize) {
+        biliSize.addEventListener('input', updateBiliSettingsLabels);
+    }
+    const biliOpacity = document.getElementById('bili-danmaku-opacity');
+    if (biliOpacity) {
+        biliOpacity.addEventListener('input', updateBiliSettingsLabels);
+    }
+    const biliSettingsLogin = document.getElementById('btn-bili-settings-login');
+    if (biliSettingsLogin) {
+        biliSettingsLogin.addEventListener('click', () => openBiliLoginModal());
+    }
+    const biliSettingsLogout = document.getElementById('btn-bili-settings-logout');
+    if (biliSettingsLogout) {
+        biliSettingsLogout.addEventListener('click', () => logoutBili());
+    }
+
+    // The Bilibili account menu in the header.
+    const menuMessages = document.getElementById('bili-menu-messages');
+    if (menuMessages) {
+        menuMessages.addEventListener('click', () => {
+            closeBiliAccountMenu();
+            openBiliMessages();
+        });
+    }
+    const menuUpload = document.getElementById('bili-menu-upload');
+    if (menuUpload) {
+        menuUpload.addEventListener('click', () => {
+            closeBiliAccountMenu();
+            openBiliUpload();
+        });
+    }
+    const menuSpace = document.getElementById('bili-menu-space');
+    if (menuSpace) {
+        menuSpace.addEventListener('click', () => {
+            closeBiliAccountMenu();
+            openBiliSpace(biliAccount.mid);
+        });
+    }
+    const menuLogout = document.getElementById('bili-menu-logout');
+    if (menuLogout) {
+        menuLogout.addEventListener('click', () => {
+            closeBiliAccountMenu();
+            logoutBili();
+        });
+    }
+    // Clicking anywhere else closes the menu.
+    document.addEventListener('click', (event) => {
+        const menu = document.getElementById('bili-account-menu');
+        if (!menu || menu.hidden) return;
+        const wrap = document.getElementById('header-bili');
+        if (wrap && wrap.contains(event.target)) return;
+        menu.hidden = true;
+    });
 
     // The Bilibili tabs: the hot list and the account's own favourites.
     const biliTabs = document.getElementById('bili-tabs');

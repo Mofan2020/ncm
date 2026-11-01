@@ -73,7 +73,7 @@ bundle can never reach a release.
 | `src/gui/bridge.py` | `GuiBridge` — every JS-callable method (returns JSON-safe data) |
 | `src/gui/bilibili_bridge.py` | `BilibiliBridge` — translates the Bilibili client for the frontend |
 | `src/gui/theme.py` | Native window chrome: macOS `NSAppearance`, Windows dark title bar |
-| `src/gui/assets/` | `index.html` (markup + no-flash theme bootstrap), `style.css`, `app.js`, `bili-player.js` |
+| `src/gui/assets/` | `index.html` (markup + no-flash theme bootstrap), `style.css`, `app.js`, `bili-player.js`, `bili-player.html` + `bili-player-window.js` (the Bilibili player window) |
 | `tests/` | pytest suite: crypto, api, downloader, settings, i18n, theme, bridge, live, library, localmusic, mediaserver, lyrics, player bridge (`tests/audio_fixtures.py` synthesises real MP3/FLAC bytes) |
 | `scripts/check-player-js.mjs` | Statistical checks for the frontend queue logic (node, run manually) |
 
@@ -214,6 +214,17 @@ Full reference: `docs/bili-notes.md`. The endpoints in use:
   (`fnval=1`, up to 720P) as a fallback. Without it the player would only ever
   play the sound on macOS. The Windows WebView2 does have `MediaSource` and
   uses the DASH streams.
+- **The Bilibili video plays in a window of its own.** `open_bili_player_window()`
+  opens `bili-player.html` through the loopback server with the same bridge as
+  the main window, so the main window stays usable while the video runs. The
+  window carries the comments, the danmaku and the interactions; the inline
+  player of the main window is only the fallback for a plain browser.
+- **A helper module that is loaded by name needs to be in `hiddenimports`.**
+  `bilibili_bridge.py` reaches the danmaku / private message / upload helpers
+  through `importlib.import_module("src.core.<name>")`, which PyInstaller's
+  static analysis cannot see. Without the entry in `main.spec` the frozen app
+  answers "模块不可用" for everything. `tests/test_bili_bundle.py` keeps the
+  two lists in sync.
 - **The destination of a download is known before the bytes arrive.** The
   "already downloaded, skip it" check runs against the destination path: an
   empty path resolves to the current directory, which exists and is not
@@ -318,6 +329,21 @@ Rules:
 
 ## Conventions
 
+- **The release notes are the whole file.** The release job passes
+  `release-notes.md` to `gh release create --notes-file`, so the file *is* the
+  description on the release page.  Before tagging, rewrite the file into its
+  released shape: the `## 即将发布（x.y.z）` heading and the `---` /
+  `## 历史版本` divider come off, and the new sections sit on top as `##`
+  headings, exactly like every older section.  A release page that starts with
+  "即将发布" looks like the build was never finished.
+  After the release, the next cycle puts the new `## 即将发布（x.y.z）` block
+  back on top and the shipped text under `## 历史版本`.
+- **A tag builds a pre-release, not a stable one.** The release job creates it
+  with `--prerelease`, so `/releases/latest` keeps pointing at the last stable
+  version.  Promote it after the round-trip has been tested by hand:
+  `gh release edit <tag> --prerelease=false`.  Check the result with
+  `gh release view <tag> --json isDraft,isPrerelease` -- both flags matter, and
+  a release left as a draft is invisible to the download buttons.
 - i18n: no hardcoded user-facing text. Static markup uses `data-i18n*` attributes,
   Python uses `src.i18n.t()`, and `tests/test_i18n.py` enforces key parity, identical
   `{placeholder}` sets and the presence of every `download.status_*` / `error.reason.*` key.

@@ -913,6 +913,26 @@
     "upload_pick_cover": "Choose a cover image",
     "video_detail": "Video details",
     "open_space": "Their profile",
-    "login_needed_action": "Sign in to Bilibili first"
+    "login_needed_action": "Sign in to Bilibili first",
+    "settings_bili": "Bilibili",
+    "settings_account": "Account",
+    "settings_quality": "Default quality",
+    "settings_danmaku": "Show danmaku",
+    "settings_danmaku_size": "Danmaku font size",
+    "settings_danmaku_opacity": "Danmaku opacity",
+    "settings_download_audio": "Download the audio too",
+    "settings_separate_window": "Play the video in its own window",
+    "settings_signed_in": "Signed in: {name}",
+    "settings_signed_out": "No Bilibili account signed in",
+    "quality_360": "360P",
+    "quality_480": "480P",
+    "quality_720": "720P",
+    "quality_1080": "1080P",
+    "quality_1080plus": "1080P high bitrate",
+    "quality_4k": "4K",
+    "quality_auto_label": "Auto",
+    "window_title": "Bilibili Player",
+    "window_only_desktop": "This page has to be opened in the desktop app",
+    "like_failed": "The like did not go through"
   }
 }

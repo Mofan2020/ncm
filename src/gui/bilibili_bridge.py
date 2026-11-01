@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.core.bili_cache import BiliCache
-from src.core.bilibili import BILI_RID_NAMES, BILI_RIDS, BiliClient
+from src.core.bilibili import BILI_RID_NAMES, BILI_RIDS, BiliClient, qr_png_data_url
 from src.core.library import track_key
 
 __all__ = ["BilibiliBridge", "BILI_ORDER_ALIASES", "track_payload"]
@@ -341,9 +341,12 @@ class BilibiliBridge:
         """Ask for a login QR code."""
         result = self._client.login_qrcode() or {}
         self._qr_key = str(result.get("key") or "")
+        url = str(result.get("qrcode_url") or "")
         return {
             "success": bool(result.get("success")),
-            "qrcode_url": str(result.get("qrcode_url") or ""),
+            "qrcode_url": url,
+            # B站给的是扫码确认页的地址，不是图片，所以自己画一张。
+            "qrcode_data_url": qr_png_data_url(url) if url else "",
             "message": str(result.get("message") or ""),
         }
 

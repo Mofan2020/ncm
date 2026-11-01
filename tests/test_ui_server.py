@@ -19,7 +19,8 @@ from src.core.mediaserver import MediaServer
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "src/gui/assets"
 UI_FILES = ("index.html", "style.css", "app.js", "desktop-lyrics.html",
-            "desktop-lyrics.js")
+            "desktop-lyrics.js", "bili-player.html", "bili-player.css",
+            "bili-player.js", "bili-player-window.js")
 
 
 @pytest.fixture
@@ -59,6 +60,9 @@ def test_index_is_served_from_a_chinese_install_path(ui_server):
     ("style.css", "text/css"),
     ("app.js", "text/javascript"),
     ("desktop-lyrics.html", "text/html"),
+    ("bili-player.html", "text/html"),
+    ("bili-player.css", "text/css"),
+    ("bili-player-window.js", "text/javascript"),
 ])
 def test_sibling_assets_are_served_with_usable_types(ui_server, name, expected):
     """index.html references these relatively, so they must resolve too."""

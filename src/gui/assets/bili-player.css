@@ -1,0 +1,395 @@
+/* SkycMedia - the Bilibili player window.
+ *
+ * The window is standalone: it does not share the stylesheet of the main
+ * interface, because it is a separate document with its own layout (video on
+ * the left, comments on the right).  The colours follow the same order of
+ * magnitude as the main window so the two do not look like two programs.
+ */
+
+:root {
+    --bp-bg: #12141a;
+    --bp-panel: #191c24;
+    --bp-line: #272b36;
+    --bp-text: #e8eaf0;
+    --bp-text-2: #a4aab8;
+    --bp-text-3: #767d8d;
+    --bp-accent: #4d9bff;
+    --bp-radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bp-bg);
+    color: var(--bp-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    overflow: hidden;
+}
+
+.bp-root {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+/* ------------------------------------------------------------- the header */
+.bp-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--bp-line);
+    background: var(--bp-panel);
+    flex: 0 0 auto;
+}
+
+.bp-head-text { min-width: 0; flex: 1 1 auto; }
+
+.bp-title {
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.bp-sub {
+    font-size: 12px;
+    color: var(--bp-text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- the body */
+.bp-main {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.bp-stage {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    padding: 12px;
+    gap: 10px;
+}
+
+.bp-video-wrap {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    background: #000;
+    border-radius: var(--bp-radius);
+    overflow: hidden;
+}
+
+.bp-video {
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: #000;
+    object-fit: contain;
+}
+
+/* The danmaku float over the picture.  The layer never takes clicks, so the
+   video stays controllable while the danmaku are on top of it. */
+.bp-danmaku-layer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+.bp-danmaku {
+    position: absolute;
+    left: 0;
+    top: 0;
+    white-space: nowrap;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
+    animation: bp-danmaku-move 8s linear forwards;
+}
+
+.bp-danmaku.is-fixed {
+    animation: none;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+@keyframes bp-danmaku-move {
+    from { transform: translateX(var(--bp-start, 100%)); }
+    to { transform: translateX(-100%); }
+}
+
+/* --------------------------------------------------------------- the bar */
+.bp-bar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
+    font-size: 12.5px;
+    color: var(--bp-text-2);
+}
+
+.bp-field { display: flex; align-items: center; gap: 6px; }
+
+.bp-check input { accent-color: var(--bp-accent); }
+
+.bp-status { color: var(--bp-text-3); margin-left: auto; }
+
+.bp-value {
+    min-width: 38px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--bp-text-3);
+}
+
+/* ------------------------------------------------------- inputs and buttons */
+.bp-select,
+.bp-input {
+    background: var(--bp-panel);
+    border: 1px solid var(--bp-line);
+    color: var(--bp-text);
+    border-radius: 8px;
+    padding: 6px 9px;
+    font-size: 13px;
+    font-family: inherit;
+    min-width: 0;
+}
+
+.bp-input { flex: 1 1 auto; }
+
+.bp-btn {
+    background: var(--bp-accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.bp-btn:hover { filter: brightness(1.08); }
+.bp-btn:disabled { opacity: .5; cursor: default; }
+
+.bp-btn-ghost {
+    background: transparent;
+    color: var(--bp-text-2);
+    border: 1px solid var(--bp-line);
+}
+
+.bp-btn-ghost:hover { color: var(--bp-text); filter: none; }
+
+.bp-send {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex: 0 0 auto;
+}
+
+/* ------------------------------------------------------------- the actions */
+.bp-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
+    font-size: 12.5px;
+    color: var(--bp-text-3);
+}
+
+.bp-stats { display: flex; gap: 12px; flex-wrap: wrap; }
+
+.bp-action-buttons {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.bp-popover {
+    flex: 0 0 auto;
+    border: 1px solid var(--bp-line);
+    border-radius: var(--bp-radius);
+    padding: 10px;
+    background: var(--bp-panel);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.bp-popover-title { font-size: 12.5px; color: var(--bp-text-2); }
+.bp-popover-row { display: flex; gap: 8px; }
+
+.bp-fav-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 190px;
+    overflow-y: auto;
+}
+
+.bp-fav-item {
+    background: none;
+    border: none;
+    color: var(--bp-text);
+    font-size: 13px;
+    font-family: inherit;
+    text-align: left;
+    padding: 6px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.bp-fav-item:hover { background: var(--bp-line); }
+
+/* ------------------------------------------------------------- the sidebar */
+.bp-side {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 340px;
+    min-width: 260px;
+    border-left: 1px solid var(--bp-line);
+    background: var(--bp-panel);
+    min-height: 0;
+}
+
+.bp-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--bp-line);
+    flex: 0 0 auto;
+}
+
+.bp-tab {
+    background: transparent;
+    border: none;
+    color: var(--bp-text-3);
+    font-size: 13px;
+    font-family: inherit;
+    padding: 6px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.bp-tab.is-active { background: var(--bp-line); color: var(--bp-text); }
+
+.bp-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.bp-list {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.bp-more { align-self: center; }
+
+/* ------------------------------------------------------------- the comments */
+.bp-comment {
+    padding: 9px 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .03);
+}
+
+.bp-comment-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 5px;
+}
+
+.bp-comment-face {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--bp-line);
+    flex: 0 0 auto;
+}
+
+.bp-comment-name {
+    background: none;
+    border: none;
+    color: var(--bp-text-2);
+    font-size: 12.5px;
+    font-family: inherit;
+    padding: 0;
+    cursor: pointer;
+}
+
+.bp-comment-level {
+    font-size: 11px;
+    color: var(--bp-text-3);
+}
+
+.bp-comment-body {
+    font-size: 13.5px;
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+.bp-comment-meta {
+    margin-top: 5px;
+    font-size: 11.5px;
+    color: var(--bp-text-3);
+    display: flex;
+    gap: 10px;
+}
+
+/* ------------------------------------------------------------- the danmaku */
+.bp-danmaku-row {
+    display: flex;
+    gap: 8px;
+    font-size: 12.5px;
+}
+
+.bp-danmaku-time {
+    flex: 0 0 auto;
+    color: var(--bp-text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.bp-danmaku-text { color: var(--bp-text-2); word-break: break-word; }
+
+.bp-empty {
+    color: var(--bp-text-3);
+    font-size: 12.5px;
+    padding: 12px 4px;
+    text-align: center;
+}
+
+/* --------------------------------------------------------- the fatal notice */
+.bp-fatal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bp-bg);
+    color: var(--bp-text-2);
+    font-size: 14px;
+    z-index: 10;
+}

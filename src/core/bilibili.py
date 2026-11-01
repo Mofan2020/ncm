@@ -28,6 +28,7 @@ into a spinner that never stops.  List endpoints answer ``[]`` and
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -1733,6 +1734,10 @@ class BiliClient:
         ``stat`` carries ``view`` / ``danmaku`` / ``reply`` / ``favorite``
         / ``coin`` / ``like`` / ``share``; a failed request answers
         ``success=False`` with an empty set of zeros instead of raising.
+
+        The counters ride along with the video details: the separate
+        ``/x/web-interface/archive/stat`` route is gone (it answers 404), but
+        ``/x/web-interface/view`` carries the same numbers.
         """
         bvid = str(bvid or "").strip()
         stat = {
@@ -1747,7 +1752,7 @@ class BiliClient:
         if not bvid:
             return {"success": False, "stat": stat, "message": "缺少视频号"}
         self._ensure_buvid()
-        payload = self.get_wbi("/x/web-interface/archive/stat", {"bvid": bvid})
+        payload = self._get("/x/web-interface/view", {"bvid": bvid})
         if not payload:
             return {"success": False, "stat": stat, "message": "统计数据获取失败，请稍后重试"}
         if payload.get("code") != 0:
@@ -1757,16 +1762,17 @@ class BiliClient:
                 "message": _error_message(payload, "统计数据获取失败"),
             }
         data = payload.get("data") or {}
+        raw = data.get("stat") if isinstance(data.get("stat"), dict) else {}
         return {
             "success": True,
             "stat": {
-                "view": _as_int(data.get("view")),
-                "danmaku": _as_int(data.get("danmaku")),
-                "reply": _as_int(data.get("reply")),
-                "favorite": _as_int(data.get("favorite")),
-                "coin": _as_int(data.get("coin")),
-                "like": _as_int(data.get("like")),
-                "share": _as_int(data.get("share")),
+                "view": _as_int(raw.get("view")),
+                "danmaku": _as_int(raw.get("danmaku")),
+                "reply": _as_int(raw.get("reply")),
+                "favorite": _as_int(raw.get("favorite")),
+                "coin": _as_int(raw.get("coin")),
+                "like": _as_int(raw.get("like")),
+                "share": _as_int(raw.get("share")),
             },
             "message": "",
         }
@@ -1853,8 +1859,9 @@ class BiliClient:
     def coin_balance(self) -> dict[str, Any]:
         """Return the coin balance of the signed in account.
 
-        ``balance`` is what is left to spend, ``coin`` is the total number
-        of coins the account holds.
+        The balance comes with the account state: the ``/x/web-interface/nav``
+        answer carries the number of coins the account owns.  The separate
+        ``/x/web-interface/coin/number`` route is gone (it answers 404).
         """
         result: dict[str, Any] = {
             "success": False,
@@ -1866,7 +1873,7 @@ class BiliClient:
             result["message"] = "请先登录B站账号"
             return result
         self._ensure_buvid()
-        payload = self._get("/x/web-interface/coin/number")
+        payload = self._get("/x/web-interface/nav")
         if not payload:
             result["message"] = "硬币余额获取失败，请稍后重试"
             return result
@@ -1874,9 +1881,11 @@ class BiliClient:
             result["message"] = _error_message(payload, "硬币余额获取失败")
             return result
         data = payload.get("data") or {}
+        coins = _as_int(data.get("money"))
         result["success"] = True
-        result["balance"] = _as_int(data.get("balance"))
-        result["coin"] = _as_int(data.get("coin"))
+        # 硬币没有「总额」和「余额」之分，账号上有几枚就能投几枚。
+        result["balance"] = coins
+        result["coin"] = coins
         return result
 
     def favorite_video(
@@ -2510,6 +2519,40 @@ class BiliClient:
         value = str(raw or "")
         # jar 里拿到的是 "name=value" 形式的 cookie 对象。
         return value.split("=", 1)[1] if "=" in value else value
+
+def qr_png_data_url(text: str, size: int = 256) -> str:
+    """把一段文字画成二维码，返回 ``data:`` 图片地址。
+
+    B站给的二维码「图片」其实是一个网页（``account.bilibili.com`` 的扫码确认页），
+    直接塞进 ``<img>`` 是什么都显示不出来。所以这里自己画：二维码的内容就是
+    那个地址，用 B站 App 扫它就能确认登录。
+
+    图片是自己写出来的 PNG（:mod:`src.core.png`），不牵进 Pillow。
+    """
+    payload = str(text or "").strip()
+    if not payload:
+        return ""
+    try:
+        import qrcode
+
+        from src.core.png import render_matrix
+
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=8,
+            border=2,
+        )
+        qr.add_data(payload)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+        scale = max(1, round(size / len(matrix))) if size else qr.box_size
+        png = render_matrix(matrix, scale)
+    except Exception as exc:  # noqa: BLE001 - 没有二维码也要能继续登录
+        log.warning("bilibili QR render failed: %s", exc)
+        return ""
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
 
 def _key_from_url(url: str) -> str:
     """``https://i0.hdslb.com/bfs/wbi/<key>.png`` -> ``<key>``."""

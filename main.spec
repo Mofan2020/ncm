@@ -91,6 +91,14 @@ hiddenimports = [
     "qrcode",
     "qrcode.image.base",
     "yaml",
+    # The Bilibili helper modules are loaded by name
+    # (``importlib.import_module("src.core.<name>")``), so PyInstaller's
+    # static analysis cannot see them and they would be missing from the
+    # bundle -- the frozen app then answers "弹幕模块不可用" for everything.
+    # ``tests/test_bili_bundle.py`` keeps this list and the bridge in sync.
+    "src.core.bili_danmaku",
+    "src.core.bili_im",
+    "src.core.bili_upload",
 ]
 if sys.platform == "win32":
     hiddenimports += ["webview.platforms.winforms", "webview.platforms.edgechromium"]

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkycMedia</title>
+<link rel="stylesheet" href="bili-player.css">
+</head>
+<body>
+<div class="bp-root">
+    <header class="bp-head">
+        <div class="bp-head-text">
+            <div class="bp-title" id="bp-title"></div>
+            <div class="bp-sub" id="bp-sub"></div>
+        </div>
+        <button class="bp-btn bp-btn-ghost" id="bp-close" type="button" title="close"></button>
+    </header>
+
+    <main class="bp-main">
+        <section class="bp-stage">
+            <div class="bp-video-wrap" id="bp-video-wrap">
+                <video id="bp-video" class="bp-video" controls playsinline preload="auto"></video>
+                <div class="bp-danmaku-layer" id="bp-danmaku-layer"></div>
+            </div>
+
+            <div class="bp-bar">
+                <label class="bp-field">
+                    <span id="bp-quality-label"></span>
+                    <select id="bp-quality" class="bp-select"></select>
+                </label>
+                <label class="bp-field bp-check">
+                    <input type="checkbox" id="bp-danmaku-on">
+                    <span id="bp-danmaku-label"></span>
+                </label>
+                <label class="bp-field">
+                    <span id="bp-size-label"></span>
+                    <input type="range" id="bp-danmaku-size" min="12" max="36" step="1">
+                    <span class="bp-value" id="bp-danmaku-size-value"></span>
+                </label>
+                <label class="bp-field">
+                    <span id="bp-opacity-label"></span>
+                    <input type="range" id="bp-danmaku-opacity" min="20" max="100" step="5">
+                    <span class="bp-value" id="bp-danmaku-opacity-value"></span>
+                </label>
+                <span class="bp-status" id="bp-status"></span>
+            </div>
+
+            <div class="bp-actions">
+                <div class="bp-stats" id="bp-stats"></div>
+                <div class="bp-action-buttons">
+                    <button class="bp-btn bp-btn-ghost" id="bp-like" type="button"></button>
+                    <button class="bp-btn bp-btn-ghost" id="bp-coin" type="button"></button>
+                    <button class="bp-btn bp-btn-ghost" id="bp-favorite" type="button"></button>
+                </div>
+            </div>
+
+            <div class="bp-popover" id="bp-coin-panel" hidden>
+                <div class="bp-popover-title" id="bp-coin-balance"></div>
+                <div class="bp-popover-row">
+                    <button class="bp-btn bp-btn-ghost" id="bp-coin-one" type="button"></button>
+                    <button class="bp-btn bp-btn-ghost" id="bp-coin-two" type="button"></button>
+                </div>
+            </div>
+
+            <div class="bp-popover" id="bp-fav-panel" hidden>
+                <div class="bp-popover-title" id="bp-fav-title"></div>
+                <div class="bp-fav-list" id="bp-fav-list"></div>
+            </div>
+
+            <div class="bp-send">
+                <input type="text" id="bp-danmaku-input" class="bp-input" autocomplete="off"
+                       maxlength="100">
+                <button class="bp-btn" id="bp-danmaku-send" type="button"></button>
+            </div>
+        </section>
+
+        <aside class="bp-side">
+            <div class="bp-tabs">
+                <button class="bp-tab is-active" id="bp-tab-comments" type="button" data-tab="comments"></button>
+                <button class="bp-tab" id="bp-tab-danmaku" type="button" data-tab="danmaku"></button>
+            </div>
+
+            <div class="bp-panel" id="bp-panel-comments">
+                <div class="bp-send">
+                    <input type="text" id="bp-comment-input" class="bp-input" autocomplete="off"
+                           maxlength="1000">
+                    <button class="bp-btn" id="bp-comment-send" type="button"></button>
+                </div>
+                <div class="bp-list" id="bp-comment-list"></div>
+                <button class="bp-btn bp-btn-ghost bp-more" id="bp-comment-more" type="button" hidden></button>
+            </div>
+
+            <div class="bp-panel" id="bp-panel-danmaku" hidden>
+                <div class="bp-list" id="bp-danmaku-list"></div>
+            </div>
+        </aside>
+    </main>
+
+    <div class="bp-fatal" id="bp-fatal" hidden></div>
+</div>
+<script src="bili-player.js"></script>
+<script src="bili-player-window.js"></script>
+</body>
+</html>

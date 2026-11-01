@@ -68,50 +68,44 @@ class FakeClient:
 
 
 # --------------------------------------------------------------------- 会话列表
+#: 会话列表现在的形状：一个会话一个对象，对方的资料和最后一条消息
+#: 都挂在对象里面（``/session_svr/v1/session_svr/get_sessions``）。
 CONVERSATIONS_PAYLOAD = {
     "code": 0,
     "message": "0",
     "data": {
         "session_list": [
             {
-                "session_id": 900,
-                "friend_id": 123,
                 "talker_id": 123,
+                "session_type": 1,
                 "unread_count": 3,
-                "last_msg_time": 1700000000,
-                "max_recv_id": 55,
+                "account_info": {
+                    "name": "小明",
+                    "pic_url": "https://example.invalid/ming.jpg",
+                },
+                "last_msg": {
+                    "sender_uid": 123,
+                    "msg_type": 1,
+                    "msg_key": "k1",
+                    "content": json.dumps({"content": "在吗"}),
+                    "timestamp": 1700000000,
+                },
             },
             {
-                "session_id": 901,
-                "friend_id": 456,
                 "talker_id": 456,
+                "session_type": 1,
                 "unread_count": 0,
-                "last_msg_time": 1700000009,
-                "max_recv_id": 56,
-            },
-        ],
-        "friend_list": [
-            {"uid": 123, "name": "小明", "face": "https://example.invalid/ming.jpg"},
-            {"uid": 456, "name": "小红", "face": "https://example.invalid/hong.jpg"},
-        ],
-        "messages": [
-            {
-                "session_id": 900,
-                "talker_id": 123,
-                "sender_uid": 123,
-                "msg_type": 1,
-                "msg_key": "k1",
-                "content": json.dumps({"content": "在吗"}),
-                "timestamp": 1700000000,
-            },
-            {
-                "session_id": 901,
-                "talker_id": 456,
-                "sender_uid": 456,
-                "msg_type": 1,
-                "msg_key": "k2",
-                "content": json.dumps({"content": "你好"}),
-                "timestamp": 1700000009,
+                "account_info": {
+                    "name": "小红",
+                    "pic_url": "https://example.invalid/hong.jpg",
+                },
+                "last_msg": {
+                    "sender_uid": 456,
+                    "msg_type": 1,
+                    "msg_key": "k2",
+                    "content": json.dumps({"content": "你好"}),
+                    "timestamp": 1700000009,
+                },
             },
         ],
     },
@@ -120,14 +114,14 @@ CONVERSATIONS_PAYLOAD = {
 
 def test_conversations_normalizes_names_faces_and_unread() -> None:
     session = FakeSession({
-        "/session_svr/v1/session/notify_fetch": CONVERSATIONS_PAYLOAD,
+        "/session_svr/v1/session_svr/get_sessions": CONVERSATIONS_PAYLOAD,
     })
     result = BiliIm(FakeClient(session)).conversations()
 
     assert result["success"] is True
     assert result["count"] == 2
     first, second = result["items"]
-    assert first["session_id"] == "900"
+    assert first["session_id"] == "123_1"
     assert first["talker_id"] == "123"
     assert first["name"] == "小明"
     assert first["face"] == "https://example.invalid/ming.jpg"
@@ -139,7 +133,7 @@ def test_conversations_normalizes_names_faces_and_unread() -> None:
     assert second["unread"] == 0
     # 请求参数照接口约定发
     url, params = session.gets[0]
-    assert url.endswith("/session_svr/v1/session/notify_fetch")
+    assert url.endswith("/session_svr/v1/session_svr/get_sessions")
     assert params["session_type"] == 1
     assert params["size"] == 20
 
@@ -148,13 +142,15 @@ def test_conversation_without_friend_entry_falls_back_to_talker_id() -> None:
     payload = {
         "code": 0,
         "data": {
-            "session_list": [{"session_id": 1, "talker_id": 777, "unread_count": 1}],
-            "friend_list": [],
-            "messages": [{"session_id": 1, "talker_id": 777, "msg_type": 1,
-                          "content": "hi"}],
+            "session_list": [{
+                "talker_id": 777,
+                "session_type": 1,
+                "unread_count": 1,
+                "last_msg": {"msg_type": 1, "content": "hi"},
+            }],
         },
     }
-    session = FakeSession({"/session_svr/v1/session/notify_fetch": payload})
+    session = FakeSession({"/session_svr/v1/session_svr/get_sessions": payload})
     result = BiliIm(FakeClient(session)).conversations()
     assert result["success"] is True
     assert result["items"][0]["name"] == "777"
@@ -202,7 +198,8 @@ MESSAGES_PAYLOAD = {
 
 
 def test_messages_parses_json_content_and_marks_own_messages() -> None:
-    session = FakeSession({"/sess_svr/v1/sess/get_messages": MESSAGES_PAYLOAD})
+    session = FakeSession({
+        "/session_svr/v1/session_svr/fetch_session_msgs": MESSAGES_PAYLOAD})
     result = BiliIm(FakeClient(session)).messages("900", "123")
 
     assert result["success"] is True
@@ -222,7 +219,7 @@ def test_messages_parses_json_content_and_marks_own_messages() -> None:
     assert raw["msg_key"] == "key-3"
 
     url, form = session.posts[0]
-    assert url.endswith("/sess_svr/v1/sess/get_messages")
+    assert url.endswith("/session_svr/v1/session_svr/fetch_session_msgs")
     assert form["session_id"] == "900"
     assert form["talker_id"] == "123"
     assert form["session_type"] == 1
@@ -232,14 +229,14 @@ def test_messages_parses_json_content_and_marks_own_messages() -> None:
 # --------------------------------------------------------------------- 发消息
 def test_send_posts_json_content_and_required_fields() -> None:
     session = FakeSession({
-        "/sess_svr/v1/sess/send_msg": {"code": 0, "message": "0", "data": {}},
+        "/session_svr/v1/session_svr/send_msg": {"code": 0, "message": "0", "data": {}},
     })
     result = BiliIm(FakeClient(session)).send("123", "晚上好")
 
     assert result["success"] is True
     assert result["message"] == ""
     url, form = session.posts[0]
-    assert url.endswith("/sess_svr/v1/sess/send_msg")
+    assert url.endswith("/session_svr/v1/session_svr/send_msg")
     assert form["talker_id"] == "123"
     assert form["csrf"] == "csrf-token"
     assert form["msg_type"] == 1
@@ -271,9 +268,9 @@ def test_not_logged_in_fails_without_request() -> None:
 
 def test_error_codes_are_translated() -> None:
     session = FakeSession({
-        "/session_svr/v1/session/notify_fetch": {"code": -101, "message": "账号未登录"},
-        "/sess_svr/v1/sess/get_messages": {"code": -111, "message": "csrf 校验失败"},
-        "/sess_svr/v1/sess/send_msg": {"code": -352, "message": "风控校验失败"},
+        "/session_svr/v1/session_svr/get_sessions": {"code": -101, "message": "账号未登录"},
+        "/session_svr/v1/session_svr/fetch_session_msgs": {"code": -111, "message": "csrf 校验失败"},
+        "/session_svr/v1/session_svr/send_msg": {"code": -352, "message": "风控校验失败"},
     })
     im = BiliIm(FakeClient(session))
     assert "登录" in im.conversations()["message"]

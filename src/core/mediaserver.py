@@ -414,7 +414,13 @@ class _Handler(BaseHTTPRequestHandler):
         if content_range:
             extra["Content-Range"] = content_range
         path = Path(urlparse(url).path)
-        self._send_headers(response.status_code, _content_type_for(path),
+        content_type = _content_type_for(path)
+        if content_type == "application/octet-stream":
+            # 有些资源没有扩展名（二维码图片就是），用上游给的头。
+            upstream = response.headers.get("content-type")
+            if upstream:
+                content_type = upstream.split(";")[0].strip()
+        self._send_headers(response.status_code, content_type,
                            int(length) if length and length.isdigit() else None, extra)
         if not send_body:
             response.close()

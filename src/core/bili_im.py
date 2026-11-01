@@ -2,9 +2,9 @@
 
 私信接口不在 ``api.bilibili.com`` 上，而在 ``api.vc.bilibili.com``：
 
-* ``GET  /session_svr/v1/session/notify_fetch``  会话列表
-* ``POST /sess_svr/v1/sess/get_messages``         某个会话的消息
-* ``POST /sess_svr/v1/sess/send_msg``             发消息
+* ``GET  /session_svr/v1/session_svr/get_sessions``      会话列表
+* ``POST /session_svr/v1/session_svr/fetch_session_msgs``  某个会话的消息
+* ``POST /session_svr/v1/session_svr/send_msg``            发消息
 
 这三个接口都要登录态（``SESSDATA``），两个写接口还要 ``csrf``（cookie 里的
 ``bili_jct``），少了会回 ``-111``。``buvid3`` 也要带上，缺了容易被风控。
@@ -103,6 +103,8 @@ class BiliIm:
     def __init__(self, client: Any) -> None:
         self._client = client
         self._self_mid: str | None = None
+        #: 上一次请求的状态码，用来区分「路没了」和「网络不通」。
+        self._last_status = 0
 
     # ------------------------------------------------------------------ transport
     def _headers(self) -> dict[str, str]:
@@ -149,6 +151,8 @@ class BiliIm:
 
     def _parse(self, response: Any, path: str) -> dict[str, Any] | None:
         status = getattr(response, "status_code", 200)
+        # 记下来：404 说明这条路已经没有了，要跟网络故障分开说。
+        self._last_status = status
         if status != 200:
             log.warning("bili im request %s answered HTTP %s", path, status)
             return None
@@ -202,9 +206,12 @@ class BiliIm:
     def conversations(self, size: int = 20) -> dict[str, Any]:
         """会话列表。
 
-        回答里 ``data.messages`` 是每个会话的最后一条消息，``data.session_list``
-        是会话本身的元信息（未读数、最后时间），``data.friend_list`` 是联系人。
-        三段要拼起来才是一个完整的会话。
+        路由是 ``/session_svr/v1/session_svr/get_sessions``——注意中间那两段
+        ``session_svr`` 是同一个词两遍，早先的 ``/session_svr/v1/session/...``
+        整个前缀已经不存在了（回 404）。
+
+        回答里 ``data.session_list`` 是一个会话一个对象：聊天对象、未读数、
+        对方的资料（``account_info``）和最后一条消息（``last_msg``）。
         """
         if not self._logged_in():
             return {"success": False, "items": [], "count": 0,
@@ -216,10 +223,12 @@ class BiliIm:
             "up_fold": 1,
             "quote_fold": 1,
             "folder_id": 0,
-            "last_recv_id": 0,
             "size": max(1, int(size or 20)),
+            "build": 0,
+            "mobi_app": "web",
+            "platform": "web",
         }
-        body = self._get("/session_svr/v1/session/notify_fetch", params)
+        body = self._get("/session_svr/v1/session_svr/get_sessions", params)
         if body is None:
             return {"success": False, "items": [], "count": 0,
                     "message": "网络请求失败，没有拿到私信会话列表"}
@@ -231,53 +240,27 @@ class BiliIm:
         if not isinstance(data, dict):
             data = {}
 
-        sessions = {}
+        items: list[dict[str, Any]] = []
         for entry in data.get("session_list") or []:
             if not isinstance(entry, dict):
                 continue
-            key = _as_text(entry.get("session_id"))
-            if key:
-                sessions[key] = entry
-
-        friends = {}
-        for entry in data.get("friend_list") or []:
-            if not isinstance(entry, dict):
-                continue
-            key = _as_text(entry.get("uid"))
-            if key:
-                friends[key] = entry
-
-        raw_messages = [m for m in (data.get("messages") or []) if isinstance(m, dict)]
-        if not raw_messages:
-            raw_messages = list(sessions.values())
-
-        items: list[dict[str, Any]] = []
-        for entry in raw_messages:
-            session_id = _as_text(entry.get("session_id"))
-            meta = sessions.get(session_id, {})
-            talker_id = _as_text(entry.get("talker_id") or meta.get("talker_id"))
-            friend = friends.get(talker_id) or friends.get(
-                _as_text(meta.get("friend_id"))) or {}
-            name = _as_text(friend.get("name") or friend.get("uname"))
-            if not name:
-                name = talker_id
-            unread = entry.get("unread_count")
-            if unread is None:
-                unread = meta.get("unread_count")
-            last_time = entry.get("timestamp")
-            if last_time is None:
-                last_time = entry.get("last_msg_time")
-            if last_time is None:
-                last_time = meta.get("last_msg_time")
+            talker_id = _as_text(entry.get("talker_id"))
+            session_type = _as_int(entry.get("session_type")) or 1
+            info = entry.get("account_info")
+            info = info if isinstance(info, dict) else {}
+            last = entry.get("last_msg")
+            last = last if isinstance(last, dict) else {}
+            name = _as_text(info.get("name")) or talker_id
             items.append({
-                "session_id": session_id,
+                # 会话由「聊天对象 + 会话类型」确定。
+                "session_id": f"{talker_id}_{session_type}",
                 "talker_id": talker_id,
                 "name": name,
-                "face": _as_text(friend.get("face")),
-                "last_message": _parse_content(entry.get("content")),
-                "unread": _as_int(unread),
-                "last_time": _as_int(last_time),
-                "msg_type": _as_int(entry.get("msg_type")),
+                "face": _as_text(info.get("pic_url")),
+                "last_message": _parse_content(last.get("content")),
+                "unread": _as_int(entry.get("unread_count")),
+                "last_time": _as_int(last.get("timestamp")),
+                "msg_type": _as_int(last.get("msg_type")),
             })
 
         return {"success": True, "items": items, "count": len(items), "message": ""}
@@ -304,10 +287,14 @@ class BiliIm:
             "size": max(1, int(size or 20)),
             "build": 0,
             "mobi_app": "web",
+            "platform": "web",
             "csrf": self._csrf(),
         }
-        body = self._post("/sess_svr/v1/sess/get_messages", data)
+        body = self._post("/session_svr/v1/session_svr/fetch_session_msgs", data)
         if body is None:
+            if self._last_status == 404:
+                return {"success": False, "items": [], "count": 0,
+                        "message": "B站现在没有开放消息记录接口，会话列表里能看到最后一条消息"}
             return {"success": False, "items": [], "count": 0,
                     "message": "网络请求失败，没有拿到消息"}
         code = body.get("code")
@@ -368,8 +355,11 @@ class BiliIm:
         }
         if session_id:
             data["session_id"] = _as_text(session_id)
-        body = self._post("/sess_svr/v1/sess/send_msg", data)
+        body = self._post("/session_svr/v1/session_svr/send_msg", data)
         if body is None:
+            if self._last_status == 404:
+                return {"success": False,
+                        "message": "B站现在没有开放发私信的接口"}
             return {"success": False, "message": "网络请求失败，消息没有发出去"}
         code = body.get("code")
         if code != 0:

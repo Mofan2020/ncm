@@ -113,6 +113,25 @@ class PlaybackSettings:
 
 
 @dataclass
+class BiliSettings:
+    """Bilibili-related settings."""
+
+    #: Quality asked for when playing or downloading a video.  0 means
+    #: "the best the account may watch" -- the account decides.
+    quality: int = 0
+    #: Show the danmaku over the picture.
+    danmaku_enabled: bool = True
+    #: Font size of the danmaku (12-40).
+    danmaku_font_size: int = 18
+    #: How opaque the danmaku are (0.2-1.0).
+    danmaku_opacity: float = 0.9
+    #: Download the picture and the sound as two files.
+    download_audio: bool = True
+    #: Play the video in its own window instead of inside the app.
+    separate_player_window: bool = True
+
+
+@dataclass
 class UISettings:
     """UI-related settings."""
 
@@ -184,6 +203,7 @@ class AppSettings:
     ui: UISettings = field(default_factory=UISettings)
     auth: AuthSettings = field(default_factory=AuthSettings)
     local_playlists: LocalPlaylistSettings = field(default_factory=LocalPlaylistSettings)
+    bili: BiliSettings = field(default_factory=BiliSettings)
     debug: bool = False
 
 
@@ -304,6 +324,7 @@ class Settings:
                 ui=UISettings(**_filtered(UISettings, raw.get("ui"))),
                 auth=AuthSettings(**_filtered(AuthSettings, raw.get("auth"))),
                 local_playlists=LocalPlaylistSettings(**_filtered(LocalPlaylistSettings, raw.get("local_playlists"))),
+                bili=BiliSettings(**_filtered(BiliSettings, raw.get("bili"))),
                 debug=bool(raw.get("debug", False)),
             )
             self._normalize()
@@ -352,6 +373,13 @@ class Settings:
         if playback.exclusive_mode not in ("off", "wasapi", "coreaudio", "auto"):
             playback.exclusive_mode = "off"
         playback.sleep_timer_minutes = self._clamp_range(playback.sleep_timer_minutes, 0, 720, 0)
+
+        bili = self._data.bili
+        bili.quality = self._clamp_range(bili.quality, 0, 127, 0)
+        bili.danmaku_font_size = self._clamp_range(bili.danmaku_font_size, 12, 40, 18)
+        bili.danmaku_opacity = self._clamp_float(bili.danmaku_opacity, 0.2, 1.0, 0.9)
+        for flag in ("danmaku_enabled", "download_audio", "separate_player_window"):
+            setattr(bili, flag, _as_bool(getattr(bili, flag)))
 
     @staticmethod
     def _clamp_range(value: Any, low: int, high: int, fallback: int) -> int:
@@ -404,6 +432,9 @@ class Settings:
         return self._data.auth
 
     @property
+    def bili(self) -> BiliSettings:
+        return self._data.bili
+
     def local_playlists(self) -> LocalPlaylistSettings:
         return self._data.local_playlists
 
@@ -449,6 +480,14 @@ class Settings:
     def update_auth(self, **kwargs: Any) -> None:
         for key, value in _filtered(AuthSettings, kwargs).items():
             setattr(self._data.auth, key, value)
+        self.save()
+
+    def update_bili(self, **kwargs: Any) -> None:
+        """Store the Bilibili settings and write them out."""
+        for key, value in kwargs.items():
+            if hasattr(self._data.bili, key):
+                setattr(self._data.bili, key, value)
+        self._normalize()
         self.save()
 
     def update_local_playlists(self, **kwargs: Any) -> None:

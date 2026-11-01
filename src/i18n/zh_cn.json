@@ -913,6 +913,26 @@
     "upload_pick_cover": "选择封面图片",
     "video_detail": "视频详情",
     "open_space": "TA 的主页",
-    "login_needed_action": "这个操作需要先登录 B站账号"
+    "login_needed_action": "这个操作需要先登录 B站账号",
+    "settings_bili": "B站",
+    "settings_account": "账号",
+    "settings_quality": "默认画质",
+    "settings_danmaku": "显示弹幕",
+    "settings_danmaku_size": "弹幕字号",
+    "settings_danmaku_opacity": "弹幕不透明度",
+    "settings_download_audio": "同时下载音频",
+    "settings_separate_window": "在独立窗口播放视频",
+    "settings_signed_in": "已登录：{name}",
+    "settings_signed_out": "还没有登录 B站账号",
+    "quality_360": "360P 流畅",
+    "quality_480": "480P 清晰",
+    "quality_720": "720P 高清",
+    "quality_1080": "1080P 高清",
+    "quality_1080plus": "1080P 高码率",
+    "quality_4k": "4K 超清",
+    "quality_auto_label": "自动",
+    "window_title": "B站播放器",
+    "window_only_desktop": "这个页面要在桌面客户端里打开",
+    "like_failed": "点赞没成功"
   }
 }

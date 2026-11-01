@@ -153,6 +153,8 @@ class GuiBridge:
         self.apply_theme: Callable[[str], bool] | None = None
         self._lock = threading.RLock()
         self._webview_module: Any = None  # Injected by main.py
+        #: The Bilibili player windows, one per video that is playing.
+        self._bili_player_windows: dict[str, Any] = {}
 
         # ---- player state ----------------------------------------------------
         self.library = get_library()
@@ -307,6 +309,14 @@ class GuiBridge:
             "auth": {
                 "remember_login": self.settings.auth.remember_login,
             },
+            "bili": {
+                "quality": self.settings.bili.quality,
+                "danmaku_enabled": self.settings.bili.danmaku_enabled,
+                "danmaku_font_size": self.settings.bili.danmaku_font_size,
+                "danmaku_opacity": self.settings.bili.danmaku_opacity,
+                "download_audio": self.settings.bili.download_audio,
+                "separate_player_window": self.settings.bili.separate_player_window,
+            },
             "debug": self.settings.debug,
         }
 
@@ -318,6 +328,11 @@ class GuiBridge:
                 self.settings.update_playback(**self._clean_playback(data))
                 if "local_dirs" in (data or {}):
                     self._match_index_token = None
+            elif category == "bili":
+                self.settings.update_bili(**self._clean(data, {
+                    "quality", "danmaku_enabled", "danmaku_font_size",
+                    "danmaku_opacity", "download_audio",
+                    "separate_player_window"}))
             elif category == "ui":
                 self.settings.update_ui(**self._clean(data, {
                     "language", "theme", "remember_window_size", "background_image",
@@ -2065,6 +2080,95 @@ class GuiBridge:
     def get_bilibili_video_streams(self, bvid: str, quality: int = 0) -> dict[str, Any]:
         """The playable streams of one Bilibili video."""
         return self.bilibili.video_streams(bvid, quality=quality)
+
+    def open_bili_player_window(self, bvid: str = "", page: int = 1,
+                                quality: int = 0) -> dict[str, Any]:
+        """Open the Bilibili player in a window of its own.
+
+        The main window stays usable while the video runs, and the player
+        window carries the comments and the danmaku next to the picture.
+        The video that is already open is brought to the front instead of
+        being opened twice.
+        """
+        video_id = str(bvid or "").strip()
+        if not video_id:
+            return {"success": False, "message": "缺少视频编号"}
+
+        existing = self._bili_player_windows.get(video_id)
+        if existing is not None:
+            try:
+                existing.restore()
+                return {"success": True, "opened": False, "message": ""}
+            except Exception:  # noqa: BLE001 - the window may be gone already
+                self._bili_player_windows.pop(video_id, None)
+
+        url = self._bili_player_url(video_id, page, quality)
+        if self._webview_module is None:
+            # Dev-only path: a plain browser cannot open a native window.
+            # The page is opened as a tab and says that it needs the app.
+            self._call_js("openBiliPlayerWindowFallback", {"url": url})
+            return {"success": False, "message": "", "url": url}
+
+        try:
+            window = self._webview_module.create_window(
+                title="SkycMedia",
+                url=url,
+                js_api=self,
+                width=1180,
+                height=780,
+                min_size=(760, 520),
+                resizable=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("could not open the player window: %s", exc)
+            return {"success": False, "message": str(exc)}
+
+        self._bili_player_windows[video_id] = window
+        try:
+            window.events.closed += self._bili_player_closed(video_id)
+        except Exception:  # noqa: BLE001 - a missing event is not fatal
+            pass
+        return {"success": True, "opened": True, "message": "", "url": url}
+
+    def close_bili_player_window(self, bvid: str = "") -> dict[str, Any]:
+        """Close the player window of one video (all of them without a id)."""
+        video_id = str(bvid or "").strip()
+        if video_id:
+            targets = [self._bili_player_windows.pop(video_id, None)]
+        else:
+            targets = list(self._bili_player_windows.values())
+            self._bili_player_windows.clear()
+        for window in targets:
+            if window is None:
+                continue
+            try:
+                window.destroy()
+            except Exception:  # noqa: BLE001 - it may be closed already
+                pass
+        return {"success": True}
+
+    def _bili_player_closed(self, bvid: str) -> Callable[[], None]:
+        """The handler that forgets a player window when it is closed."""
+
+        def handler() -> None:
+            self._bili_player_windows.pop(bvid, None)
+
+        return handler
+
+    def _bili_player_url(self, bvid: str, page: int = 1, quality: int = 0) -> str:
+        """The address of the player page of one video."""
+        query = urlencode({
+            "bvid": bvid,
+            "page": max(1, int(page or 1)),
+            "quality": int(quality or 0),
+        })
+        from src.resources import resource_path
+        html_path = resource_path("src", "gui", "assets", "bili-player.html")
+        media = getattr(self, "media", None)
+        if media is not None and getattr(media, "running", False):
+            media.set_ui_root(html_path.parent)
+            return media.ui_url("bili-player.html", query=query)
+        return f"{html_path.as_uri()}?{query}"
 
     def download_bilibili_tracks(self, tracks: list[dict[str, Any]] | None = None,
                                  options: dict[str, Any] | None = None) -> dict[str, Any]:

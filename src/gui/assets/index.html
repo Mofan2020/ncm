@@ -55,6 +55,27 @@
             <button id="btn-theme" class="btn btn-icon" type="button"
                     data-i18n-title="settings.theme_toggle" aria-label="theme" data-icon="monitor"></button>
             <button id="btn-login" class="btn btn-primary" type="button" data-i18n="login.title"></button>
+            <div class="header-bili" id="header-bili">
+                <button id="btn-bili-account" class="btn btn-secondary bili-header-account"
+                        type="button" data-i18n="bili.login_button"></button>
+                <div class="bili-account-menu" id="bili-account-menu" hidden>
+                    <div class="bili-account-menu-head">
+                        <img class="bili-account-menu-face" id="bili-menu-face" alt="" hidden>
+                        <div>
+                            <div class="bili-account-menu-name" id="bili-menu-name"></div>
+                            <div class="bili-account-menu-meta" id="bili-menu-meta"></div>
+                        </div>
+                    </div>
+                    <button class="bili-account-menu-item" id="bili-menu-messages" type="button"
+                            data-i18n="bili.tab_messages"></button>
+                    <button class="bili-account-menu-item" id="bili-menu-upload" type="button"
+                            data-i18n="bili.tab_upload"></button>
+                    <button class="bili-account-menu-item" id="bili-menu-space" type="button"
+                            data-i18n="bili.tab_space"></button>
+                    <button class="bili-account-menu-item" id="bili-menu-logout" type="button"
+                            data-i18n="bili.logout"></button>
+                </div>
+            </div>
             <button id="btn-settings" class="btn btn-icon" type="button"
                     data-i18n-title="settings.title" aria-label="settings" data-icon="settings"></button>
         </div>
@@ -733,6 +754,7 @@
                         data-i18n="settings.general"></button>
                 <button class="tab" type="button" data-tab="playback" data-i18n="settings.playback"></button>
                 <button class="tab" type="button" data-tab="download" data-i18n="settings.download"></button>
+                <button class="tab" type="button" data-tab="bili" data-i18n="bili.settings_bili"></button>
                 <button class="tab" type="button" data-tab="account" data-i18n="backup.tab"></button>
                 <button class="tab" type="button" data-tab="advanced"
                         data-i18n="settings.advanced"></button>
@@ -967,6 +989,51 @@
                 <label class="option checkbox indent">
                     <input type="checkbox" id="lyrics-translation-check">
                     <span data-i18n="settings.lyrics_translation"></span>
+                </label>
+            </div>
+
+            <div class="tab-panel" data-panel="bili">
+                <div class="group">
+                    <h3 class="group-title" data-i18n="bili.settings_account"></h3>
+                    <p class="muted" id="bili-settings-account"></p>
+                    <div class="inline-form">
+                        <button id="btn-bili-settings-login" class="btn btn-secondary" type="button"
+                                data-i18n="bili.login_button"></button>
+                        <button id="btn-bili-settings-logout" class="btn btn-secondary" type="button"
+                                data-i18n="bili.logout"></button>
+                    </div>
+                </div>
+                <label class="option">
+                    <span data-i18n="bili.settings_quality"></span>
+                    <select id="bili-quality-select">
+                        <option value="0" data-i18n="bili.quality_auto"></option>
+                        <option value="16" data-i18n="bili.quality_360"></option>
+                        <option value="32" data-i18n="bili.quality_480"></option>
+                        <option value="64" data-i18n="bili.quality_720"></option>
+                        <option value="80" data-i18n="bili.quality_1080"></option>
+                        <option value="112" data-i18n="bili.quality_1080plus"></option>
+                        <option value="120" data-i18n="bili.quality_4k"></option>
+                    </select>
+                </label>
+                <label class="option checkbox">
+                    <input type="checkbox" id="bili-danmaku-check">
+                    <span data-i18n="bili.settings_danmaku"></span>
+                </label>
+                <label class="option">
+                    <span><span data-i18n="bili.settings_danmaku_size"></span> <span id="bili-danmaku-size-value" class="muted"></span></span>
+                    <input type="range" id="bili-danmaku-size" min="12" max="40" step="1">
+                </label>
+                <label class="option">
+                    <span><span data-i18n="bili.settings_danmaku_opacity"></span> <span id="bili-danmaku-opacity-value" class="muted"></span></span>
+                    <input type="range" id="bili-danmaku-opacity" min="20" max="100" step="5">
+                </label>
+                <label class="option checkbox">
+                    <input type="checkbox" id="bili-download-audio-check">
+                    <span data-i18n="bili.settings_download_audio"></span>
+                </label>
+                <label class="option checkbox">
+                    <input type="checkbox" id="bili-separate-window-check">
+                    <span data-i18n="bili.settings_separate_window"></span>
                 </label>
             </div>
 

@@ -1537,9 +1537,14 @@ LOGGED_IN_COOKIE = "SESSDATA=abc; bili_jct=def; DedeUserID=12345678"
 
 
 def test_video_stat_returns_the_counters():
+    # 计数器跟着视频详情一起回来：``/x/web-interface/archive/stat``
+    # 这条路已经没有了（回 404）。
     client, _ = make_client({
         "/x/web-interface/nav": NAV_PAYLOAD,
-        "/x/web-interface/archive/stat": STAT_PAYLOAD,
+        "/x/web-interface/view": {
+            "code": 0,
+            "data": {"bvid": "BV1EHbhz6EHw", "stat": STAT_PAYLOAD["data"]},
+        },
     })
     result = client.video_stat("BV1EHbhz6EHw")
     assert result["success"] is True
@@ -1557,7 +1562,7 @@ def test_video_stat_returns_the_counters():
 def test_video_stat_reports_a_failure_instead_of_raising():
     client, _ = make_client({
         "/x/web-interface/nav": NAV_PAYLOAD,
-        "/x/web-interface/archive/stat": {"code": -403, "message": "访问权限不足"},
+        "/x/web-interface/view": {"code": -403, "message": "访问权限不足"},
     })
     result = client.video_stat("BV1EHbhz6EHw")
     assert result["success"] is False
@@ -1656,13 +1661,18 @@ def test_coin_video_needs_a_signed_in_account():
 
 
 def test_coin_balance_reads_the_balance():
+    # 硬币数跟着账号状态回来：``/x/web-interface/coin/number``
+    # 这条路已经没有了（回 404）。
     client, _ = make_client({
-        "/x/web-interface/coin/number": COIN_NUMBER_PAYLOAD,
+        "/x/web-interface/nav": {
+            "code": 0,
+            "data": {"isLogin": True, "mid": 12345678, "money": 480},
+        },
     }, cookie=LOGGED_IN_COOKIE)
     result = client.coin_balance()
     assert result["success"] is True
     assert result["balance"] == 480
-    assert result["coin"] == 500
+    assert result["coin"] == 480
 
 
 def test_coin_balance_needs_a_signed_in_account():
