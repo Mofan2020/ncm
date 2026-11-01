@@ -329,15 +329,16 @@ Rules:
 
 ## Conventions
 
-- **The release notes are the whole file.** The release job passes
-  `release-notes.md` to `gh release create --notes-file`, so the file *is* the
-  description on the release page.  Before tagging, rewrite the file into its
-  released shape: the `## 即将发布（x.y.z）` heading and the `---` /
-  `## 历史版本` divider come off, and the new sections sit on top as `##`
-  headings, exactly like every older section.  A release page that starts with
-  "即将发布" looks like the build was never finished.
-  After the release, the next cycle puts the new `## 即将发布（x.y.z）` block
-  back on top and the shipped text under `## 历史版本`.
+- **The release notes are the whole file, and they only describe this release.**
+  The release job passes `release-notes.md` to `gh release create --notes-file`,
+  so the file *is* the description on the release page. Before tagging, the
+  file holds **only what changed since the last published version** — no
+  `## 即将发布` heading, no `---` / `## 历史版本` divider, no older versions
+  copied along. Every past release already has its own page and its own tag,
+  so repeating them here only makes the page unreadable (it grew to 48
+  sections and 237 lines once). Aim for a handful of `##` headings, one or two
+  sentences each, and delete the previous version's text when the next one
+  ships.
 - **A tag builds a pre-release, not a stable one.** The release job creates it
   with `--prerelease`, so `/releases/latest` keeps pointing at the last stable
   version.  Promote it after the round-trip has been tested by hand:
