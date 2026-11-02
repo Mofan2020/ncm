@@ -26,6 +26,7 @@
         danmakuOn: true,
         danmakuSize: 18,
         danmakuOpacity: 0.9,
+        resumePlayback: true,
         stat: {},
         liked: false,
         coinGiven: 0,
@@ -304,7 +305,7 @@
                 hideOverlay();
                 // If the user enabled "resume playback", check the watch history
                 // and seek to the last position.
-                if (state.settings && state.settings.bili && state.settings.bili.resume_playback) {
+                if (state.resumePlayback) {
                     try {
                         const prog = await state.api.get_bilibili_video_progress(state.bvid);
                         if (prog && prog.success && prog.progress > 1 && prog.duration > 0) {
@@ -849,6 +850,9 @@
         state.danmakuSize = Number(bili.danmaku_font_size || 18);
         state.danmakuOpacity = Number(bili.danmaku_opacity ?? 0.9);
         state.quality = Number(bili.quality || 0);
+        // Whether a video continues from where it was left off.  This has to
+        // be remembered here: the window has no settings object of its own.
+        state.resumePlayback = bili.resume_playback !== false;
         const on = el('bp-danmaku-on');
         if (on) on.checked = state.danmakuOn;
         const size = el('bp-danmaku-size');

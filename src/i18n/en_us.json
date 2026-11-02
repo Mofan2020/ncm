@@ -999,6 +999,7 @@
     "overlay_no_stream": "Could not get a playback address for this video",
     "overlay_retry": "Retry",
     "overlay_timeout": "Fetching the video timed out, please retry",
-    "resumed_from": "Resumed from {time}"
+    "resumed_from": "Resumed from {time}",
+    "settings_resume_playback": "Continue a video from where it was left off"
   }
 }

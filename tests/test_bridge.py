@@ -324,3 +324,43 @@ def test_the_lyrics_scroll_delay_travels_through_the_bridge(bridge):
 def test_the_lyrics_scroll_delay_is_clamped_by_the_bridge(bridge):
     result = bridge.update_settings("playback", {"lyrics_scroll_idle_seconds": 999})
     assert result["settings"]["playback"]["lyrics_scroll_idle_seconds"] == 30
+
+
+# ------------------------------------------------------------ bili settings
+def test_every_bili_setting_travels_through_the_bridge(bridge):
+    """Every field of BiliSettings has to survive get_settings() and
+    update_settings('bili', ...).
+
+    A field that exists in the dataclass but not in the bridge allowlist is
+    dropped on the way in, so the checkbox comes back unchecked and the
+    setting never persists.  This has happened twice (the playback report
+    switch and the resume switch), so the round trip is checked field by
+    field instead of by hand.
+    """
+    from dataclasses import fields
+
+    from src.config.settings import BiliSettings
+
+    names = [f.name for f in fields(BiliSettings)
+             if f.name not in {"interest_tags", "blocked_tags", "download_dir"}]
+
+    settings = bridge.get_settings()
+    for name in names:
+        assert name in settings["bili"], f"get_settings() is missing {name}"
+
+    toggles = [n for n in names
+               if isinstance(getattr(BiliSettings(), n), bool)]
+    for name in toggles:
+        before = settings["bili"][name]
+        result = bridge.update_settings("bili", {name: not before})
+        assert result["success"] is True
+        assert result["settings"]["bili"][name] is (not before), \
+            f"{name} did not travel through the bridge"
+        assert bridge.get_settings()["bili"][name] is (not before), \
+            f"{name} did not persist"
+
+
+def test_the_resume_switch_is_on_by_default(bridge):
+    """A video should continue from where it was left off unless the user
+    says otherwise."""
+    assert bridge.get_settings()["bili"]["resume_playback"] is True

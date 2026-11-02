@@ -999,6 +999,7 @@
     "overlay_no_stream": "没能拿到这个视频的播放地址",
     "overlay_retry": "重试",
     "overlay_timeout": "获取视频超时，请重试",
-    "resumed_from": "已从 {time} 继续播放"
+    "resumed_from": "已从 {time} 继续播放",
+    "settings_resume_playback": "重新打开视频时从上次的进度继续"
   }
 }

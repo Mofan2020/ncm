@@ -328,6 +328,7 @@ class GuiBridge:
                 # 这三个是新加的，漏掉的话设置面板读回来永远是「没勾选」，
                 # 用户点保存看着像生效了，其实什么都没存。
                 "report_playback": self.settings.bili.report_playback,
+                "resume_playback": self.settings.bili.resume_playback,
                 "interest_tags": list(self.settings.bili.interest_tags),
                 "blocked_tags": list(self.settings.bili.blocked_tags),
             },
@@ -347,8 +348,9 @@ class GuiBridge:
                     "quality", "danmaku_enabled", "danmaku_font_size",
                     "danmaku_opacity", "download_audio", "merge_audio",
                     "download_dir", "separate_player_window",
-                    # 少了这三个，播放上报的开关和两个关键词栏点保存就没反应。
-                    "report_playback", "interest_tags", "blocked_tags"}))
+                    # 少了这几个，播放上报、续播的开关和两个关键词栏点保存就没反应。
+                    "report_playback", "resume_playback",
+                    "interest_tags", "blocked_tags"}))
             elif category == "ui":
                 self.settings.update_ui(**self._clean(data, {
                     "language", "theme", "remember_window_size", "background_image",

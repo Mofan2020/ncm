@@ -3451,3 +3451,43 @@ dist/SkycMedia.app/Contents/MacOS/SkycMedia \
 
 会同时写一个 `frame.png` 和一个 `frame.png.txt`（里面有 readyState、
 分辨率、src 类型、字节数）。
+
+### 续播开关差点又是一次「点了没反应」
+
+`resume_playback` 这个字段一开始只加在了 `BiliSettings` 里，续播的判断
+读的是 `state.settings.bili.resume_playback`，而：
+
+- `settings.py` 的 `_normalize` 没把它列进 bool 校验
+- `bridge.get_settings` 的回包没有它
+- `bridge.update_settings` 的白名单没有它
+- 前端没有对应的 checkbox，`app.js` 里 `state.settings.bili` 也没有这个键
+
+四处都漏了，功能等于不存在——开关不显示，就算读到了也是 `undefined`。
+
+独立窗口还多一个坑：窗口里根本没有 `state.settings` 这个对象（它只从
+`get_settings()` 里取几个自己要的字段），所以 `state.settings && ...`
+恒为假。窗口改成自己记一个 `state.resumePlayback` 标志。
+
+**教训**：这类「加了字段但没接线」的问题要靠测试兜住。`test_bridge.py`
+里加了一个逐字段的往返测试：`BiliSettings` 的每个字段都必须能通过
+`get_settings` / `update_settings` 走一个来回。做过一次变异测试——把
+`resume_playback` 从白名单里拿掉，测试确实红了
+（`resume_playback did not travel through the bridge`）。
+
+### 续播的数据从哪来
+
+B 站的历史接口本身是带进度的：`/x/web-interface/history/cursor` 返回
+的每条里有 `progress`（秒）和 `duration`，`_from_history_item()` 把秒换算
+成百分比。实测账号里：
+
+```
+BV1Lvxx6vEQN progress=2   duration=1419   -> 续播到 28 秒
+BV1UUxv6mEu1 progress=13  duration=214
+BV1HgxJ6tEsM progress=0   duration=1713   -> 没看过，不跳
+```
+
+前端用 `duration * progress / 100` 算跳转位置，低于 1% 不跳（片头那点
+进度不值得跳）。
+
+注意续播依赖 `report_playback` 开着——历史是上报出来的，没上报就没有
+位置可读。

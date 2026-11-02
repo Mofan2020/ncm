@@ -827,6 +827,7 @@ function fillSettingsForm() {
     setChecked('bili-merge-audio-check', bili.merge_audio !== false);
     setChecked('bili-separate-window-check', bili.separate_player_window !== false);
     setChecked('bili-report-playback-check', bili.report_playback === true);
+    setChecked('bili-resume-playback-check', bili.resume_playback !== false);
     setValue('bili-download-dir', bili.download_dir || '');
     setValue('bili-interest-tags', (bili.interest_tags || []).join('，'));
     setValue('bili-blocked-tags', (bili.blocked_tags || []).join('，'));
@@ -1079,6 +1080,7 @@ async function saveSettings() {
             download_dir: (document.getElementById('bili-download-dir').value || '').trim(),
             separate_player_window: document.getElementById('bili-separate-window-check').checked,
             report_playback: document.getElementById('bili-report-playback-check').checked,
+            resume_playback: document.getElementById('bili-resume-playback-check').checked,
             interest_tags: splitTagWords(document.getElementById('bili-interest-tags').value),
             blocked_tags: splitTagWords(document.getElementById('bili-blocked-tags').value),
         },

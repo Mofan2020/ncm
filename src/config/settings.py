@@ -140,6 +140,10 @@ class BiliSettings:
     #: Off by default: it writes to the account and it tells a third party what
     #: is being watched, which is the user's call, not the app's.
     report_playback: bool = False
+    #: Continue a video from where it was left off.  This reads the position
+    #: out of the watch history, so it only has an effect when the history is
+    #: actually filled -- that is, when report_playback is on.
+    resume_playback: bool = True
     #: Words the user wants more of / less of in the recommendation feed.
     #: B站网页端没有「兴趣标签」接口，所以这些词只在本地对推荐结果做筛选：
     #: 命中的留下并排前面，被屏蔽的直接不显示。
@@ -411,7 +415,7 @@ class Settings:
         bili.danmaku_font_size = self._clamp_range(bili.danmaku_font_size, 12, 40, 18)
         bili.danmaku_opacity = self._clamp_float(bili.danmaku_opacity, 0.2, 1.0, 0.9)
         for flag in ("danmaku_enabled", "download_audio", "separate_player_window",
-                     "merge_audio", "report_playback"):
+                     "merge_audio", "report_playback", "resume_playback"):
             setattr(bili, flag, _as_bool(getattr(bili, flag)))
         bili.download_dir = str(bili.download_dir or "")
         for name in ("interest_tags", "blocked_tags"):
