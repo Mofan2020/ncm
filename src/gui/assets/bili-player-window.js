@@ -161,6 +161,7 @@
         const node = el('bp-status');
         if (!node) return;
         const keys = {
+            connecting: 'bili.status_connecting',
             buffering: 'bili.buffering',
             ready: 'bili.video_ready',
             streaming: 'bili.streaming',
@@ -169,6 +170,39 @@
         };
         node.textContent = t(keys[code] || 'bili.buffering');
         node.className = 'bp-status' + (code === 'error' ? ' is-error' : '');
+    }
+
+    /**
+     * The overlay on top of the picture.
+     *
+     * Without it the window is a black rectangle for as long as the backend
+     * takes to answer, and a failure is a single red word in the corner.  The
+     * overlay says what is happening, and when it goes wrong it offers the one
+     * thing the user actually wants: a way to try again.
+     */
+    let overlay = null;
+
+    function ensureOverlay() {
+        if (overlay || !window.BiliOverlay) return overlay;
+        overlay = window.BiliOverlay.createOverlay({
+            t: t,
+            onRetry: () => {
+                overlay.hide();
+                loadStreams(state.quality);
+            }
+        });
+        return overlay;
+    }
+
+    /** Paint a state over the picture. */
+    function showOverlay(kind, detailKey) {
+        const view = ensureOverlay();
+        if (view) view.show(kind, detailKey);
+    }
+
+    /** Take the overlay away. */
+    function hideOverlay() {
+        if (overlay) overlay.hide();
     }
 
     /** The URL of a Bilibili picture, through the loopback proxy. */
@@ -222,10 +256,12 @@
         const videoEl = el('bp-video');
         if (!videoEl || !state.api) return;
         setStatus('buffering');
+        showOverlay('loading');
         try {
             const result = await state.api.get_bilibili_video_streams(state.bvid, quality);
             if (!result || !result.success) {
                 setStatus('error');
+                showOverlay('error', 'bili.overlay_no_stream');
                 return;
             }
             state.streams = result;
@@ -236,9 +272,15 @@
             const played = await window.playBiliVideo(videoEl, result, {
                 onStatus: (code) => setStatus(code)
             });
-            if (!played) setStatus('error');
+            if (!played) {
+                setStatus('error');
+                showOverlay('error', 'bili.overlay_no_stream');
+            } else {
+                hideOverlay();
+            }
         } catch (err) {
             setStatus('error');
+            showOverlay('error', 'bili.overlay_no_stream');
         }
     }
 
@@ -787,6 +829,9 @@
 
     async function boot() {
         applyStaticText();
+        // The backend is not there yet; say so instead of showing a black
+        // rectangle that looks like a broken video.
+        showOverlay('connecting');
         const api = await waitForApi();
         if (!api) {
             showFatal(t('bili.window_only_desktop'));
@@ -993,6 +1038,33 @@
                 window.close();
             });
         }
+        // The keys people reach for without thinking: escape leaves, space
+        // pauses, the arrows jump.  Typing in a comment box must not do any
+        // of that, so the text fields keep their own keys.
+        document.addEventListener('keydown', (event) => {
+            const tag = (event.target && event.target.tagName) || '';
+            const typing = tag === 'INPUT' || tag === 'TEXTAREA';
+            if (event.key === 'Escape') {
+                if (window.stopBiliVideo) window.stopBiliVideo();
+                window.close();
+                return;
+            }
+            if (typing) return;
+            const videoEl = el('bp-video');
+            if (!videoEl) return;
+            if (event.key === ' ') {
+                event.preventDefault();
+                if (videoEl.paused) videoEl.play().catch(() => {});
+                else videoEl.pause();
+            } else if (event.key === 'ArrowRight') {
+                event.preventDefault();
+                const end = videoEl.duration || 0;
+                videoEl.currentTime = Math.min(end, (videoEl.currentTime || 0) + 10);
+            } else if (event.key === 'ArrowLeft') {
+                event.preventDefault();
+                videoEl.currentTime = Math.max(0, (videoEl.currentTime || 0) - 10);
+            }
+        });
         window.addEventListener('beforeunload', () => {
             if (window.stopBiliVideo) window.stopBiliVideo();
         });

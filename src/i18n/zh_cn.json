@@ -991,6 +991,12 @@
     "quality_auto_label": "自动",
     "window_title": "B站播放器",
     "window_only_desktop": "这个页面要在桌面客户端里打开",
-    "like_failed": "点赞没成功"
+    "like_failed": "点赞没成功",
+    "status_connecting": "正在连接",
+    "overlay_connecting": "正在连接应用",
+    "overlay_streams": "正在获取视频",
+    "overlay_failed": "播放失败",
+    "overlay_no_stream": "没能拿到这个视频的播放地址",
+    "overlay_retry": "重试"
   }
 }

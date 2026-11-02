@@ -3389,3 +3389,65 @@ video            readyState=4, 1280x720, currentTime=19.03, paused=false, error=
 另外：用户机器上 `settings.yaml` 的 `separate_player_window=false`，所以实际走的是
 主窗口弹窗那条路。那个弹窗**功能是齐的**（统计、点赞/投币/收藏、评论列表、评论输入、
 弹幕都在，实测评论 17 条、`mean_luma` 161.41），它之前也受同一个「数据没加载」的影响。
+
+### 「只有声音没画面」查到底了：DOM 判据全是假的
+
+这一节记的是方法，不是结论。
+
+先前用 `readyState=4`、`videoWidth=1280`、`canvas.drawImage()` 的直方图
+当「画面正常」的证据，**全都不成立**：
+
+- `readyState` 只说缓冲区够了
+- `videoWidth` 只说解码器认出了这个尺寸
+- `canvas.drawImage()` 读的是解码缓冲区，**不是屏幕**
+
+真正能看到画面的办法是把当前帧导出成图片文件再看。新加的
+`--frame-dump PATH`（配合 `--bvid`）就是干这个的：开一个真窗口，播一个
+视频，把画面画进 canvas，`toDataURL()` 取回来写成 PNG。
+
+用它跑出来的结果：
+
+```
+源码版      meanLuma 80.5   帧是真实视频画面（能看见人物和字幕）
+本地打包版  meanLuma 80.5   同上
+```
+
+也就是说这两个都能出画面，而用户装的那版是黑的。**排查时不能再拿 DOM
+属性当证据，只能拿图片当证据。**
+
+### 播放时自己检查画面
+
+既然程序判不了「有没有画面」，那就让程序自己判：
+
+`bili-player.js` 里加了 `frameIsBlack()`（把当前帧画进 canvas 算平均
+亮度）和 `pictureAppeared()`（在若干秒内反复采样，只要有一帧不是黑的
+就算出画面了）。`watchPicture()` 在播放开始后**在后台**盯着，7 秒内
+一直是黑的就换一个播放源重试——先单文件后分片，反之亦然——两个都不行
+才报 `error`。
+
+三点要注意：
+
+1. **不阻塞首帧。** 检测是 fire-and-forget 的，播放照常开始，正常视频
+   完全感觉不到。
+2. **跳过片头黑场。** 采样时 `currentTime < 1.2` 的帧不算数，很多视频
+   开头就是黑的。
+3. **用户换视频后要停。** 记住起播时的 `videoEl.src`，检测回来发现变了
+   就直接退出，不然会对着一个已经不存在的画面报错。
+
+### 为什么打包版可能不一样
+
+打包出来的 app 是 ad-hoc 签名（`TeamIdentifier=not set`）。这跟 macOS
+对系统媒体服务的要求有关，是「源码能播、打包版黑屏」这类差异的一个
+候选方向。本次没能在 CI 产物上复现（本地打的包是正常的），先记着。
+
+### `--frame-dump` 为什么进不了 CI
+
+它要开窗口，CI 是无头的。本地打包完跑一次：
+
+```
+dist/SkycMedia.app/Contents/MacOS/SkycMedia \
+    --frame-dump /tmp/frame.png --bvid BV1Baxj61ESa
+```
+
+会同时写一个 `frame.png` 和一个 `frame.png.txt`（里面有 readyState、
+分辨率、src 类型、字节数）。

@@ -21,6 +21,16 @@
             <div class="bp-video-wrap" id="bp-video-wrap">
                 <video id="bp-video" class="bp-video" controls playsinline preload="auto"></video>
                 <div class="bp-danmaku-layer" id="bp-danmaku-layer"></div>
+                <div class="bp-overlay" id="bp-overlay" hidden>
+                    <div class="bp-overlay-card">
+                        <div class="bp-overlay-spinner" id="bp-overlay-spinner"></div>
+                        <div class="bp-overlay-title" id="bp-overlay-title"></div>
+                        <div class="bp-overlay-detail" id="bp-overlay-detail"></div>
+                        <div class="bp-overlay-actions" id="bp-overlay-actions" hidden>
+                            <button class="bp-btn" id="bp-overlay-retry" type="button"></button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="bp-bar">
@@ -100,6 +110,7 @@
     <div class="bp-fatal" id="bp-fatal" hidden></div>
 </div>
 <script src="bili-player.js"></script>
+<script src="bili-overlay.js"></script>
 <script src="bili-player-window.js"></script>
 </body>
 </html>

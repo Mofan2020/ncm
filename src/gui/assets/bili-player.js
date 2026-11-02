@@ -358,6 +358,108 @@
      * @param {Object} [options] {onStatus: function (code)}
      * @returns {Promise<boolean>} true when something is playing
      */
+    /**
+     * Is there actually a picture on the screen?
+     *
+     * The DOM cannot tell a black frame from a good one: a decoder that
+     * produced nothing and a decoder that produced a normal picture both
+     * report "readyState 4" and a video size.  Reading the pixels back is
+     * the only way to know, and it is what turns "the sound plays but the
+     * screen is black" into something the program can act on.
+     *
+     * @returns {boolean} true when the frame is (nearly) black
+     */
+    function frameIsBlack(videoEl) {
+        if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight) return true;
+        try {
+            const canvas = document.createElement('canvas');
+            const width = Math.min(videoEl.videoWidth, 160);
+            const height = Math.max(1, Math.round(videoEl.videoHeight * width / videoEl.videoWidth));
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(videoEl, 0, 0, width, height);
+            const data = ctx.getImageData(0, 0, width, height).data;
+            let sum = 0;
+            for (let i = 0; i < data.length; i += 4) {
+                sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+            }
+            // 12 is well below the darkest real footage: a video that is
+            // merely dark still has highlights, an empty screen does not.
+            return (sum / (width * height)) < 12;
+        } catch (err) {
+            // If the pixels cannot be read (a tainted canvas, a browser
+            // without canvas), assume the picture is there rather than
+            // throwing away a video that may be playing fine.
+            return false;
+        }
+    }
+
+    /**
+     * Watch the picture after the playback started.
+     *
+     * Many videos open on a black frame, so the first second or so is not
+     * counted: only frames past that point can prove that nothing is going
+     * to show up.  When the window is over and the screen is still black,
+     * the caller is told so it can try the other source.
+     *
+     * @returns {Promise<boolean>} true when a picture showed up
+     */
+    async function pictureAppeared(videoEl, windowMs) {
+        const deadline = Date.now() + (windowMs || 7000);
+        while (Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            if (!videoEl || videoEl.error) return false;
+            if ((videoEl.currentTime || 0) < 1.2) continue;
+            if (!frameIsBlack(videoEl)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Keep an eye on the picture and give the other source a turn when
+     * nothing shows up.
+     *
+     * The two ways of playing the same video fail differently: the merged
+     * file is played natively but tops out at 720P, the DASH halves reach
+     * 1080P but need the webview to put them together.  When the one that is
+     * running shows a black screen, the other one gets a turn; only when
+     * both stay black is it called a failure.
+     *
+     * This runs after the playback has already been handed to the caller, so
+     * it never delays the first picture.
+     */
+    async function watchPicture(videoEl, streams, status, current) {
+        const srcAtStart = videoEl.src;
+        const showed = await pictureAppeared(videoEl);
+        if (showed) return;
+        // The user moved on to another video: this verdict is about a
+        // picture that is no longer on the screen.
+        if (!videoEl || videoEl.error || videoEl.src !== srcAtStart) return;
+        if (current === 'muxed' && streams.video && streams.audio) {
+            try {
+                const played = await playWithMse(videoEl, streams, status);
+                if (played && await pictureAppeared(videoEl)) return;
+            } catch (err) {
+                console.error('bilibili MSE fallback failed:', err);
+            }
+        } else if (current === 'mse' && streams.muxed && streams.muxed.url) {
+            stopSession();
+            videoEl.src = streams.muxed.url;
+            try { await videoEl.play(); } catch (err) { /* 自动播放被拦下 */ }
+            if (await pictureAppeared(videoEl)) return;
+        }
+        status('error');
+    }
+
+    /**
+     * The picture of the standalone window and of the inline player.
+     *
+     * @param {HTMLVideoElement} videoEl the element that shows the video
+     * @param {Object} streams the answer of get_bilibili_video_streams
+     * @param {Object} [options] {onStatus: function (code)}
+     * @returns {Promise<boolean>} true when something is playing
+     */
     async function play(videoEl, streams, options) {
         const opts = options || {};
         const status = typeof opts.onStatus === 'function' ? opts.onStatus : function () {};
@@ -382,12 +484,16 @@
             videoEl.src = streams.muxed.url;
             try { await videoEl.play(); } catch (err) { /* 自动播放被拦下 */ }
             status('ready');
+            watchPicture(videoEl, streams, status, 'muxed').catch(() => {});
             return true;
         }
         if (streams.video && streams.audio) {
             try {
                 const played = await playWithMse(videoEl, streams, status);
-                if (played) return true;
+                if (played) {
+                    watchPicture(videoEl, streams, status, 'mse').catch(() => {});
+                    return true;
+                }
             } catch (err) {
                 // The MSE path failed: nothing else left.
                 console.error('bilibili MSE failed:', err);

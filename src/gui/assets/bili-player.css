@@ -394,3 +394,74 @@ html, body {
     font-size: 14px;
     z-index: 10;
 }
+
+/* ------------------------------------------------------------- the overlay */
+/* Sits on top of the picture while the backend is being reached or the
+ * streams are being fetched, and stays with a way out when it goes wrong.
+ * A black rectangle with a one-word status tells the user nothing. */
+.bp-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 12, 16, 0.72);
+    backdrop-filter: blur(3px);
+    z-index: 30;
+}
+
+.bp-overlay-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    max-width: 80%;
+    padding: 18px 22px;
+    border-radius: var(--bp-radius);
+    background: var(--bp-panel);
+    border: 1px solid var(--bp-line);
+    text-align: center;
+}
+
+.bp-overlay-spinner {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid var(--bp-line);
+    border-top-color: var(--bp-accent);
+    animation: bp-spin 0.8s linear infinite;
+}
+
+.bp-overlay-spinner[hidden] { display: none; }
+
+@keyframes bp-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bp-overlay-spinner { animation-duration: 2.4s; }
+}
+
+.bp-overlay-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--bp-text);
+}
+
+.bp-overlay[data-state="error"] .bp-overlay-title { color: #ff8f8f; }
+
+.bp-overlay-detail {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--bp-text-3);
+}
+
+.bp-overlay-detail[hidden] { display: none; }
+
+.bp-overlay-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 2px;
+}
+
+.bp-overlay-actions[hidden] { display: none; }

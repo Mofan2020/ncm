@@ -132,7 +132,118 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="check bundled assets and exit (used by CI builds)")
     parser.add_argument("--report", metavar="PATH", default=None,
                         help="write the --self-test report to PATH (frozen builds have no stdout)")
+    parser.add_argument("--frame-dump", metavar="PNG", dest="frame_dump", default=None,
+                        help="play a Bilibili video and write the current frame to PNG (opens a window)")
+    parser.add_argument("--bvid", metavar="BVID", default="BV1Baxj61ESa",
+                        help="the video --frame-dump plays (default: %(default)s)")
     return parser.parse_args(argv)
+
+
+# Draws the video into a canvas and hands the image back as a data URL.  The
+# DOM cannot tell a black picture from a working one: "readyState 4" and "the
+# decoder produced a frame" both read fine while the screen shows nothing.
+_FRAME_DUMP_JS = """
+(() => {
+    const v = document.getElementById('bili-video');
+    if (!v) return {error: 'no video element'};
+    const info = {
+        readyState: v.readyState,
+        currentTime: Math.round((v.currentTime || 0) * 100) / 100,
+        videoWidth: v.videoWidth, videoHeight: v.videoHeight,
+        paused: v.paused,
+        errorCode: v.error ? v.error.code : null,
+        srcKind: (v.src || '').slice(0, 14)
+    };
+    if (!v.videoWidth) return info;
+    const c = document.createElement('canvas');
+    c.width = Math.min(v.videoWidth, 640);
+    c.height = Math.round(c.width * v.videoHeight / v.videoWidth);
+    const ctx = c.getContext('2d');
+    try { ctx.drawImage(v, 0, 0, c.width, c.height); }
+    catch (e) { info.error = 'draw: ' + e; return info; }
+    try { info.png = c.toDataURL('image/png'); }
+    catch (e) { info.error = 'toDataURL: ' + e; }
+    return info;
+})()
+"""
+
+
+def _frame_dump(report_path: str, bvid: str) -> int:
+    """Play a video in a real window and write the current frame to a PNG.
+
+    Deliberately not part of the headless self test: it opens a window, so it
+    can only be run by hand.  It exists because a packaged build can behave
+    differently from the same code run from source, and the only way to tell
+    the two apart is to look at the picture the packaged build produced.
+    """
+    import base64
+    import threading
+    import time
+
+    try:
+        import webview
+    except ImportError:
+        print("pywebview is not installed", file=sys.stderr)
+        return 1
+
+    from src.gui.bridge import GuiBridge
+
+    bridge = GuiBridge()
+    bridge._webview_module = webview
+    media = bridge.media
+    try:
+        media.start()
+    except Exception as exc:  # pragma: no cover - port exhaustion
+        print(f"the media server could not start: {exc}", file=sys.stderr)
+        return 1
+    html_path = resource_path("src", "gui", "assets", "index.html")
+    media.set_ui_root(html_path.parent)
+    ui_url = media.ui_url("index.html")
+    if not ui_url:
+        print("the media server has no address", file=sys.stderr)
+        return 1
+
+    window = webview.create_window("SkycMedia", url=ui_url, js_api=bridge,
+                                   width=900, height=640)
+    bridge._window = window
+    bridge.set_window(window)
+    result: dict = {}
+
+    def _worker() -> None:
+        try:
+            time.sleep(18)  # let the interface boot
+            window.evaluate_js(
+                f"window.openBiliPlayer({{bvid: {bvid!r}, name: 'dump'}});"
+                f"window.loadBiliStreams({bvid!r}, 0);")
+            time.sleep(14)
+            info = window.evaluate_js(_FRAME_DUMP_JS) or {}
+            png = info.pop("png", None)
+            if png and "," in png:
+                data = base64.b64decode(png.split(",", 1)[1])
+                with open(report_path, "wb") as handle:
+                    handle.write(data)
+                info["png_bytes"] = len(data)
+            else:
+                info["png_bytes"] = 0
+            result.update(info)
+        except Exception as exc:  # noqa: BLE001 - report instead of crashing
+            result["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            try:
+                window.destroy()
+            except Exception:
+                pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+    webview.start()
+    lines = [f"frame dump {bvid}"]
+    for key, value in result.items():
+        lines.append(f"  {key}: {value}")
+    text = "\n".join(lines)
+    print(text)
+    with open(report_path + ".txt", "w", encoding="utf-8") as handle:
+        handle.write(text + "\n")
+    return 0 if result.get("png_bytes") else 1
 
 
 def _self_test(report_path: str | None = None) -> int:
@@ -481,6 +592,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.self_test:
         return _self_test(args.report)
+
+    if args.frame_dump:
+        return _frame_dump(args.frame_dump, args.bvid)
 
     try:
         import webview

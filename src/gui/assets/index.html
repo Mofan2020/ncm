@@ -1737,6 +1737,17 @@
             <div class="bili-video-wrap">
                 <video id="bili-video" class="bili-video" controls playsinline preload="auto"></video>
                 <div class="bili-danmaku-layer" id="bili-danmaku-layer"></div>
+                <div class="bp-overlay" id="bili-overlay" hidden>
+                    <div class="bp-overlay-card">
+                        <div class="bp-overlay-spinner" id="bili-overlay-spinner"></div>
+                        <div class="bp-overlay-title" id="bili-overlay-title"></div>
+                        <div class="bp-overlay-detail" id="bili-overlay-detail"></div>
+                        <div class="bp-overlay-actions" id="bili-overlay-actions" hidden>
+                            <button class="btn" id="bili-overlay-retry" type="button"
+                                    data-i18n="bili.overlay_retry"></button>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="bili-player-bar">
                 <span class="muted" id="bili-player-status"></span>
@@ -1926,6 +1937,7 @@
 
 <script src="icons.js"></script>
 <script src="bili-player.js"></script>
+<script src="bili-overlay.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

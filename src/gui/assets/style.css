@@ -2828,3 +2828,76 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 #update-status { display: block; margin-bottom: 6px; }
+
+/* ============ the overlay on top of a video ============ */
+/* Same idea as the standalone player window: while the streams are being
+ * fetched the picture area would be a black rectangle, and a failure used
+ * to be a single red word with no way out. */
+.bili-video-wrap .bp-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 12, 16, 0.72);
+    backdrop-filter: blur(3px);
+    z-index: 30;
+}
+
+.bili-video-wrap .bp-overlay[hidden] { display: none; }
+
+.bili-video-wrap .bp-overlay-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    max-width: 80%;
+    padding: 18px 22px;
+    border-radius: 12px;
+    background: var(--panel, #191c24);
+    border: 1px solid var(--line, #272b36);
+    text-align: center;
+}
+
+.bili-video-wrap .bp-overlay-spinner {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid var(--line, #272b36);
+    border-top-color: var(--accent, #4d9bff);
+    animation: bp-spin 0.8s linear infinite;
+}
+
+.bili-video-wrap .bp-overlay-spinner[hidden] { display: none; }
+
+.bili-video-wrap .bp-overlay-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text, #e8eaf0);
+}
+
+.bili-video-wrap .bp-overlay[data-state="error"] .bp-overlay-title { color: #ff8f8f; }
+
+.bili-video-wrap .bp-overlay-detail {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-3, #767d8d);
+}
+
+.bili-video-wrap .bp-overlay-detail[hidden] { display: none; }
+
+.bili-video-wrap .bp-overlay-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 2px;
+}
+
+.bili-video-wrap .bp-overlay-actions[hidden] { display: none; }
+
+@keyframes bp-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bili-video-wrap .bp-overlay-spinner { animation-duration: 2.4s; }
+}

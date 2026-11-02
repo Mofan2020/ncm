@@ -9797,11 +9797,47 @@ function renderBiliFavorites() {
 function setBiliPlayerStatus(code) {
     const status = document.getElementById('bili-player-status');
     if (!status) return;
+    if (code === 'connecting') { status.textContent = t('bili.status_connecting'); return; }
     if (code === 'buffering') { status.textContent = t('bili.buffering'); return; }
     if (code === 'ready') { status.textContent = t('bili.video_ready'); return; }
     if (code === 'audio_only') { status.textContent = t('bili.audio_only'); return; }
     if (code === 'streaming') { status.textContent = t('bili.streaming'); return; }
     status.textContent = t('bili.video_error');
+}
+
+/**
+ * The overlay on top of the picture of the inline player.
+ *
+ * Same piece the standalone window uses.  Without it the modal is a black
+ * rectangle until the streams arrive, and a failure is one red word.
+ */
+let biliOverlay = null;
+
+function ensureBiliOverlay() {
+    if (biliOverlay || !window.BiliOverlay) return biliOverlay;
+    biliOverlay = window.BiliOverlay.createOverlay({
+        t: t,
+        root: 'bili-overlay',
+        title: 'bili-overlay-title',
+        detail: 'bili-overlay-detail',
+        spinner: 'bili-overlay-spinner',
+        actions: 'bili-overlay-actions',
+        retry: 'bili-overlay-retry',
+        onRetry: () => {
+            biliOverlay.hide();
+            loadBiliStreams(biliPlayer.track && biliPlayer.track.bvid, biliPlayer.quality || 0);
+        }
+    });
+    return biliOverlay;
+}
+
+function showBiliOverlay(kind, detailKey) {
+    const view = ensureBiliOverlay();
+    if (view) view.show(kind, detailKey);
+}
+
+function hideBiliOverlay() {
+    if (biliOverlay) biliOverlay.hide();
 }
 
 /** The badges that say what the streams carry (HD, Dolby, Hi-Res). */
@@ -9862,10 +9898,12 @@ async function loadBiliStreams(bvid, quality) {
     const videoEl = document.getElementById('bili-video');
     if (!videoEl) return;
     setBiliPlayerStatus('buffering');
+    showBiliOverlay('loading');
     try {
         const result = await state.api.get_bilibili_video_streams(bvid, quality);
         if (!result || !result.success) {
             setBiliPlayerStatus('error');
+            showBiliOverlay('error', 'bili.overlay_no_stream');
             showToast('error', biliFailure(result, 'bili.video_error'));
             return;
         }
@@ -9879,10 +9917,16 @@ async function loadBiliStreams(bvid, quality) {
         const played = await window.playBiliVideo(videoEl, result, {
             onStatus: (code) => setBiliPlayerStatus(code)
         });
-        if (!played) setBiliPlayerStatus('error');
-        else armBiliPlaybackReport(videoEl);
+        if (!played) {
+            setBiliPlayerStatus('error');
+            showBiliOverlay('error', 'bili.overlay_no_stream');
+        } else {
+            hideBiliOverlay();
+            armBiliPlaybackReport(videoEl);
+        }
     } catch (err) {
         setBiliPlayerStatus('error');
+        showBiliOverlay('error', 'bili.overlay_no_stream');
     }
 }
 

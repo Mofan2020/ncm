@@ -991,6 +991,12 @@
     "quality_auto_label": "Auto",
     "window_title": "Bilibili Player",
     "window_only_desktop": "This page has to be opened in the desktop app",
-    "like_failed": "The like did not go through"
+    "like_failed": "The like did not go through",
+    "status_connecting": "Connecting",
+    "overlay_connecting": "Connecting to the app",
+    "overlay_streams": "Fetching the video",
+    "overlay_failed": "Playback failed",
+    "overlay_no_stream": "Could not get a playback address for this video",
+    "overlay_retry": "Retry"
   }
 }
