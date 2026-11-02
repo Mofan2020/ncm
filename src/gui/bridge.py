@@ -2226,6 +2226,35 @@ class GuiBridge:
         """The playable streams of one Bilibili video."""
         return self.bilibili.video_streams(bvid, quality=quality)
 
+    def get_bilibili_video_progress(self, bvid: str) -> dict[str, Any]:
+        """The watch progress of one Bilibili video from the user's history.
+
+        Returns {progress: float (0-100), duration: int (seconds)} or zeros if
+        the video is not in the history or the user is not logged in.
+        """
+        bvid = str(bvid or "").strip()
+        if not bvid or not self.bilibili.client.is_logged_in:
+            return {"success": False, "progress": 0, "duration": 0}
+        try:
+            # Fetch the first few pages of history; the video is usually recent.
+            for page in range(1, 4):
+                hist = self.bilibili.history(page=page, page_size=30)
+                if not hist.get("success"):
+                    break
+                for item in hist.get("items", []):
+                    if item.get("bvid") == bvid:
+                        return {
+                            "success": True,
+                            "progress": float(item.get("progress", 0)),
+                            "duration": int(item.get("duration", 0)),
+                        }
+                if not hist.get("has_more"):
+                    break
+            return {"success": True, "progress": 0, "duration": 0}
+        except Exception as exc:  # noqa: BLE001 - history is best-effort
+            self.logger.warning("get_bilibili_video_progress failed: %s", exc)
+            return {"success": False, "progress": 0, "duration": 0}
+
     def open_bili_player_window(self, bvid: str = "", page: int = 1,
                                 quality: int = 0) -> dict[str, Any]:
         """Open the Bilibili player in a window of its own.

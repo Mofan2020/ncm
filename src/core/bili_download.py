@@ -230,9 +230,18 @@ class BiliDownloader:
         pretending it worked would leave the user with a silent video and no
         explanation.
 
+        We use imageio-ffmpeg which ships a static ffmpeg binary, so the user
+        does not need to install anything.  If for some reason that fails we
+        fall back to a system ffmpeg.
+
         Returns an empty string on success, otherwise the reason for the user.
         """
-        ffmpeg = shutil.which("ffmpeg")
+        # imageio-ffmpeg ships a static binary; fall back to system ffmpeg.
+        try:
+            import imageio_ffmpeg
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:  # noqa: BLE001 - best effort
+            ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             return "没有找到 ffmpeg，画面和声音保持两个文件"
         video_path = Path(video.path)

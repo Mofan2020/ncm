@@ -11,3 +11,4 @@ pywebview>=6.0,<7.0
 requests>=2.31.0
 PyYAML>=6.0
 qrcode>=7.4.2
+imageio-ffmpeg>=0.4.9

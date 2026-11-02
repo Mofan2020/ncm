@@ -997,6 +997,8 @@
     "overlay_streams": "正在获取视频",
     "overlay_failed": "播放失败",
     "overlay_no_stream": "没能拿到这个视频的播放地址",
-    "overlay_retry": "重试"
+    "overlay_retry": "重试",
+    "overlay_timeout": "获取视频超时，请重试",
+    "resumed_from": "已从 {time} 继续播放"
   }
 }
