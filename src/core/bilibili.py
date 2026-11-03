@@ -1488,7 +1488,10 @@ class BiliClient:
         """Return one page of the videos inside a favourite folder."""
         folder_id = str(folder_id or "").strip()
         page = max(1, int(page or 1))
-        page_size = max(1, min(int(page_size or 30), 50))
+        # B站 caps this list at 40 items per page: asking for 41 comes back
+        # with code -400 ("请求错误") and an empty list, which used to look
+        # like "the folder is empty" rather than "the request was refused".
+        page_size = max(1, min(int(page_size or 30), 40))
         empty: dict[str, Any] = {"items": [], "has_more": False, "page": page}
         if not folder_id:
             return empty
@@ -1502,6 +1505,11 @@ class BiliClient:
             },
         )
         if not payload or payload.get("code") != 0:
+            # Say why: an empty list and a refused request look the same
+            # from the outside, and the caller has no way to tell them
+            # apart unless the reason comes along.
+            message = str((payload or {}).get("message") or "收藏夹列表读取失败")
+            empty["error"] = message
             return empty
         data = payload.get("data") or {}
         medias = data.get("medias")

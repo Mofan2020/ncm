@@ -3491,3 +3491,53 @@ BV1HgxJ6tEsM progress=0   duration=1713   -> 没看过，不跳
 
 注意续播依赖 `report_playback` 开着——历史是上报出来的，没上报就没有
 位置可读。
+
+### 2026-11-01 第四批：搜索合并、账号中心、B站备份的空数据
+
+**搜索只剩一个。** 侧栏那个只搜网易云的框改成只带关键词去聚合搜索页，
+`doMultiSearch` / `renderSearchResults` / `switchSearchType` 整套删掉，
+源列表里那个「搜索」入口和下面的分类标签（全部/歌曲/歌单/歌手/专辑/MV）
+也删了。侧栏在「本地」时仍然过滤本地库——那是另一个意思，没动。
+
+**聚合搜索里的 B 站视频直接播。** 原来点结果是 `open_external` 跳浏览器，
+现在走 `playBiliTrack`，独立窗口还是当前窗口由设置决定。
+
+**B 站分区进了聚合搜索。** `search_bilibili_tracks` 本来就收 category
+（分区名或 rid），聚合搜索一直传 `'all'`。现在来源里有 B 站时多出一排
+分区 chip，选一个就把 B 站那半限在那个分区；只看网易云时这排隐藏。
+
+**账号中心。** 原来网易云账号在顶栏按钮上，B 站账号在顶栏另一个按钮 +
+一个下拉菜单，两个账号还各有一个登录弹窗（`#login-modal` /
+`#bili-login-modal`）。现在：
+
+- 顶栏只剩一个 `#btn-account-center`
+- 两个登录表单的 HTML 搬进 `#account-center-modal`（元素 id 全没变，
+  app.js 里只有 `#login-modal .tab-panel` 这种选择器要改）
+- 账号中心里两张卡片：头像、昵称、等级、VIP、状态、该账号的操作
+- 登录和注册就在卡片里展开
+- 网易云的个人资料弹窗、B 站个人空间（自己的那个）里点账号名字能进账号中心
+
+顺手修了一个老 bug：`closeModal()` 在 app.js 里定义了**两次**，后一个
+覆盖了前一个，前一个里的 `cancel_login()` 就一直没生效——关掉登录窗
+之后后台还在轮询二维码。现在只剩一个定义，顺手把 B 站的轮询也停了。
+
+**B 站备份导出的是空的。** 用户问「.ncmbk 能不能也给 B 站账号导出数据」，
+查下来是：导出的 `bilibili` 一节里，11 个收藏夹**一个视频都没有**，
+而且 `errors` 是空的，看起来一切正常。
+
+根因：B 站 `/x/v3/fav/resource/list` 一页最多给 40 条，给 41 就返回
+`code=-400 请求错误`。`backup.BILI_FOLDER_PAGE` 写的是 50，于是每个
+收藏夹都拿到了空列表。`favorite_videos()` 把 `code != 0` 静默转成空
+列表，调用方根本看不出来。
+
+修法三处：
+1. `favorite_videos` 的 page_size 上限 50 → 40
+2. `BILI_FOLDER_PAGE` 50 → 40
+3. `favorite_videos` 失败时带上 `error`，`export_bilibili_data` 记进
+   `errors`，不再假装成功
+
+实测：11 个收藏夹、835 个视频（之前 0 个），写出来的 .ncmbk 188 KB，
+`bilibili` 一节里 account/folders/errors 都在。
+
+回归测试加了三条，其中一条做了变异测试：把 `BILI_FOLDER_PAGE` 改回 50，
+测试确实红了。

@@ -65,7 +65,7 @@ const player = {
     // The artist whose page is open, so a refresh re-reads *that* page
     // instead of the list it was opened from.
     artistOpen: null,
-    searchKeyword: '',
+
     searchOffset: 0,
     searchTotal: 0,
     localTracks: [],
@@ -473,8 +473,14 @@ function showError(payload, fallbackKey) {
 
 function openModal(id) { document.getElementById(id).hidden = false; }
 function closeModal(id) {
-    document.getElementById(id).hidden = true;
-    if (id === 'login-modal' && state.api) state.api.cancel_login();
+    const modal = document.getElementById(id);
+    if (modal) modal.hidden = true;
+    // The login poll must stop when the form goes away, otherwise it keeps
+    // asking the backend about a QR code nobody can see any more.
+    if (id === 'account-center-modal' && state.api) {
+        state.api.cancel_login();
+    }
+    if (id === 'account-center-modal') stopBiliLoginPolling();
 }
 
 function confirmDialog(messageKey) {
@@ -610,7 +616,17 @@ function renderAccountProfile(profile) {
         avatar.hidden = !avatar.src;
     }
     const name = document.getElementById('account-name');
-    if (name) name.textContent = profile.nickname || t('account.not_logged_in');
+    if (name) {
+        name.textContent = profile.nickname || t('account.not_logged_in');
+        // The profile is the user's own page: clicking the identity opens
+        // the account center, where both accounts live.
+        name.classList.add('is-link');
+        name.onclick = () => openAccountCenter();
+    }
+    if (avatar) {
+        avatar.classList.add('is-link');
+        avatar.onclick = () => openAccountCenter();
+    }
     const signature = document.getElementById('account-signature');
     if (signature) {
         signature.textContent = profile.signature || t('account.signature_empty');
@@ -1745,41 +1761,287 @@ async function refreshLoginStatus() {
     updateLoginBadge(status || { is_logged_in: false, user: null });
 }
 
+/* ================================================================
+   The account center: both accounts in one place.
+
+   The NetEase account used to live in the header button and the
+   Bilibili one in a dropdown under a button of its own, and each of
+   them had a login modal of its own.  Now there is one button, one
+   modal, and inside it both accounts show their state, what can be
+   done with them and the way in (login and register).
+   ================================================================ */
+
+/** What the account center knows about the two accounts. */
+const accountCenter = {
+    netease: { loggedIn: false, nickname: '', level: '', vip: '', avatar: '' },
+    bilibili: { loggedIn: false, nickname: '', level: '', vip: '', avatar: '' },
+    loginFor: ''
+};
+
+/**
+ * Open the account center.
+ *
+ * @param {string} [which] 'netease' or 'bilibili' to open the login form
+ *   of that account right away
+ */
+async function openAccountCenter(which) {
+    accountCenter.loginFor = which || '';
+    openModal('account-center-modal');
+    await refreshAccountCenter();
+    showAccountLogin(accountCenter.loginFor);
+}
+
+/** Put the login form of one account away, or take it out. */
+function showAccountLogin(which) {
+    accountCenter.loginFor = which || '';
+    const netease = document.getElementById('ac-netease-login');
+    const bili = document.getElementById('ac-bili-login');
+    if (netease) netease.hidden = accountCenter.loginFor !== 'netease';
+    if (bili) bili.hidden = accountCenter.loginFor !== 'bilibili';
+    if (accountCenter.loginFor === 'netease') switchLoginTab('qrcode');
+    if (accountCenter.loginFor === 'bilibili') switchBiliLoginTab('qr');
+}
+
+/** Read both accounts and draw the two cards. */
+async function refreshAccountCenter() {
+    await Promise.all([refreshNeteaseAccountCard(), refreshBiliAccountCard()]);
+    renderAccountCenterButton();
+}
+
+/** The NetEase card of the account center. */
+async function refreshNeteaseAccountCard() {
+    const state_ = document.getElementById('ac-netease-state');
+    if (!state_) return;
+    const profileBox = document.getElementById('ac-netease-profile');
+    const actions = document.getElementById('ac-netease-actions');
+    const card = accountCenter.netease;
+    let profile = null;
+    try {
+        const result = await state.api.get_user_profile(false);
+        if (result && result.success) profile = result.profile;
+    } catch (err) {
+        profile = null;
+    }
+    card.loggedIn = !!profile;
+    card.nickname = '';
+    card.level = '';
+    card.vip = '';
+    card.avatar = '';
+    if (profile) {
+        card.nickname = profile.nickname || '';
+        card.level = profile.level != null ? String(profile.level) : '';
+        card.vip = profile.vipType > 0 ? `VIP ${profile.vipType}` : '';
+        card.avatar = profile.avatarUrl || profile.avatarImgUrl || '';
+    }
+    state_.textContent = card.loggedIn
+        ? t('account.center_signed_in') : t('account.center_signed_out');
+    state_.className = 'ac-card-state' + (card.loggedIn ? ' is-on' : '');
+    if (profileBox) {
+        profileBox.hidden = !card.loggedIn;
+        const face = document.getElementById('ac-netease-face');
+        if (face) {
+            if (card.avatar) {
+                face.src = proxyCoverUrl(card.avatar);
+                face.hidden = false;
+                face.addEventListener('error', () => { face.hidden = true; });
+            } else {
+                face.removeAttribute('src');
+                face.hidden = true;
+            }
+        }
+        const name = document.getElementById('ac-netease-name');
+        if (name) name.textContent = card.nickname;
+        const meta = document.getElementById('ac-netease-meta');
+        if (meta) {
+            const parts = [];
+            if (card.level) parts.push(t('account.level', { level: card.level }));
+            if (card.vip) parts.push(card.vip);
+            meta.textContent = parts.join(' · ');
+        }
+    }
+    if (actions) {
+        actions.innerHTML = '';
+        if (card.loggedIn) {
+            const detail = document.createElement('button');
+            detail.className = 'btn btn-sm btn-secondary';
+            detail.type = 'button';
+            detail.textContent = t('account.center_profile');
+            detail.addEventListener('click', () => openAccountPanel(false));
+            actions.appendChild(detail);
+            const logout = document.createElement('button');
+            logout.className = 'btn btn-sm btn-secondary';
+            logout.type = 'button';
+            logout.textContent = t('account.center_logout');
+            logout.addEventListener('click', async () => {
+                if (!await confirmDialog('login.logout_confirm')) return;
+                await state.api.logout();
+                player.playlists = [];
+                await refreshLoginStatus();
+                await refreshAccountCenter();
+            });
+            actions.appendChild(logout);
+        } else {
+            const login = document.createElement('button');
+            login.className = 'btn btn-sm btn-primary';
+            login.type = 'button';
+            login.textContent = t('account.center_login');
+            login.addEventListener('click', () => showAccountLogin('netease'));
+            actions.appendChild(login);
+        }
+    }
+}
+
+/** The Bilibili card of the account center. */
+async function refreshBiliAccountCard() {
+    const state_ = document.getElementById('ac-bili-state');
+    if (!state_) return;
+    const profileBox = document.getElementById('ac-bili-profile');
+    const actions = document.getElementById('ac-bili-actions');
+    const card = accountCenter.bilibili;
+    let info = null;
+    try {
+        if (bridgeHas('get_bilibili_account')) {
+            const result = await state.api.get_bilibili_account();
+            if (result && result.success) info = result;
+        }
+    } catch (err) {
+        info = null;
+    }
+    card.loggedIn = !!(info && info.logged_in);
+    card.nickname = info ? (info.uname || '') : '';
+    card.level = info ? (info.level ? String(info.level) : '') : '';
+    card.vip = info ? (info.vip_label || '') : '';
+    card.avatar = info ? (info.face || '') : '';
+    state_.textContent = card.loggedIn
+        ? t('account.center_signed_in') : t('account.center_signed_out');
+    state_.className = 'ac-card-state' + (card.loggedIn ? ' is-on' : '');
+    if (profileBox) {
+        profileBox.hidden = !card.loggedIn;
+        const face = document.getElementById('ac-bili-face');
+        if (face) {
+            if (card.avatar) {
+                face.src = biliImageSrc(card.avatar);
+                face.hidden = false;
+                face.addEventListener('error', () => { face.hidden = true; });
+            } else {
+                face.removeAttribute('src');
+                face.hidden = true;
+            }
+        }
+        const name = document.getElementById('ac-bili-name');
+        if (name) name.textContent = card.nickname || (info && info.mid) || '';
+        const meta = document.getElementById('ac-bili-meta');
+        if (meta) {
+            const parts = [];
+            if (card.level) parts.push(t('bili.level', { level: card.level }));
+            if (card.vip) parts.push(t('bili.vip', { name: card.vip }));
+            meta.textContent = parts.join(' · ');
+        }
+    }
+    if (actions) {
+        actions.innerHTML = '';
+        if (card.loggedIn) {
+            const messages = document.createElement('button');
+            messages.className = 'btn btn-sm btn-secondary';
+            messages.type = 'button';
+            messages.textContent = t('bili.tab_messages');
+            messages.addEventListener('click', () => {
+                closeModal('account-center-modal');
+                openBiliMessages();
+            });
+            actions.appendChild(messages);
+            const upload = document.createElement('button');
+            upload.className = 'btn btn-sm btn-secondary';
+            upload.type = 'button';
+            upload.textContent = t('bili.tab_upload');
+            upload.addEventListener('click', () => {
+                closeModal('account-center-modal');
+                openBiliUpload();
+            });
+            actions.appendChild(upload);
+            if (info && info.mid) {
+                const space = document.createElement('button');
+                space.className = 'btn btn-sm btn-secondary';
+                space.type = 'button';
+                space.textContent = t('bili.tab_space');
+                space.addEventListener('click', () => {
+                    closeModal('account-center-modal');
+                    openBiliSpace(info.mid);
+                });
+                actions.appendChild(space);
+            }
+            const logout = document.createElement('button');
+            logout.className = 'btn btn-sm btn-secondary';
+            logout.type = 'button';
+            logout.textContent = t('account.center_logout');
+            logout.addEventListener('click', async () => {
+                await logoutBili();
+                await refreshAccountCenter();
+            });
+            actions.appendChild(logout);
+        } else {
+            const login = document.createElement('button');
+            login.className = 'btn btn-sm btn-primary';
+            login.type = 'button';
+            login.textContent = t('account.center_login');
+            login.addEventListener('click', () => showAccountLogin('bilibili'));
+            actions.appendChild(login);
+        }
+    }
+}
+
+/**
+ * The header button: the faces of whoever is signed in, and the way into
+ * the account center.
+ */
+function renderAccountCenterButton() {
+    const button = document.getElementById('btn-account-center');
+    if (!button) return;
+    button.innerHTML = '';
+    const add = (avatar, isBili) => {
+        const face = document.createElement('img');
+        face.className = 'account-center-face';
+        face.alt = '';
+        face.loading = 'lazy';
+        if (avatar) {
+            face.src = isBili ? biliImageSrc(avatar) : proxyCoverUrl(avatar);
+            face.addEventListener('error', () => { face.remove(); });
+        }
+        button.appendChild(face);
+    };
+    if (accountCenter.netease.loggedIn) add(accountCenter.netease.avatar, false);
+    if (accountCenter.bilibili.loggedIn) add(accountCenter.bilibili.avatar, true);
+    const label = document.createElement('span');
+    label.textContent = t('account.center_title');
+    button.appendChild(label);
+    const names = [];
+    if (accountCenter.netease.loggedIn) names.push(accountCenter.netease.nickname);
+    if (accountCenter.bilibili.loggedIn) names.push(accountCenter.bilibili.nickname);
+    button.title = names.length ? names.join(' · ') : t('account.center_title');
+}
+
 function updateLoginBadge(status) {
     status = status || {};
-    const button = document.getElementById('btn-login');
-    if (!button) return;
-    if (status.is_logged_in && status.user) {
-        button.classList.remove('btn-primary');
-        button.classList.add('btn-secondary');
-        button.innerHTML = '';
-        const name = document.createElement('span');
-        name.textContent = status.user.nickname || t('login.logged_in_as', { name: '' });
-        button.appendChild(name);
-        const badge = document.createElement('span');
-        badge.className = 'badge';
-        badge.textContent = status.user.vip_type > 0 ? 'VIP' : '';
-        if (badge.textContent) button.appendChild(badge);
-        button.onclick = () => openAccountPanel(false);
-        button.title = t('login.logged_in_as', { name: status.user.nickname || '' });
-    } else {
-        button.classList.add('btn-primary');
-        button.classList.remove('btn-secondary');
-        button.textContent = t('login.title');
-        button.title = '';
-        button.onclick = openLoginModal;
+    const account = accountCenter.netease;
+    account.loggedIn = !!(status.is_logged_in && status.user);
+    account.nickname = account.loggedIn ? (status.user.nickname || '') : '';
+    account.vip = account.loggedIn && status.user.vip_type > 0 ? 'VIP' : '';
+    account.avatar = account.loggedIn ? (status.user.avatar_url || '') : '';
+    renderAccountCenterButton();
+    const card = document.getElementById('ac-netease-state');
+    if (card && !document.getElementById('account-center-modal').hidden) {
+        refreshNeteaseAccountCard();
     }
 }
 
 function openLoginModal() {
-    openModal('login-modal');
-    switchLoginTab('qrcode');
+    openAccountCenter('netease');
 }
 
 function switchLoginTab(tab) {
     document.querySelectorAll('#login-tabs .tab').forEach((el) =>
         el.classList.toggle('is-active', el.dataset.tab === tab));
-    document.querySelectorAll('#login-modal .tab-panel').forEach((el) =>
+    document.querySelectorAll('#ac-netease-login .tab-panel').forEach((el) =>
         el.classList.toggle('is-active', el.dataset.panel === tab));
     if (tab === 'qrcode') state.api.login_qrcode();
     // Leaving the register tab invalidates the existence check: the number
@@ -1981,7 +2243,7 @@ async function doRegister() {
     if (result.success) {
         showToast('success', t('login.register_success'));
         resetRegisterState();
-        closeModal('login-modal');
+        closeModal('account-center-modal');
         await refreshLoginStatus();
         if (player.sourceTab === 'playlists') loadPlaylists();
         return;
@@ -2396,7 +2658,6 @@ async function selectSource(source) {
     document.getElementById('local-playlist-actions').hidden = source !== 'local_playlists';
     document.getElementById('btn-list-back').hidden = true;
     document.getElementById('btn-list-more').hidden = true;
-    document.getElementById('search-type-tabs').hidden = true;
     // Switching sources must clear the previous track list.  Without this the
     // last tab's tracks stay on screen and bleed into whatever list opens next
     // (the symptom: a couple of playlists later, ~200 stale tracks reappear).
@@ -2416,7 +2677,6 @@ async function selectSource(source) {
     else if (source === 'local_playlists') await loadLocalPlaylists();
     else if (source === 'local') await loadLocal();
     else if (source === 'recent') await loadRecent();
-    else if (source === 'search') await showSearchResults();
 }
 
 /* ============================================================
@@ -3759,11 +4019,6 @@ async function confirmAddTracksToPlaylist() {
     }
 }
 
-function closeModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) modal.hidden = true;
-}
-
 /* ----------------------------------------------------------- smart playlist */
 
 function openSmartRuleModal(rule = null) {
@@ -3885,7 +4140,7 @@ async function doSearch(more) {
     const keyword = (input.value || '').trim();
     if (player.sourceTab === 'local') {
         // While the local list is open the box filters it instead of searching
-        // NetEase -- that is what "let me find it in my own files" means.
+        // -- that is what "let me find it in my own files" means.
         await loadLocal(more);
         return;
     }
@@ -3893,53 +4148,29 @@ async function doSearch(more) {
         showToast('warning', t('player.search_empty'));
         return;
     }
-    if (!more || keyword !== player.searchKeyword) {
-        player.searchKeyword = keyword;
-        player.searchOffset = 0;
-        player.searchResults = [];
-    }
-    player.sourceTab = 'search';
-    document.querySelectorAll('.source-tab').forEach((tab) =>
-        tab.classList.toggle('is-active', tab.dataset.source === 'search'));
-    document.getElementById('playlist-list').innerHTML = '';
-    const button = document.getElementById('btn-search');
-    button.disabled = true;
-    try {
-        const result = await state.api.search_tracks(keyword, 50, player.searchOffset);
-        if (!result.success) {
-            showError(result, 'player.search_failed');
-            return;
-        }
-        player.searchResults = more
-            ? player.searchResults.concat(result.tracks || [])
-            : (result.tracks || []);
-        player.searchOffset += (result.tracks || []).length;
-        setListTitle(t('player.search_result', { keyword }));
-        playTracksInto(player.searchResults, { kind: 'search', name: keyword });
-        document.getElementById('btn-list-more').hidden = (result.tracks || []).length < 50;
-    } finally {
-        button.disabled = false;
-    }
+    // There is one search now and it covers both sources, so the box in the
+    // sidebar only carries the keyword over to the search page.
+    await openAggregateSearch(keyword);
 }
 
-async function showSearchResults() {
-    if (!player.searchKeyword) {
-        renderEmptyTracks(t('player.search_hint'));
-        setListTitle(t('player.source_search'));
-        return;
+/**
+ * The one search: NetEase and Bilibili in the same result list.
+ *
+ * The sidebar used to search NetEase on its own and drop the songs into
+ * the playlist column, which made the two sources feel like two programs.
+ * Now the keyword goes to the search page, where both sources answer and
+ * the filters (source, kind, length, order) work on the mixed list.
+ */
+async function openAggregateSearch(keyword) {
+    const text = String(keyword || '').trim();
+    if (!text) return;
+    showView('search');
+    const input = document.getElementById('aggr-input');
+    if (input) {
+        input.value = text;
+        input.focus();
     }
-    setListTitle(t('player.search_result', { keyword: player.searchKeyword }));
-    playTracksInto(player.searchResults || [], { kind: 'search', name: player.searchKeyword });
-}
-
-async function showSearchResults() {
-    if (!player.searchKeyword) {
-        renderEmptyTracks(t('player.search_hint'));
-        setListTitle(t('player.source_search'));
-        return;
-    }
-    setListTitle(t('player.search_result', { keyword: player.searchKeyword }));
-    playTracksInto(player.searchResults || [], { kind: 'search', name: player.searchKeyword });
+    await runCombinedSearch();
 }
 
 function setListTitle(text) {
@@ -4087,81 +4318,6 @@ async function openTopList(toplist) {
 }
 
 /* ----------------------------------------------------------- multi-search */
-
-async function doMultiSearch(more) {
-    const input = document.getElementById('search-input');
-    const keyword = (input.value || '').trim();
-    if (!keyword) {
-        showToast('warning', t('player.search_empty'));
-        return;
-    }
-    if (!more || keyword !== player.searchKeyword) {
-        player.searchKeyword = keyword;
-        player.searchOffset = 0;
-        player.searchResults = { songs: [], playlists: [], artists: [], albums: [], mvs: [] };
-    }
-    player.sourceTab = 'search';
-    document.querySelectorAll('.source-tab').forEach((tab) =>
-        tab.classList.toggle('is-active', tab.dataset.source === 'search'));
-    document.getElementById('playlist-list').innerHTML = '';
-    document.getElementById('search-type-tabs').hidden = false;
-    
-    // Show the active search type tab
-    const activeType = player.searchType || 'all';
-    document.querySelectorAll('.search-type-tab').forEach((tab) => {
-        tab.classList.toggle('is-active', tab.dataset.type === activeType);
-    });
-    
-    const button = document.getElementById('btn-search');
-    button.disabled = true;
-    try {
-        const result = await state.api.search_multi(keyword, 30, player.searchOffset);
-        if (!result.success) {
-            showError(result, 'player.search_failed');
-            return;
-        }
-        if (more) {
-            for (const key of Object.keys(result.results)) {
-                player.searchResults[key] = (player.searchResults[key] || []).concat(result.results[key] || []);
-            }
-        } else {
-            player.searchResults = result.results;
-        }
-        player.searchOffset += (result.results.songs || []).length;
-        renderSearchResults();
-        document.getElementById('btn-list-more').hidden = (result.results.songs || []).length < 30;
-    } finally {
-        button.disabled = false;
-    }
-}
-
-function renderSearchResults() {
-    const activeType = player.searchType || 'all';
-    const results = player.searchResults || {};
-    const tracks = results[activeType === 'all' ? 'songs' : activeType] || [];
-
-    setListTitle(t('player.search_result', { keyword: player.searchKeyword }));
-    if (activeType === 'artists') {
-        // An artist is not a track, so the results go into the side list as
-        // rows that open the artist page instead of into the track list.
-        renderArtistRows(results.artists || [], document.getElementById('playlist-list'),
-                         'player.search_no_artists');
-        player.visible = [];
-        player.visibleSource = null;
-        document.getElementById('track-list').innerHTML = '';
-        setListCount((results.artists || []).length);
-        return;
-    }
-    playTracksInto(tracks, { kind: 'search', name: player.searchKeyword });
-}
-
-function switchSearchType(type) {
-    player.searchType = type;
-    document.querySelectorAll('.search-type-tab').forEach((tab) => {
-        tab.classList.toggle('is-active', tab.dataset.type === type);
-    });
-    renderSearchResults();
-}
 
 /* ----------------------------------------------------------- album/artist detail */
 
@@ -4470,7 +4626,7 @@ function initSearchSuggest() {
         if (item) {
             input.value = item.dataset.value;
             suggestBox.hidden = true;
-            doMultiSearch(false);
+            openAggregateSearch(item.dataset.value);
         }
     });
 }
@@ -4648,13 +4804,7 @@ function renderSourceHeader() {
         document.getElementById('btn-list-back').hidden = false;
     } else {
         const tab = player.sourceTab;
-        if (tab === 'search') {
-            setListTitle(player.searchKeyword
-                ? t('player.search_result', { keyword: player.searchKeyword })
-                : t('player.source_search'));
-        } else {
-            setListTitle(t('player.source_' + tab));
-        }
+        setListTitle(t('player.source_' + tab));
         document.getElementById('btn-list-back').hidden = true;
     }
     setListCount(player.visible.length);
@@ -7257,6 +7407,11 @@ function bindStaticEvents() {
         refreshCacheStats();
     });
     document.getElementById('btn-theme').addEventListener('click', cycleTheme);
+    // One button for both accounts now; it opens the account center.
+    const accountButton = document.getElementById('btn-account-center');
+    if (accountButton) {
+        accountButton.addEventListener('click', () => openAccountCenter());
+    }
 
     // cache
     document.getElementById('btn-clear-audio')
@@ -7414,10 +7569,6 @@ function bindStaticEvents() {
         const tab = event.target.closest('.source-tab');
         if (tab) selectSource(tab.dataset.source);
     });
-    document.getElementById('search-type-tabs').addEventListener('click', (event) => {
-        const tab = event.target.closest('.search-type-tab');
-        if (tab) switchSearchType(tab.dataset.type);
-    });
     document.getElementById('btn-search').addEventListener('click', () => doSearch(false));
     document.getElementById('search-input').addEventListener('keydown', (event) => {
         if (event.key === 'Enter') doSearch(false);
@@ -7428,7 +7579,6 @@ function bindStaticEvents() {
         else if (player.sourceTab === 'recommend_mv') loadRecommendMVs(true);
         else if (player.sourceTab === 'followed_artists') loadFollowedArtists(true);
         else if (player.sourceTab === 'toplist') { /* top lists don't paginate */ }
-        else doSearch(true);
     });
     document.getElementById('btn-list-back').addEventListener('click', backToPlaylists);
     // Re-read the list on screen, skipping every cache.  This is the way
@@ -7592,6 +7742,16 @@ function bindStaticEvents() {
     document.getElementById('btn-confirm-cancel').addEventListener('click', () => resolveConfirm(false));
 
     document.addEventListener('keydown', (event) => {
+        // Cmd/Ctrl+F goes to the one search, whatever is on screen.
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+            const tag = (event.target.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea') return;
+            event.preventDefault();
+            showView('search');
+            const input = document.getElementById('aggr-input');
+            if (input) input.focus();
+            return;
+        }
         if (event.key === 'Escape') {
             const open = document.querySelector('.modal:not([hidden])');
             if (!open) {
@@ -7791,7 +7951,7 @@ function onQrcodeUpdate(payload) {
 
 function onLoginSuccess() {
     showToast('success', t('login.login_success'));
-    closeModal('login-modal');
+    closeModal('account-center-modal');
     refreshLoginStatus();
     // The heart state now includes the account's NetEase favourites, which
     // only exist once somebody is signed in.
@@ -7848,6 +8008,8 @@ const combined = {
     category: 'all',
     sort: 'relevance',
     duration: 'all',
+    // The Bilibili partition (its rid) that the search is narrowed down to.
+    partition: 0,
     rows: [],
     neteaseOffset: 0,
     biliPage: 1,
@@ -7858,6 +8020,57 @@ const combined = {
     loading: false,
     requestId: 0
 };
+
+/**
+ * The Bilibili partitions as a filter of the search.
+ *
+ * The Bilibili half of the search can be narrowed down to one partition,
+ * the same way the Bilibili section itself works.  The row only shows up
+ * when the Bilibili source is in the mix -- filtering NetEase by a
+ * Bilibili partition would make no sense.
+ */
+async function renderCombinedPartitions() {
+    const row = document.getElementById('aggr-bili-partitions');
+    if (!row) return;
+    if (combined.source === 'netease') {
+        row.hidden = true;
+        row.innerHTML = '';
+        return;
+    }
+    row.hidden = false;
+    await loadBiliPartitions();
+    row.innerHTML = '';
+    const hot = document.createElement('button');
+    hot.className = 'chip' + (combined.partition ? '' : ' is-active');
+    hot.type = 'button';
+    hot.textContent = t('bili.chip_trending');
+    hot.setAttribute('aria-pressed', combined.partition ? 'false' : 'true');
+    hot.addEventListener('click', () => {
+        combined.partition = 0;
+        // runCombinedSearch() and not renderCombinedSearch(): the latter
+        // needs the keyword handed to it, and without one it empties the
+        // search instead of narrowing it down.
+        runCombinedSearch();
+    });
+    row.appendChild(hot);
+    (biliSection.partitions || []).forEach((partition) => {
+        if (!partition || !partition.rid) return;
+        const key = BILI_CHIP_KEYS[partition.key];
+        const label = key ? t(key) : (partition.name || String(partition.rid));
+        const chip = document.createElement('button');
+        chip.className = 'chip' + (Number(combined.partition) === Number(partition.rid)
+            ? ' is-active' : '');
+        chip.type = 'button';
+        chip.textContent = label;
+        chip.setAttribute('aria-pressed',
+            Number(combined.partition) === Number(partition.rid) ? 'true' : 'false');
+        chip.addEventListener('click', () => {
+            combined.partition = partition.rid;
+            runCombinedSearch();
+        });
+        row.appendChild(chip);
+    });
+}
 
 /** The Bilibili section: the partition that is open and what it holds. */
 const biliSection = {
@@ -8110,7 +8323,8 @@ function combinedFilters() {
         source: combinedSourceValue(),
         category: category ? category.value : 'all',
         sort: sort ? sort.value : 'relevance',
-        duration: duration ? duration.value : 'all'
+        duration: duration ? duration.value : 'all',
+        partition: combined.partition || 0
     };
 }
 
@@ -8274,6 +8488,7 @@ function clearCombinedFilters() {
     setFilterValue('aggr-category', 'all');
     setFilterValue('aggr-sort', 'relevance');
     setFilterValue('aggr-duration', 'all');
+    combined.partition = 0;
     applyCombinedFilters(true);
 }
 
@@ -8358,6 +8573,20 @@ function combinedRowElement(row) {
     duration.textContent = row.durationMs ? fmtTime(row.durationMs / 1000) : '';
     element.appendChild(duration);
 
+    // The row itself opens the result, but a video that only opens in the
+    // browser used to look like a dead end.  The button says what it does.
+    const play = document.createElement('button');
+    play.className = 'result-play';
+    play.type = 'button';
+    play.setAttribute('aria-label', t('player.play'));
+    play.setAttribute('data-icon', 'play');
+    setIcon(play, 'play');
+    play.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openCombinedRow(row);
+    });
+    element.appendChild(play);
+
     element.addEventListener('click', () => openCombinedRow(row));
     element.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -8372,8 +8601,10 @@ function combinedRowElement(row) {
 /** What happens when a result row is picked. */
 function openCombinedRow(row) {
     if (row.source === 'bilibili') {
-        const url = (row.track && row.track.url) || '';
-        if (url) state.api.open_external(url);
+        // A video found by the search plays right here: in the player window
+        // or in the modal, whichever the settings ask for.  Jumping out to
+        // the browser left the result unplayable from the app.
+        playBiliTrack(row.track);
         return;
     }
     if (row.kind === 'playlist') {
@@ -8662,8 +8893,12 @@ async function loadCombinedBili(requestId) {
             combined.biliDone = true;
             return;
         }
+        // The partition narrows the Bilibili half of the search down; 0
+        // means "every partition", which is what the interface calls the
+        // hot list.
+        const partition = combined.partition ? String(combined.partition) : 'all';
         const result = await state.api.search_bilibili_tracks(
-            combined.keyword, 'all', biliOrderFor(combined.sort), combined.biliPage, 20);
+            combined.keyword, partition, biliOrderFor(combined.sort), combined.biliPage, 20);
         if (requestId !== combined.requestId) return;
         if (!result || !result.success) {
             combined.biliError = bridgeFailure(result, 'error.network');
@@ -8709,7 +8944,10 @@ async function renderCombinedSearch(keyword, filters) {
     combined.category = options.category;
     combined.sort = options.sort;
     combined.duration = options.duration;
-    combined.keyword = text;
+    combined.partition = Number(options.partition) || 0;
+    // An empty call must not throw away the keyword that is already in
+    // the box: the search is still there, it just was not asked for again.
+    combined.keyword = text || combined.keyword;
     combined.rows = [];
     combined.neteaseOffset = 0;
     combined.biliPage = 1;
@@ -8723,6 +8961,7 @@ async function renderCombinedSearch(keyword, filters) {
     if (combined.source === 'netease') combined.biliDone = true;
     updateFilterSelects();
     updateFilterChips();
+    await renderCombinedPartitions();
     if (!text) {
         combined.loading = false;
         renderCombinedRows();
@@ -9080,72 +9319,16 @@ function biliFailure(result, fallbackKey) {
  * like the app had one account.  Both belong there.
  */
 function renderBiliHeaderAccount() {
-    const button = document.getElementById('btn-bili-account');
-    const menu = document.getElementById('bili-account-menu');
-    if (!button) return;
-    button.innerHTML = '';
-    if (!biliAccount.loggedIn) {
-        button.classList.add('btn-primary');
-        button.classList.remove('btn-secondary');
-        button.textContent = t('bili.login_button');
-        button.title = '';
-        button.onclick = () => {
-            closeBiliAccountMenu();
-            openBiliLoginModal();
-        };
-        if (menu) menu.hidden = true;
-        return;
-    }
-    button.classList.remove('btn-primary');
-    button.classList.add('btn-secondary');
-    const face = document.createElement('img');
-    face.className = 'bili-header-face';
-    face.alt = '';
-    face.loading = 'lazy';
-    if (biliAccount.face) {
-        face.src = biliImageSrc(biliAccount.face);
-        face.addEventListener('error', () => { face.remove(); });
-    }
-    button.appendChild(face);
-    const name = document.createElement('span');
-    name.className = 'bili-header-name';
-    name.textContent = biliAccount.uname || biliAccount.mid || '';
-    button.appendChild(name);
-    button.title = t('bili.signed_in', { name: biliAccount.uname || '' });
-    button.onclick = () => toggleBiliAccountMenu();
-}
-
-/** Show or hide the account menu under the header button. */
-function toggleBiliAccountMenu() {
-    const menu = document.getElementById('bili-account-menu');
-    if (!menu) return;
-    const showing = menu.hidden;
-    menu.hidden = !showing;
-    if (!showing) return;
-    const face = document.getElementById('bili-menu-face');
-    const name = document.getElementById('bili-menu-name');
-    const meta = document.getElementById('bili-menu-meta');
-    if (face) {
-        if (biliAccount.face) {
-            face.src = biliImageSrc(biliAccount.face);
-            face.hidden = false;
-        } else {
-            face.hidden = true;
-        }
-    }
-    if (name) name.textContent = biliAccount.uname || biliAccount.mid || '';
-    if (meta) {
-        const parts = [];
-        if (biliAccount.level) parts.push(t('bili.level', { level: biliAccount.level }));
-        if (biliAccount.vipLabel) parts.push(t('bili.vip', { name: biliAccount.vipLabel }));
-        meta.textContent = parts.join(' · ');
-    }
-}
-
-/** Close the account menu. */
-function closeBiliAccountMenu() {
-    const menu = document.getElementById('bili-account-menu');
-    if (menu) menu.hidden = true;
+    // The header has one account button now and it opens the account
+    // center, so all this has to do is keep the center's copy of the
+    // Bilibili account up to date.
+    const card = accountCenter.bilibili;
+    card.loggedIn = !!biliAccount.loggedIn;
+    card.nickname = biliAccount.uname || (biliAccount.mid ? String(biliAccount.mid) : '');
+    card.level = biliAccount.level ? String(biliAccount.level) : '';
+    card.vip = biliAccount.vipLabel || '';
+    card.avatar = biliAccount.face || '';
+    renderAccountCenterButton();
 }
 
 /** The account bar: the avatar, the name, the level and the way out. */
@@ -9156,6 +9339,9 @@ function renderBiliAccount() {
     const actions = document.getElementById('bili-account-actions');
     if (!name || !meta || !actions) return;
     actions.innerHTML = '';
+    // The name is the way into the account center from here.
+    name.classList.add('is-link');
+    name.onclick = () => openAccountCenter();
     if (biliAccount.loggedIn) {
         if (face) {
             face.src = biliImageSrc(biliAccount.face);
@@ -9245,8 +9431,7 @@ async function loadBiliAccount() {
 
 /** Open the login panel. */
 function openBiliLoginModal() {
-    openModal('bili-login-modal');
-    switchBiliLoginTab('qr');
+    openAccountCenter('bilibili');
 }
 
 /** One of the five ways to sign in. */
@@ -9254,7 +9439,7 @@ function switchBiliLoginTab(tab) {
     biliLogin.method = tab;
     document.querySelectorAll('#bili-login-tabs .tab').forEach((el) =>
         el.classList.toggle('is-active', el.dataset.tab === tab));
-    document.querySelectorAll('#bili-login-modal .tab-panel').forEach((el) =>
+    document.querySelectorAll('#ac-bili-login .tab-panel').forEach((el) =>
         el.classList.toggle('is-active', el.dataset.panel === tab));
     // Only the QR code is polled; the other methods are one-shot requests.
     stopBiliLoginPolling();
@@ -9307,7 +9492,7 @@ function stopBiliLoginPolling() {
 
 /** One step of the QR login. */
 async function pollBiliLogin() {
-    const modal = document.getElementById('bili-login-modal');
+    const modal = document.getElementById('ac-bili-login');
     if (modal && modal.hidden) {
         stopBiliLoginPolling();
         return;
@@ -9340,7 +9525,7 @@ async function pollBiliLogin() {
 /** The login worked: close the panel and show who is signed in. */
 async function finishBiliLogin() {
     stopBiliLoginPolling();
-    closeModal('bili-login-modal');
+    closeModal('account-center-modal');
     showToast('success', t('bili.signed_in_toast'));
     await loadBiliAccount();
 }
@@ -11263,7 +11448,19 @@ function renderBiliSpace() {
             face.hidden = true;
         }
     }
-    if (name) name.textContent = profile.name || '';
+    // On the user's own page the identity opens the account center; on
+    // somebody else's page it is just a name.
+    const ownSpace = !!biliAccount.loggedIn
+        && String(biliAccount.mid) === String(biliSpace.mid);
+    if (name) {
+        name.textContent = profile.name || '';
+        name.classList.toggle('is-link', ownSpace);
+        name.onclick = ownSpace ? () => openAccountCenter() : null;
+    }
+    if (face) {
+        face.classList.toggle('is-link', ownSpace);
+        face.onclick = ownSpace ? () => openAccountCenter() : null;
+    }
     if (meta) {
         const parts = [];
         if (profile.level) parts.push(t('bili.level', { level: profile.level }));
@@ -11851,44 +12048,6 @@ function bindSectionEvents() {
         biliSettingsLogout.addEventListener('click', () => logoutBili());
     }
 
-    // The Bilibili account menu in the header.
-    const menuMessages = document.getElementById('bili-menu-messages');
-    if (menuMessages) {
-        menuMessages.addEventListener('click', () => {
-            closeBiliAccountMenu();
-            openBiliMessages();
-        });
-    }
-    const menuUpload = document.getElementById('bili-menu-upload');
-    if (menuUpload) {
-        menuUpload.addEventListener('click', () => {
-            closeBiliAccountMenu();
-            openBiliUpload();
-        });
-    }
-    const menuSpace = document.getElementById('bili-menu-space');
-    if (menuSpace) {
-        menuSpace.addEventListener('click', () => {
-            closeBiliAccountMenu();
-            openBiliSpace(biliAccount.mid);
-        });
-    }
-    const menuLogout = document.getElementById('bili-menu-logout');
-    if (menuLogout) {
-        menuLogout.addEventListener('click', () => {
-            closeBiliAccountMenu();
-            logoutBili();
-        });
-    }
-    // Clicking anywhere else closes the menu.
-    document.addEventListener('click', (event) => {
-        const menu = document.getElementById('bili-account-menu');
-        if (!menu || menu.hidden) return;
-        const wrap = document.getElementById('header-bili');
-        if (wrap && wrap.contains(event.target)) return;
-        menu.hidden = true;
-    });
-
     // The Bilibili tabs: the hot list and the account's own favourites.
     const biliTabs = document.getElementById('bili-tabs');
     if (biliTabs) {
@@ -12000,7 +12159,7 @@ function bindSectionEvents() {
     // The player: the quality picker and the two ways to leave it.
     const quality = document.getElementById('bili-quality');
     if (quality) quality.addEventListener('change', () => changeBiliQuality(quality.value));
-    document.querySelectorAll('[data-close="bili-login-modal"]').forEach((el) => {
+    document.querySelectorAll('[data-close="account-center-modal"]').forEach((el) => {
         el.addEventListener('click', () => stopBiliLoginPolling());
     });
     document.querySelectorAll('[data-close="bili-player-modal"]').forEach((el) => {
@@ -12013,7 +12172,7 @@ function bindSectionEvents() {
         const open = document.querySelector('.modal:not([hidden])');
         if (!open) return;
         if (open.id === 'bili-player-modal') closeBiliPlayer();
-        if (open.id === 'bili-login-modal') stopBiliLoginPolling();
+        if (open.id === 'account-center-modal') stopBiliLoginPolling();
     }, true);
 }
 

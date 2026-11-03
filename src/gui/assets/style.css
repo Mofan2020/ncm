@@ -2595,33 +2595,9 @@ input[type="range"]::-webkit-slider-thumb {
 .bili-quality-badges { display: flex; gap: 4px; flex-wrap: wrap; }
 
 /* --- bilibili: the account in the header ----------------------------- */
-.header-bili { position: relative; display: flex; align-items: center; }
+/* The account dropdown is gone: one header button opens the account
+ * center, where both accounts and their ways in live. */
 .bili-header-account { display: inline-flex; align-items: center; gap: 6px; max-width: 190px; }
-.bili-header-face {
-    width: 20px; height: 20px; border-radius: 50%; object-fit: cover;
-    background: var(--sunken); flex: 0 0 auto;
-}
-.bili-header-name {
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    max-width: 140px;
-}
-.bili-account-menu {
-    position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
-    display: flex; flex-direction: column; gap: 2px; min-width: 190px;
-    padding: 8px; border-radius: var(--radius-sm);
-    background: var(--surface-strong); border: 1px solid var(--glass-edge);
-    box-shadow: var(--shadow);
-}
-.bili-account-menu-head { display: flex; align-items: center; gap: 8px; padding: 4px 6px 8px; }
-.bili-account-menu-face { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; background: var(--sunken); }
-.bili-account-menu-name { font-size: 13px; font-weight: 600; color: var(--text); }
-.bili-account-menu-meta { font-size: 11.5px; color: var(--text-3); }
-.bili-account-menu-item {
-    padding: 7px 10px; border: none; border-radius: var(--radius-xs);
-    background: none; color: var(--text); font-size: 12.5px; text-align: left;
-    cursor: pointer;
-}
-.bili-account-menu-item:hover { background: var(--hover); }
 
 /* --- bilibili: the video detail, the comments and the danmaku ------- */
 .bili-detail { display: flex; flex-direction: column; gap: 12px; }
@@ -2900,4 +2876,178 @@ input[type="range"]::-webkit-slider-thumb {
 
 @media (prefers-reduced-motion: reduce) {
     .bili-video-wrap .bp-overlay-spinner { animation-duration: 2.4s; }
+}
+
+/* ============ account center ============ */
+/* One modal for both accounts: the state of each, what can be done with
+ * it and the way in.  The two login forms used to live in two modals of
+ * their own, which is why they are called "ac-login" here. */
+.ac-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 16px;
+    align-items: start;
+}
+
+.ac-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 14px;
+    background: var(--panel, #191c24);
+    border: 1px solid var(--line, #272b36);
+}
+
+.ac-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.ac-card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text, #e8eaf0);
+}
+
+.ac-card-state {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: var(--text-3, #767d8d);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.ac-card-state.is-on {
+    color: #7ee2a8;
+    background: rgba(126, 226, 168, 0.12);
+}
+
+.ac-profile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.ac-face {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex: 0 0 auto;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.ac-info { min-width: 0; }
+
+.ac-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text, #e8eaf0);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ac-meta {
+    font-size: 12px;
+    color: var(--text-3, #767d8d);
+}
+
+.ac-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.ac-login {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line, #272b36);
+}
+
+.ac-login[hidden] { display: none; }
+
+/* The header button carries the faces of whoever is signed in. */
+.account-center-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.account-center-face {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.account-center-btn + .account-center-face { margin-left: -10px; }
+
+/* A name that opens the account center. */
+.is-link {
+    cursor: pointer;
+}
+
+.is-link:hover { color: var(--accent, #4d9bff); }
+
+/* ============ the partition chips of the search ============ */
+/* The same chips the Bilibili section uses, here as a filter of the one
+ * search.  The row only shows when the Bilibili source is in the mix. */
+.filter-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+}
+
+.filter-chips[hidden] { display: none; }
+
+.filter-chips .chip {
+    padding: 4px 10px;
+    font-size: 12px;
+    border-radius: 999px;
+    border: 1px solid var(--line, #272b36);
+    background: none;
+    color: var(--text-2, #a4aab8);
+    cursor: pointer;
+}
+
+.filter-chips .chip:hover { border-color: var(--accent, #4d9bff); }
+
+.filter-chips .chip.is-active {
+    color: var(--accent, #4d9bff);
+    border-color: var(--accent, #4d9bff);
+    background: rgba(77, 155, 255, 0.12);
+}
+
+/* The play button of a search result: it says what clicking the row does. */
+.result-play {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--brand);
+    color: #fff;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .16s;
+}
+
+.result-row:hover .result-play,
+.result-play:focus-visible { opacity: 1; }
+
+.result-play:hover { filter: brightness(1.08); }
+
+@media (prefers-reduced-motion: reduce) {
+    .result-play { transition: none; }
 }

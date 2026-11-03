@@ -129,7 +129,9 @@ PHASE_BILI = "bilibili"
 BILI_FOLDER_MAX_PAGES = 20
 
 #: 导出 B站收藏夹时，一页读多少个视频。
-BILI_FOLDER_PAGE = 50
+#: B站 caps the folder list at 40 items per page; asking for more
+#: comes back as code -400 and an empty list.
+BILI_FOLDER_PAGE = 40
 
 #: 导出时一页读多少个关注的歌手。
 ARTIST_PAGE = 100
@@ -588,6 +590,13 @@ def export_bilibili_data(
             except Exception as exc:
                 errors.append({"section": f"bilibili_folder:{folder_id}",
                                "message": str(exc)})
+                break
+            if result.get("error"):
+                # The request was refused.  Without this the folder would
+                # silently come out empty and the backup would look like it
+                # worked.
+                errors.append({"section": f"bilibili_folder:{folder_id}",
+                               "message": str(result["error"])})
                 break
             for video in (result.get("items") or []):
                 if not isinstance(video, dict):

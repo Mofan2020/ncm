@@ -30,7 +30,6 @@
     "undone": "已撤销"
   },
   "login": {
-    "title": "登录",
     "subtitle": "登录后可下载非公开歌单与 VIP 歌曲",
     "qrcode_tab": "二维码登录",
     "phone_tab": "手机验证码",
@@ -154,7 +153,6 @@
     "source_followed_artists": "关注的歌手",
     "source_local": "本地音乐",
     "source_recent": "最近播放",
-    "source_search": "搜索",
     "source_local_playlists": "本地歌单",
     "playlist_empty": "没有获取到歌单，请先登录账号",
     "collapse_sidebar": "折叠侧边栏",
@@ -265,12 +263,6 @@
     "no_recommend_mv": "暂无推荐 MV",
     "no_toplist": "暂无排行榜",
     "search_suggest_placeholder": "输入关键词获取建议",
-    "search_multi_all": "综合",
-    "search_multi_songs": "单曲",
-    "search_multi_playlists": "歌单",
-    "search_multi_artists": "歌手",
-    "search_multi_albums": "专辑",
-    "search_multi_mvs": "MV",
     "album_detail": "专辑详情",
     "artist_detail": "歌手详情",
     "hot_songs": "热门单曲",
@@ -632,7 +624,15 @@
     "joined": "注册于",
     "not_logged_in": "尚未登录",
     "refresh_failed": "读取账号信息失败，请稍后再试",
-    "edit_unsupported": "网易云未开放第三方修改资料，昵称与签名需在官方客户端修改"
+    "edit_unsupported": "网易云未开放第三方修改资料，昵称与签名需在官方客户端修改",
+    "center_title": "账号中心",
+    "center_netease": "网易云音乐",
+    "center_bili": "哔哩哔哩",
+    "center_signed_in": "已登录",
+    "center_signed_out": "未登录",
+    "center_login": "登录",
+    "center_logout": "退出登录",
+    "center_profile": "查看资料"
   },
   "cache": {
     "title": "本地缓存",
@@ -805,7 +805,6 @@
     "tab_login": "登录",
     "account_title": "B站账号",
     "login_button": "登录 B站",
-    "login_title": "登录 B站账号",
     "signed_out": "未登录 B站",
     "signed_in": "已登录：{name}",
     "level": "等级 {level}",

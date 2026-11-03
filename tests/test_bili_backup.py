@@ -144,6 +144,49 @@ def test_the_export_carries_the_account_and_the_folders():
         ["BV1aa", "BV1bb"]
 
 
+def test_the_export_asks_for_a_page_size_bilibili_accepts():
+    """B站 caps the folder list at 40 items per page.
+
+    Asking for 41 comes back as code -400 and an *empty* list, so the
+    export used to produce a backup with every folder empty and no error
+    at all.  The page size has to stay inside the cap.
+    """
+    assert backup_module.BILI_FOLDER_PAGE <= 40, \
+        "B站 refuses more than 40 items per page"
+
+    seen: list[int] = []
+
+    class Watching(FakeBili):
+        def favorite_videos(self, folder_id: str, page: int = 1,
+                            page_size: int = 30) -> dict:
+            seen.append(page_size)
+            return super().favorite_videos(folder_id, page=page,
+                                           page_size=page_size)
+
+    export_bilibili_data(Watching(), sleep=lambda _s: None)
+
+    assert seen, "the export did not read any folder"
+    assert max(seen) <= 40
+
+
+def test_a_refused_folder_read_is_reported_and_not_silently_empty():
+    """An empty list and a refused request look the same from outside.
+
+    When B站 says no, the reason has to come along, otherwise the backup
+    looks complete while holding nothing.
+    """
+    class Refused(FakeBili):
+        def favorite_videos(self, folder_id: str, page: int = 1,
+                            page_size: int = 30) -> dict:
+            return {"items": [], "has_more": False, "page": page,
+                    "error": "请求错误"}
+
+    section = export_bilibili_data(Refused(), sleep=lambda _s: None)
+
+    assert section["errors"], "a refused read was swallowed"
+    assert "请求错误" in section["errors"][0]["message"]
+
+
 def test_the_export_survives_a_failing_read():
     class Broken(FakeBili):
         def favorite_folders(self):

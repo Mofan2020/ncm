@@ -61,28 +61,8 @@
                     data-i18n-title="player.collapse_sidebar" aria-label="sidebar" data-icon="menu"></button>
             <button id="btn-theme" class="btn btn-icon" type="button"
                     data-i18n-title="settings.theme_toggle" aria-label="theme" data-icon="monitor"></button>
-            <button id="btn-login" class="btn btn-primary" type="button" data-i18n="login.title"></button>
-            <div class="header-bili" id="header-bili">
-                <button id="btn-bili-account" class="btn btn-secondary bili-header-account"
-                        type="button" data-i18n="bili.login_button"></button>
-                <div class="bili-account-menu" id="bili-account-menu" hidden>
-                    <div class="bili-account-menu-head">
-                        <img class="bili-account-menu-face" id="bili-menu-face" alt="" hidden>
-                        <div>
-                            <div class="bili-account-menu-name" id="bili-menu-name"></div>
-                            <div class="bili-account-menu-meta" id="bili-menu-meta"></div>
-                        </div>
-                    </div>
-                    <button class="bili-account-menu-item" id="bili-menu-messages" type="button"
-                            data-i18n="bili.tab_messages"></button>
-                    <button class="bili-account-menu-item" id="bili-menu-upload" type="button"
-                            data-i18n="bili.tab_upload"></button>
-                    <button class="bili-account-menu-item" id="bili-menu-space" type="button"
-                            data-i18n="bili.tab_space"></button>
-                    <button class="bili-account-menu-item" id="bili-menu-logout" type="button"
-                            data-i18n="bili.logout"></button>
-                </div>
-            </div>
+            <button id="btn-account-center" class="btn btn-secondary account-center-btn"
+                    type="button" data-i18n="account.center_title"></button>
             <button id="btn-settings" class="btn btn-icon" type="button"
                     data-i18n-title="settings.title" aria-label="settings" data-icon="settings"></button>
         </div>
@@ -289,6 +269,9 @@
                         <option value="newest" data-i18n="search.sort_newest"></option>
                         <option value="duration" data-i18n="search.sort_duration"></option>
                     </select>
+                    <!-- The Bilibili partitions: they only mean something when
+                         the Bilibili source is in the mix. -->
+                    <div class="filter-chips" id="aggr-bili-partitions" hidden></div>
                     <label class="sr-only" for="aggr-duration" data-i18n="search.filter_duration"></label>
                     <select class="filter-select" id="aggr-duration">
                         <option value="all" data-i18n="search.duration_all"></option>
@@ -492,8 +475,6 @@
                                 data-i18n="player.source_local"></button>
                         <button class="source-tab" type="button" data-source="recent"
                                 data-i18n="player.source_recent"></button>
-                        <button class="source-tab" type="button" data-source="search"
-                                data-i18n="player.source_search"></button>
                     </nav>
 
                     <div class="source-head">
@@ -509,22 +490,6 @@
                                 data-icon="refresh" data-i18n-title="player.refresh_list"
                                 aria-label="refresh list" title="refresh"></button>
                     </div>
-
-                    <!-- Multi-search type tabs (shown when search source is active) -->
-                    <nav class="search-type-tabs" id="search-type-tabs" hidden>
-                        <button class="search-type-tab is-active" type="button" data-type="all"
-                                data-i18n="player.search_multi_all"></button>
-                        <button class="search-type-tab" type="button" data-type="songs"
-                                data-i18n="player.search_multi_songs"></button>
-                        <button class="search-type-tab" type="button" data-type="playlists"
-                                data-i18n="player.search_multi_playlists"></button>
-                        <button class="search-type-tab" type="button" data-type="artists"
-                                data-i18n="player.search_multi_artists"></button>
-                        <button class="search-type-tab" type="button" data-type="albums"
-                                data-i18n="player.search_multi_albums"></button>
-                        <button class="search-type-tab" type="button" data-type="mvs"
-                                data-i18n="player.search_multi_mvs"></button>
-                    </nav>
 
                     <div class="source-actions" id="local-actions" hidden>
                         <button id="btn-add-folder" class="btn btn-sm" type="button"
@@ -735,100 +700,241 @@
     </footer>
 </section>
 
-<!-- ============ login modal ============ -->
-<div class="modal" id="login-modal" hidden>
-    <div class="modal-backdrop" data-close="login-modal"></div>
-    <div class="modal-box glass" role="dialog" aria-modal="true">
+<!-- ============ account center ============ -->
+<!-- One place for both accounts: the state of each, what to do with it and
+     the way in (login and register) for each.  The two login forms used to
+     live in two separate modals of their own. -->
+<div class="modal" id="account-center-modal" hidden>
+    <div class="modal-backdrop" data-close="account-center-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
         <header class="modal-head">
-            <h2 data-i18n="login.title"></h2>
-            <button class="btn btn-icon" type="button" data-close="login-modal" data-icon="close"></button>
+            <h2 data-i18n="account.center_title"></h2>
+            <button class="btn btn-icon" type="button" data-close="account-center-modal"
+                    data-icon="close"></button>
         </header>
-        <div class="modal-body">
-            <p class="muted" data-i18n="login.subtitle"></p>
-            <div class="tabs" id="login-tabs">
-                <button class="tab is-active" type="button" data-tab="qrcode"
-                        data-i18n="login.qrcode_tab"></button>
-                <button class="tab" type="button" data-tab="phone" data-i18n="login.phone_tab"></button>
-                <button class="tab" type="button" data-tab="register"
-                        data-i18n="login.register_tab"></button>
-                <button class="tab" type="button" data-tab="cookie" data-i18n="login.cookie_tab"></button>
-            </div>
-
-            <div class="tab-panel is-active" data-panel="qrcode">
-                <div class="qr-wrap">
-                    <img id="qrcode-image" class="qr" src="" alt="">
-                    <p class="muted" data-i18n="login.qrcode_tip"></p>
-                    <p id="qrcode-status" class="qr-status"></p>
+        <div class="modal-body ac-body">
+            <section class="ac-card" id="ac-netease-card">
+                <header class="ac-card-head">
+                    <span class="ac-card-title" data-i18n="account.center_netease"></span>
+                    <span class="ac-card-state" id="ac-netease-state"></span>
+                </header>
+                <div class="ac-profile" id="ac-netease-profile" hidden>
+                    <img class="ac-face" id="ac-netease-face" alt="" hidden>
+                    <div class="ac-info">
+                        <div class="ac-name" id="ac-netease-name"></div>
+                        <div class="ac-meta" id="ac-netease-meta"></div>
+                    </div>
                 </div>
-                <button id="btn-refresh-qrcode" class="btn btn-secondary" type="button"
-                        data-i18n="login.qrcode_refresh"></button>
-            </div>
+                <div class="ac-actions" id="ac-netease-actions"></div>
+                <div class="ac-login" id="ac-netease-login" hidden>
+                    <p class="muted" data-i18n="login.subtitle"></p>
 
-            <div class="tab-panel" data-panel="phone">
-                <label class="option">
-                    <span data-i18n="login.phone_label"></span>
-                    <div class="inline-form">
-                        <input type="tel" id="phone-input" data-i18n-placeholder="login.phone_placeholder"
-                               autocomplete="off">
-                        <button id="btn-send-code" class="btn btn-secondary" type="button"
-                                data-i18n="login.send_code"></button>
-                    </div>
-                </label>
-                <label class="option">
-                    <span data-i18n="login.code_label"></span>
-                    <input type="text" id="code-input" data-i18n-placeholder="login.code_placeholder"
+        <p class="muted" data-i18n="login.subtitle"></p>
+        <div class="tabs" id="login-tabs">
+            <button class="tab is-active" type="button" data-tab="qrcode"
+                    data-i18n="login.qrcode_tab"></button>
+            <button class="tab" type="button" data-tab="phone" data-i18n="login.phone_tab"></button>
+            <button class="tab" type="button" data-tab="register"
+                    data-i18n="login.register_tab"></button>
+            <button class="tab" type="button" data-tab="cookie" data-i18n="login.cookie_tab"></button>
+        </div>
+
+        <div class="tab-panel is-active" data-panel="qrcode">
+            <div class="qr-wrap">
+                <img id="qrcode-image" class="qr" src="" alt="">
+                <p class="muted" data-i18n="login.qrcode_tip"></p>
+                <p id="qrcode-status" class="qr-status"></p>
+            </div>
+            <button id="btn-refresh-qrcode" class="btn btn-secondary" type="button"
+                    data-i18n="login.qrcode_refresh"></button>
+        </div>
+
+        <div class="tab-panel" data-panel="phone">
+            <label class="option">
+                <span data-i18n="login.phone_label"></span>
+                <div class="inline-form">
+                    <input type="tel" id="phone-input" data-i18n-placeholder="login.phone_placeholder"
                            autocomplete="off">
-                </label>
-                <button id="btn-phone-login" class="btn btn-primary btn-block" type="button"
-                        data-i18n="login.login_btn"></button>
-            </div>
+                    <button id="btn-send-code" class="btn btn-secondary" type="button"
+                            data-i18n="login.send_code"></button>
+                </div>
+            </label>
+            <label class="option">
+                <span data-i18n="login.code_label"></span>
+                <input type="text" id="code-input" data-i18n-placeholder="login.code_placeholder"
+                       autocomplete="off">
+            </label>
+            <button id="btn-phone-login" class="btn btn-primary btn-block" type="button"
+                    data-i18n="login.login_btn"></button>
+        </div>
 
-            <div class="tab-panel" data-panel="register">
-                <p class="muted" data-i18n="login.register_hint"></p>
-                <label class="option">
-                    <span data-i18n="login.phone_label"></span>
-                    <div class="inline-form">
-                        <input type="tel" id="register-phone-input" data-i18n-placeholder="login.phone_placeholder"
-                               autocomplete="off">
-                        <button id="btn-register-check" class="btn btn-secondary" type="button"
-                                data-i18n="login.register_check"></button>
-                    </div>
-                </label>
-                <p id="register-status" class="muted"></p>
-                <label class="option">
-                    <span data-i18n="login.code_label"></span>
-                    <div class="inline-form">
-                        <input type="text" id="register-code-input" data-i18n-placeholder="login.code_placeholder"
-                               autocomplete="off">
-                        <button id="btn-register-send-code" class="btn btn-secondary" type="button"
-                                data-i18n="login.send_code"></button>
-                    </div>
-                </label>
-                <label class="option">
-                    <span data-i18n="login.register_password_label"></span>
-                    <input type="password" id="register-password-input"
-                           data-i18n-placeholder="login.register_password_placeholder"
-                           autocomplete="new-password">
-                </label>
-                <label class="option">
-                    <span data-i18n="login.register_nickname_label"></span>
-                    <input type="text" id="register-nickname-input"
-                           data-i18n-placeholder="login.register_nickname_placeholder"
+        <div class="tab-panel" data-panel="register">
+            <p class="muted" data-i18n="login.register_hint"></p>
+            <label class="option">
+                <span data-i18n="login.phone_label"></span>
+                <div class="inline-form">
+                    <input type="tel" id="register-phone-input" data-i18n-placeholder="login.phone_placeholder"
                            autocomplete="off">
-                </label>
-                <button id="btn-register-submit" class="btn btn-primary btn-block" type="button"
-                        data-i18n="login.register_btn"></button>
-            </div>
+                    <button id="btn-register-check" class="btn btn-secondary" type="button"
+                            data-i18n="login.register_check"></button>
+                </div>
+            </label>
+            <p id="register-status" class="muted"></p>
+            <label class="option">
+                <span data-i18n="login.code_label"></span>
+                <div class="inline-form">
+                    <input type="text" id="register-code-input" data-i18n-placeholder="login.code_placeholder"
+                           autocomplete="off">
+                    <button id="btn-register-send-code" class="btn btn-secondary" type="button"
+                            data-i18n="login.send_code"></button>
+                </div>
+            </label>
+            <label class="option">
+                <span data-i18n="login.register_password_label"></span>
+                <input type="password" id="register-password-input"
+                       data-i18n-placeholder="login.register_password_placeholder"
+                       autocomplete="new-password">
+            </label>
+            <label class="option">
+                <span data-i18n="login.register_nickname_label"></span>
+                <input type="text" id="register-nickname-input"
+                       data-i18n-placeholder="login.register_nickname_placeholder"
+                       autocomplete="off">
+            </label>
+            <button id="btn-register-submit" class="btn btn-primary btn-block" type="button"
+                    data-i18n="login.register_btn"></button>
+        </div>
 
-            <div class="tab-panel" data-panel="cookie">
-                <label class="option">
-                    <span data-i18n="login.cookie_label"></span>
-                    <textarea id="cookie-input" rows="4" data-i18n-placeholder="login.cookie_placeholder"
-                              spellcheck="false"></textarea>
-                </label>
-                <button id="btn-cookie-login" class="btn btn-primary btn-block" type="button"
-                        data-i18n="login.cookie_import"></button>
+        <div class="tab-panel" data-panel="cookie">
+            <label class="option">
+                <span data-i18n="login.cookie_label"></span>
+                <textarea id="cookie-input" rows="4" data-i18n-placeholder="login.cookie_placeholder"
+                          spellcheck="false"></textarea>
+            </label>
+            <button id="btn-cookie-login" class="btn btn-primary btn-block" type="button"
+                    data-i18n="login.cookie_import"></button>
+        </div>
+                </div>
+            </section>
+
+            <section class="ac-card" id="ac-bili-card">
+                <header class="ac-card-head">
+                    <span class="ac-card-title" data-i18n="account.center_bili"></span>
+                    <span class="ac-card-state" id="ac-bili-state"></span>
+                </header>
+                <div class="ac-profile" id="ac-bili-profile" hidden>
+                    <img class="ac-face" id="ac-bili-face" alt="" hidden>
+                    <div class="ac-info">
+                        <div class="ac-name" id="ac-bili-name"></div>
+                        <div class="ac-meta" id="ac-bili-meta"></div>
+                    </div>
+                </div>
+                <div class="ac-actions" id="ac-bili-actions"></div>
+                <div class="ac-login" id="ac-bili-login" hidden>
+
+        <div class="tabs" id="bili-login-tabs">
+            <button class="tab is-active" type="button" data-tab="qr" data-i18n="bili.method_qr"></button>
+            <button class="tab" type="button" data-tab="password" data-i18n="bili.method_password"></button>
+            <button class="tab" type="button" data-tab="sms" data-i18n="bili.method_sms"></button>
+            <button class="tab" type="button" data-tab="cookie" data-i18n="bili.method_cookie"></button>
+            <button class="tab" type="button" data-tab="register" data-i18n="bili.method_register"></button>
+        </div>
+
+        <div class="tab-panel is-active" data-panel="qr">
+            <div class="qr-wrap">
+                <img id="bili-qrcode-image" class="qr" src="" alt="">
+                <p class="muted" data-i18n="bili.qr_tip"></p>
+                <p id="bili-qrcode-status" class="qr-status"></p>
             </div>
+            <button id="btn-bili-qrcode-refresh" class="btn btn-secondary" type="button" hidden
+                    data-i18n="bili.qr_refresh"></button>
+        </div>
+
+        <div class="tab-panel" data-panel="password">
+            <label class="option">
+                <span data-i18n="bili.username"></span>
+                <input type="text" id="bili-username" autocomplete="off" spellcheck="false">
+            </label>
+            <label class="option">
+                <span data-i18n="bili.password"></span>
+                <input type="password" id="bili-password" autocomplete="current-password">
+            </label>
+            <label class="option">
+                <span data-i18n="bili.captcha_label"></span>
+                <input type="text" id="bili-captcha" autocomplete="off" spellcheck="false">
+            </label>
+            <label class="option">
+                <span data-i18n="bili.captcha_token"></span>
+                <input type="text" id="bili-captcha-token" readonly spellcheck="false">
+            </label>
+            <p class="muted" data-i18n="bili.captcha_hint"></p>
+            <button id="btn-bili-password-login" class="btn btn-primary btn-block" type="button"
+                    data-i18n="bili.submit"></button>
+        </div>
+
+        <div class="tab-panel" data-panel="sms">
+            <label class="option">
+                <span data-i18n="bili.phone"></span>
+                <div class="inline-form">
+                    <input type="tel" id="bili-phone" autocomplete="off">
+                    <button id="btn-bili-sms-send" class="btn btn-secondary" type="button"
+                            data-i18n="bili.send_code"></button>
+                </div>
+            </label>
+            <label class="option">
+                <span data-i18n="bili.sms_code"></span>
+                <input type="text" id="bili-sms-code" autocomplete="off" spellcheck="false">
+            </label>
+            <div class="bili-sms-risk" id="bili-sms-risk" hidden>
+                <p class="muted" data-i18n="bili.sms_risk_hint"></p>
+                <div class="inline-form">
+                    <button id="btn-bili-sms-risk-open" class="btn btn-sm btn-secondary" type="button"
+                            data-i18n="bili.sms_risk_open"></button>
+                    <button id="btn-bili-sms-risk-qr" class="btn btn-sm btn-secondary" type="button"
+                            data-i18n="bili.sms_risk_qr"></button>
+                </div>
+            </div>
+            <button id="btn-bili-sms-login" class="btn btn-primary btn-block" type="button"
+                    data-i18n="bili.submit"></button>
+        </div>
+
+        <div class="tab-panel" data-panel="cookie">
+            <label class="option">
+                <span data-i18n="bili.cookie_label"></span>
+                <textarea id="bili-cookie" rows="4" spellcheck="false"></textarea>
+            </label>
+            <p class="muted" data-i18n="bili.cookie_hint"></p>
+            <button id="btn-bili-cookie-login" class="btn btn-primary btn-block" type="button"
+                    data-i18n="bili.submit"></button>
+        </div>
+
+        <div class="tab-panel" data-panel="register">
+            <p class="muted" data-i18n="bili.register_hint"></p>
+            <label class="option">
+                <span data-i18n="bili.username"></span>
+                <input type="text" id="bili-register-username" autocomplete="off" spellcheck="false">
+            </label>
+            <label class="option">
+                <span data-i18n="bili.password"></span>
+                <input type="password" id="bili-register-password" autocomplete="new-password">
+            </label>
+            <label class="option">
+                <span data-i18n="bili.phone"></span>
+                <div class="inline-form">
+                    <input type="tel" id="bili-register-phone" autocomplete="off">
+                    <button id="btn-bili-register-send" class="btn btn-secondary" type="button"
+                            data-i18n="bili.send_code"></button>
+                </div>
+            </label>
+            <label class="option">
+                <span data-i18n="bili.sms_code"></span>
+                <input type="text" id="bili-register-code" autocomplete="off" spellcheck="false">
+            </label>
+            <button id="btn-bili-register-submit" class="btn btn-primary btn-block" type="button"
+                    data-i18n="bili.submit"></button>
+        </div>
+                </div>
+            </section>
         </div>
     </div>
 </div>
@@ -1614,119 +1720,6 @@
 </div>
 
 <!-- ============ bilibili login modal ============ -->
-<div class="modal" id="bili-login-modal" hidden>
-    <div class="modal-backdrop" data-close="bili-login-modal"></div>
-    <div class="modal-box glass" role="dialog" aria-modal="true">
-        <header class="modal-head">
-            <h2 data-i18n="bili.login_title"></h2>
-            <button class="btn btn-icon" type="button" data-close="bili-login-modal" data-icon="close"></button>
-        </header>
-        <div class="modal-body">
-            <div class="tabs" id="bili-login-tabs">
-                <button class="tab is-active" type="button" data-tab="qr" data-i18n="bili.method_qr"></button>
-                <button class="tab" type="button" data-tab="password" data-i18n="bili.method_password"></button>
-                <button class="tab" type="button" data-tab="sms" data-i18n="bili.method_sms"></button>
-                <button class="tab" type="button" data-tab="cookie" data-i18n="bili.method_cookie"></button>
-                <button class="tab" type="button" data-tab="register" data-i18n="bili.method_register"></button>
-            </div>
-
-            <div class="tab-panel is-active" data-panel="qr">
-                <div class="qr-wrap">
-                    <img id="bili-qrcode-image" class="qr" src="" alt="">
-                    <p class="muted" data-i18n="bili.qr_tip"></p>
-                    <p id="bili-qrcode-status" class="qr-status"></p>
-                </div>
-                <button id="btn-bili-qrcode-refresh" class="btn btn-secondary" type="button" hidden
-                        data-i18n="bili.qr_refresh"></button>
-            </div>
-
-            <div class="tab-panel" data-panel="password">
-                <label class="option">
-                    <span data-i18n="bili.username"></span>
-                    <input type="text" id="bili-username" autocomplete="off" spellcheck="false">
-                </label>
-                <label class="option">
-                    <span data-i18n="bili.password"></span>
-                    <input type="password" id="bili-password" autocomplete="current-password">
-                </label>
-                <label class="option">
-                    <span data-i18n="bili.captcha_label"></span>
-                    <input type="text" id="bili-captcha" autocomplete="off" spellcheck="false">
-                </label>
-                <label class="option">
-                    <span data-i18n="bili.captcha_token"></span>
-                    <input type="text" id="bili-captcha-token" readonly spellcheck="false">
-                </label>
-                <p class="muted" data-i18n="bili.captcha_hint"></p>
-                <button id="btn-bili-password-login" class="btn btn-primary btn-block" type="button"
-                        data-i18n="bili.submit"></button>
-            </div>
-
-            <div class="tab-panel" data-panel="sms">
-                <label class="option">
-                    <span data-i18n="bili.phone"></span>
-                    <div class="inline-form">
-                        <input type="tel" id="bili-phone" autocomplete="off">
-                        <button id="btn-bili-sms-send" class="btn btn-secondary" type="button"
-                                data-i18n="bili.send_code"></button>
-                    </div>
-                </label>
-                <label class="option">
-                    <span data-i18n="bili.sms_code"></span>
-                    <input type="text" id="bili-sms-code" autocomplete="off" spellcheck="false">
-                </label>
-                <div class="bili-sms-risk" id="bili-sms-risk" hidden>
-                    <p class="muted" data-i18n="bili.sms_risk_hint"></p>
-                    <div class="inline-form">
-                        <button id="btn-bili-sms-risk-open" class="btn btn-sm btn-secondary" type="button"
-                                data-i18n="bili.sms_risk_open"></button>
-                        <button id="btn-bili-sms-risk-qr" class="btn btn-sm btn-secondary" type="button"
-                                data-i18n="bili.sms_risk_qr"></button>
-                    </div>
-                </div>
-                <button id="btn-bili-sms-login" class="btn btn-primary btn-block" type="button"
-                        data-i18n="bili.submit"></button>
-            </div>
-
-            <div class="tab-panel" data-panel="cookie">
-                <label class="option">
-                    <span data-i18n="bili.cookie_label"></span>
-                    <textarea id="bili-cookie" rows="4" spellcheck="false"></textarea>
-                </label>
-                <p class="muted" data-i18n="bili.cookie_hint"></p>
-                <button id="btn-bili-cookie-login" class="btn btn-primary btn-block" type="button"
-                        data-i18n="bili.submit"></button>
-            </div>
-
-            <div class="tab-panel" data-panel="register">
-                <p class="muted" data-i18n="bili.register_hint"></p>
-                <label class="option">
-                    <span data-i18n="bili.username"></span>
-                    <input type="text" id="bili-register-username" autocomplete="off" spellcheck="false">
-                </label>
-                <label class="option">
-                    <span data-i18n="bili.password"></span>
-                    <input type="password" id="bili-register-password" autocomplete="new-password">
-                </label>
-                <label class="option">
-                    <span data-i18n="bili.phone"></span>
-                    <div class="inline-form">
-                        <input type="tel" id="bili-register-phone" autocomplete="off">
-                        <button id="btn-bili-register-send" class="btn btn-secondary" type="button"
-                                data-i18n="bili.send_code"></button>
-                    </div>
-                </label>
-                <label class="option">
-                    <span data-i18n="bili.sms_code"></span>
-                    <input type="text" id="bili-register-code" autocomplete="off" spellcheck="false">
-                </label>
-                <button id="btn-bili-register-submit" class="btn btn-primary btn-block" type="button"
-                        data-i18n="bili.submit"></button>
-            </div>
-        </div>
-    </div>
-</div>
-
 <!-- ============ bilibili video player ============ -->
 <div class="modal" id="bili-player-modal" hidden>
     <div class="modal-backdrop" data-close="bili-player-modal"></div>

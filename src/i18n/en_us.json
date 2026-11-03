@@ -30,7 +30,6 @@
     "undone": "Undone"
   },
   "login": {
-    "title": "Sign in",
     "subtitle": "Sign in to download private playlists and VIP tracks",
     "qrcode_tab": "QR code",
     "phone_tab": "Phone code",
@@ -154,7 +153,6 @@
     "source_followed_artists": "Followed artists",
     "source_local": "Local music",
     "source_recent": "Recently played",
-    "source_search": "Search",
     "source_local_playlists": "Local Playlists",
     "playlist_empty": "No playlist found. Sign in first.",
     "playlist_meta": "{count} songs · {creator}",
@@ -259,12 +257,6 @@
     "no_recommend_mv": "No recommended MVs",
     "no_toplist": "No charts",
     "search_suggest_placeholder": "Type for suggestions",
-    "search_multi_all": "All",
-    "search_multi_songs": "Songs",
-    "search_multi_playlists": "Playlists",
-    "search_multi_artists": "Artists",
-    "search_multi_albums": "Albums",
-    "search_multi_mvs": "MVs",
     "album_detail": "Album Detail",
     "artist_detail": "Artist Detail",
     "artist": "Artist",
@@ -632,7 +624,15 @@
     "joined": "Joined",
     "not_logged_in": "Not signed in",
     "refresh_failed": "Could not read your account, try again later",
-    "edit_unsupported": "NetEase does not expose profile editing to third-party clients; change your nickname in the official app"
+    "edit_unsupported": "NetEase does not expose profile editing to third-party clients; change your nickname in the official app",
+    "center_title": "Account center",
+    "center_netease": "NetEase Cloud Music",
+    "center_bili": "Bilibili",
+    "center_signed_in": "Signed in",
+    "center_signed_out": "Not signed in",
+    "center_login": "Sign in",
+    "center_logout": "Sign out",
+    "center_profile": "View profile"
   },
   "cache": {
     "title": "Local cache",
@@ -805,7 +805,6 @@
     "tab_login": "Sign in",
     "account_title": "Bilibili account",
     "login_button": "Sign in to Bilibili",
-    "login_title": "Sign in to Bilibili",
     "signed_out": "Not signed in",
     "signed_in": "Signed in: {name}",
     "level": "Level {level}",
