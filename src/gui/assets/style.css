@@ -3051,3 +3051,118 @@ input[type="range"]::-webkit-slider-thumb {
 @media (prefers-reduced-motion: reduce) {
     .result-play { transition: none; }
 }
+
+/* ============================================================
+   the tiles of the collections, the anime and the local videos
+   ============================================================ */
+/* 合集、番剧、本地视频都不是"视频卡片"，但一眼要看得出是同一类东西，
+   所以沿用 video-card 的骨架，只补上它没有的那两样：进度条和点击感。 */
+.video-card.is-tile { cursor: pointer; }
+
+/* 番剧看到第几集的进度。压在封面底部，和 vc-dur 同一条边。 */
+.video-card .vc-progress {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 3px;
+    background: var(--bili, #fb7299);
+    border-radius: 0 2px 2px 0;
+}
+
+/* ============================================================
+   别人的动态
+   ============================================================ */
+.bili-dynamics {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 2px 0;
+}
+
+.bili-dynamic {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xs);
+    padding: 10px 12px;
+    background: var(--panel);
+}
+
+.bd-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.bd-face {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex: 0 0 auto;
+}
+
+.bd-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.bd-time {
+    font-size: 12px;
+    color: var(--text-3);
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+/* pre-wrap: 动态里的换行是用户自己打的，不该被吃掉 */
+.bd-text {
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.bd-video {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xs);
+    background: var(--panel-2, transparent);
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+}
+
+.bd-video img {
+    display: block;
+    width: 100%;
+    max-height: 180px;
+    object-fit: cover;
+}
+
+.bd-video-title {
+    display: block;
+    padding: 6px 8px;
+    font-size: 13px;
+    color: var(--text);
+}
+
+/* 九宫格图片：三列，正方形裁切，和 B站 的动态一个长相 */
+.bd-images {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.bd-images img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 6px;
+    background: var(--panel);
+}

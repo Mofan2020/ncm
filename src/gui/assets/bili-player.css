@@ -19,6 +19,14 @@
 
 * { box-sizing: border-box; }
 
+/* The hidden attribute has to win over the display of the rules below.
+ * Without this the overlay (a translucent black sheet over the picture) and
+ * the fatal notice (an opaque sheet over the whole window) stay on screen
+ * even after the code sets hidden, and the window shows a black rectangle
+ * while the sound plays.  The main window has the same line for the same
+ * reason. */
+[hidden] { display: none !important; }
+
 html, body {
     margin: 0;
     padding: 0;

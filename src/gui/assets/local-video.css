@@ -1,0 +1,281 @@
+/* SkycMedia - the local video window.
+ *
+ * A separate document with its own layout: the file list on the left, the
+ * player on the right.  The colours and the radii are the ones of the
+ * Bilibili player window, so the two windows do not look like two programs.
+ *
+ * The variable names are the ones the rest of the project uses for a
+ * standalone player window, on purpose: the two stylesheets are meant to be
+ * read side by side.
+ */
+
+:root {
+    --bp-bg: #12141a;
+    --bp-panel: #191c24;
+    --bp-line: #272b36;
+    --bp-text: #e8eaf0;
+    --bp-text-2: #a4aab8;
+    --bp-text-3: #767d8d;
+    --bp-accent: #4d9bff;
+    --bp-radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bp-bg);
+    color: var(--bp-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    overflow: hidden;
+}
+
+.lv-root {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+/* ------------------------------------------------------------- the header */
+.lv-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--bp-line);
+    background: var(--bp-panel);
+    flex: 0 0 auto;
+}
+
+.lv-head-text { min-width: 0; flex: 1 1 auto; }
+
+.lv-title {
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.lv-sub {
+    font-size: 12px;
+    color: var(--bp-text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- the body */
+.lv-main {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.lv-stage {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    padding: 12px;
+    gap: 10px;
+}
+
+.lv-video-wrap {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    background: #000;
+    border-radius: var(--bp-radius);
+    overflow: hidden;
+}
+
+.lv-video {
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: #000;
+    object-fit: contain;
+}
+
+/* The notice that sits on the picture: it is the only way to tell the user
+   that the browser refused to play the file it was given. */
+.lv-hint {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 80%;
+    padding: 14px 18px;
+    border-radius: var(--bp-radius);
+    background: rgba(25, 28, 36, .94);
+    border: 1px solid var(--bp-line);
+    color: var(--bp-text-2);
+    font-size: 13px;
+    line-height: 1.6;
+    text-align: center;
+    z-index: 5;
+}
+
+.lv-hint[hidden] { display: none; }
+
+.lv-bar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex: 0 0 auto;
+    font-size: 12.5px;
+    color: var(--bp-text-2);
+}
+
+.lv-status { color: var(--bp-text-3); }
+
+.lv-keys {
+    margin-left: auto;
+    color: var(--bp-text-3);
+    font-size: 12px;
+}
+
+/* --------------------------------------------------------------- the sidebar */
+.lv-side {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 300px;
+    min-width: 240px;
+    border-right: 1px solid var(--bp-line);
+    background: var(--bp-panel);
+    min-height: 0;
+}
+
+.lv-side-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border-bottom: 1px solid var(--bp-line);
+    flex: 0 0 auto;
+}
+
+.lv-side-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.lv-list {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    min-height: 0;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.lv-item {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 7px 9px;
+    border-radius: 8px;
+    cursor: pointer;
+    border: none;
+    background: none;
+    color: var(--bp-text);
+    font-family: inherit;
+    font-size: 13px;
+    text-align: left;
+    width: 100%;
+}
+
+.lv-item:hover { background: var(--bp-line); }
+
+.lv-item.is-active {
+    background: var(--bp-line);
+    box-shadow: inset 2px 0 0 var(--bp-accent);
+}
+
+.lv-item-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.lv-item-meta {
+    font-size: 11.5px;
+    color: var(--bp-text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.lv-empty {
+    padding: 12px 10px;
+    color: var(--bp-text-3);
+    font-size: 12.5px;
+    text-align: center;
+}
+
+.lv-empty[hidden] { display: none; }
+
+/* ------------------------------------------------------- inputs and buttons */
+.lv-input {
+    background: var(--bp-bg);
+    border: 1px solid var(--bp-line);
+    color: var(--bp-text);
+    border-radius: 8px;
+    padding: 6px 9px;
+    font-size: 13px;
+    font-family: inherit;
+    min-width: 0;
+    width: 100%;
+}
+
+.lv-input:focus {
+    outline: none;
+    border-color: var(--bp-accent);
+}
+
+.lv-btn {
+    background: var(--bp-accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.lv-btn:hover { filter: brightness(1.08); }
+
+.lv-btn-ghost {
+    background: transparent;
+    color: var(--bp-text-2);
+    border: 1px solid var(--bp-line);
+}
+
+.lv-btn-ghost:hover { color: var(--bp-text); filter: none; }
+
+/* The label is the button; the real input stays out of sight but keeps
+   working, so the folder picker looks like the rest of the interface. */
+.lv-file-label {
+    display: inline-flex;
+    align-items: center;
+}
+
+.lv-file-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * { scroll-behavior: auto; }
+}

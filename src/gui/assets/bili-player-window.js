@@ -253,25 +253,6 @@
     }
 
     /** Fetch the streams and hand them to the player. */
-    /**
-     * Fetch the streams with a timeout so the overlay never gets stuck.
-     *
-     * The bridge call can hang (network, backend busy, etc.).  Without a
-     * timeout the user sees "正在获取视频" forever.  This wraps the call in a
-     * Promise.race with a 20-second deadline; on timeout it surfaces a
-     * friendly error instead of leaving the spinner running.
-     */
-    async function fetchStreams(bvid, quality) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 20000);
-        try {
-            const result = await state.api.get_bilibili_video_streams(bvid, quality);
-            return result;
-        } finally {
-            clearTimeout(timeout);
-        }
-    }
-
     async function loadStreams(quality) {
         const videoEl = el('bp-video');
         if (!videoEl || !state.api) return;
@@ -281,52 +262,40 @@
             showOverlay('error', 'bili.overlay_no_stream');
             return;
         }
-        setStatus('buffering');
         showOverlay('loading');
-        try {
-            const result = await fetchStreams(bvid, quality);
-            if (!result || !result.success) {
-                setStatus('error');
-                showOverlay('error', 'bili.overlay_no_stream');
-                return;
+        // The very same loader the inline player of the main window uses:
+        // the streams, the deadline and the resume all live in one place,
+        // so the two surfaces cannot drift apart again.
+        const outcome = await window.BiliStreamLoader.load({
+            api: state.api,
+            bvid: bvid,
+            quality: quality,
+            videoEl: videoEl,
+            onStatus: (code) => setStatus(code),
+            onStreams: (result) => {
+                state.streams = result;
+                state.quality = quality;
+                el('bp-title').textContent = result.title || state.bvid;
+                el('bp-sub').textContent = result.author || '';
+                renderQualities(result);
+            },
+            resumePlayback: !!state.resumePlayback
+        });
+        if (outcome.ok) {
+            hideOverlay();
+            if (outcome.resumed > 0) {
+                const mm = Math.floor(outcome.resumed / 60).toString().padStart(2, '0');
+                const ss = Math.floor(outcome.resumed % 60).toString().padStart(2, '0');
+                const msg = label('bili.resumed_from', { time: mm + ':' + ss });
+                if (msg) showToast(msg, 3000);
             }
-            state.streams = result;
-            state.quality = quality;
-            el('bp-title').textContent = result.title || state.bvid;
-            el('bp-sub').textContent = result.author || '';
-            renderQualities(result);
-            const played = await window.playBiliVideo(videoEl, result, {
-                onStatus: (code) => setStatus(code)
-            });
-            if (!played) {
-                setStatus('error');
-                showOverlay('error', 'bili.overlay_no_stream');
-            } else {
-                hideOverlay();
-                // If the user enabled "resume playback", check the watch history
-                // and seek to the last position.
-                if (state.resumePlayback) {
-                    try {
-                        const prog = await state.api.get_bilibili_video_progress(state.bvid);
-                        if (prog && prog.success && prog.progress > 1 && prog.duration > 0) {
-                            const target = Math.floor(prog.duration * prog.progress / 100);
-                            videoEl.currentTime = target;
-                            const mm = Math.floor(target / 60).toString().padStart(2, '0');
-                            const ss = Math.floor(target % 60).toString().padStart(2, '0');
-                            const timeStr = mm + ':' + ss;
-                            const msg = label('bili.resumed_from', { time: timeStr });
-                            if (msg) showToast(msg, 3000);
-                        }
-                    } catch (err) { /* resume is best-effort */ }
-                }
-            }
-        } catch (err) {
-            setStatus('error');
-            if (err && err.name === 'AbortError') {
-                showOverlay('error', 'bili.overlay_timeout');
-            } else {
-                showOverlay('error', 'bili.overlay_no_stream');
-            }
+            return;
+        }
+        setStatus('error');
+        if (outcome.error === 'timeout') {
+            showOverlay('error', 'bili.overlay_timeout');
+        } else {
+            showOverlay('error', 'bili.overlay_no_stream');
         }
     }
 

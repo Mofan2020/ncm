@@ -8076,6 +8076,10 @@ async function renderCombinedPartitions() {
 const biliSection = {
     rid: 0,
     page: 1,
+    // Which batch of the recommendation feed is on screen.  The feed is
+    // pulled with a growing fresh index, so "more" is a new batch and not
+    // the same one again.
+    recommendPage: 0,
     items: [],
     partitions: [],
     error: '',
@@ -8244,6 +8248,13 @@ function openHomeEntry(entry, byKeyboard) {
     if (entry === 'netease') {
         player.sourceTab = 'playlists';
         showView('player');
+        return;
+    }
+    if (entry === 'local-video') {
+        showSection('local-video');
+        // The library is read again on every entry: the folders may have
+        // gained a file since the page was last looked at.
+        loadLocalVideoLibrary(true);
         return;
     }
     if (entry === 'bili') {
@@ -9117,14 +9128,18 @@ function renderBiliResults() {
     }
     const more = document.getElementById('btn-bili-more');
     if (more) {
-        more.hidden = biliSection.tab !== 'hot' || biliSection.exhausted || biliSection.loading;
+        // The recommendation feed has pages too, so the button is not just
+        // for the partition list.
+        const paged = biliSection.tab === 'hot' || biliSection.tab === 'recommend';
+        more.hidden = !paged || biliSection.exhausted || biliSection.loading;
         more.textContent = biliSection.loading ? t('common.loading') : t('bili.load_more');
         more.disabled = biliSection.loading;
     }
     const end = document.getElementById('bili-end');
     if (end) {
         // The button gives way to a line of text when the list is done.
-        end.hidden = biliSection.tab !== 'hot' || biliSection.loading
+        const paged = biliSection.tab === 'hot' || biliSection.tab === 'recommend';
+        end.hidden = !paged || biliSection.loading
             || !biliSection.items.length || !biliSection.exhausted;
         end.textContent = t('bili.no_more');
     }
@@ -9197,6 +9212,12 @@ async function renderBili(rid) {
 /** The next page of the open partition. */
 async function loadMoreBili() {
     if (biliSection.loading || biliSection.exhausted) return;
+    // The recommendation feed pages with its own growing fresh index, not
+    // with the page number of a partition.
+    if (biliSection.tab === 'recommend') {
+        await loadBiliRecommend(false);
+        return;
+    }
     biliSection.loading = true;
     renderBiliResults();
     try {
@@ -9760,7 +9781,7 @@ function setBiliTab(tab) {
         if (el) el.hidden = !listTab;
     });
     const more = document.getElementById('btn-bili-more');
-    if (more) more.hidden = biliSection.tab !== 'hot';
+    if (more) more.hidden = biliSection.tab !== 'hot' && biliSection.tab !== 'recommend';
     const favorites = document.getElementById('bili-favorites');
     if (favorites) favorites.hidden = biliSection.tab !== 'favorites';
     const history = document.getElementById('bili-history');
@@ -9809,13 +9830,18 @@ async function loadBiliRecommend(reset) {
     if (reset) {
         biliSection.items = [];
         biliSection.error = '';
-        biliSection.page = 1;
+        biliSection.recommendPage = 0;
     }
     biliSection.loading = true;
     biliSection.exhausted = false;
     renderBiliResults();
     try {
-        const result = await state.api.get_bilibili_recommend(24, biliSection.page);
+        // The feed is pulled with a growing fresh index: the first batch is
+        // the home page, every later one is the next page of the scroll.
+        const scroll = biliSection.recommendPage > 0;
+        biliSection.recommendPage += 1;
+        const result = await state.api.get_bilibili_recommend(
+            24, biliSection.recommendPage, scroll);
         if (!result || !result.success) {
             biliSection.error = biliFailure(result, 'error.network');
             biliSection.loading = false;
@@ -9823,8 +9849,12 @@ async function loadBiliRecommend(reset) {
             return;
         }
         const rows = result.tracks || result.items || [];
-        biliSection.items = applyBiliPreferences(rows);
-        biliSection.exhausted = true;
+        // "More" appends; only a fresh start replaces what is on screen.
+        biliSection.items = scroll
+            ? biliSection.items.concat(applyBiliPreferences(rows))
+            : applyBiliPreferences(rows);
+        // An empty batch is how the feed says there is nothing left.
+        biliSection.exhausted = !rows.length;
     } catch (err) {
         biliSection.error = t('error.network');
     }
@@ -10088,18 +10118,6 @@ function openBiliPlayer(track) {
  * Promise.race with a 20-second deadline; on timeout it surfaces a
  * friendly error instead of leaving the spinner running.
  */
-async function fetchBiliStreams(bvid, quality) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
-    try {
-        const result = await state.api.get_bilibili_video_streams(bvid, quality);
-        return result;
-    } finally {
-        clearTimeout(timeout);
-    }
-}
-
-/** Fetch the streams and hand them to the player. */
 async function loadBiliStreams(bvid, quality) {
     const videoEl = document.getElementById('bili-video');
     if (!videoEl) return;
@@ -10108,53 +10126,43 @@ async function loadBiliStreams(bvid, quality) {
         showBiliOverlay('error', 'bili.overlay_no_stream');
         return;
     }
-    setBiliPlayerStatus('buffering');
     showBiliOverlay('loading');
-    try {
-        const result = await fetchBiliStreams(bvid, quality);
-        if (!result || !result.success) {
-            setBiliPlayerStatus('error');
-            showBiliOverlay('error', 'bili.overlay_no_stream');
-            showToast('error', biliFailure(result, 'bili.video_error'));
-            return;
+    // The standalone window and this one go through the same loader: the
+    // two used to keep a copy each, and the copies drifted.
+    const outcome = await window.BiliStreamLoader.load({
+        api: state.api,
+        bvid: bvid,
+        quality: quality,
+        videoEl: videoEl,
+        onStatus: (code) => setBiliPlayerStatus(code),
+        onStreams: (result) => {
+            biliPlayer.streams = result;
+            biliPlayer.quality = quality;
+            // The details of the video: the detail panel needs the uploader too.
+            biliPlayer.title = result.title || '';
+            biliPlayer.author = result.author || '';
+            biliPlayer.authorMid = result.author_mid || '';
+            renderBiliQualities(result);
+        },
+        // If the user enabled "resume playback", check the watch history
+        // and seek to the last position.
+        resumePlayback: !!(state.settings && state.settings.bili
+            && state.settings.bili.resume_playback)
+    });
+    if (outcome.ok) {
+        hideBiliOverlay();
+        armBiliPlaybackReport(videoEl);
+        if (outcome.resumed > 0) {
+            showToast('info', t('bili.resumed_from', { time: fmtTime(outcome.resumed) }), 3000);
         }
-        biliPlayer.streams = result;
-        biliPlayer.quality = quality;
-        // The details of the video: the detail panel needs the uploader too.
-        biliPlayer.title = result.title || '';
-        biliPlayer.author = result.author || '';
-        biliPlayer.authorMid = result.author_mid || '';
-        renderBiliQualities(result);
-        const played = await window.playBiliVideo(videoEl, result, {
-            onStatus: (code) => setBiliPlayerStatus(code)
-        });
-        if (!played) {
-            setBiliPlayerStatus('error');
-            showBiliOverlay('error', 'bili.overlay_no_stream');
-        } else {
-            hideBiliOverlay();
-            armBiliPlaybackReport(videoEl);
-            // If the user enabled "resume playback", check the watch history
-            // and seek to the last position.
-            if (state.settings && state.settings.bili && state.settings.bili.resume_playback) {
-                try {
-                    const prog = await state.api.get_bilibili_video_progress(bvid);
-                    if (prog && prog.success && prog.progress > 1 && prog.duration > 0) {
-                        const target = Math.floor(prog.duration * prog.progress / 100);
-                        videoEl.currentTime = target;
-                        showToast('info', t('bili.resumed_from', { time: fmtTime(target) }), 3000);
-                    }
-                } catch (err) { /* resume is best-effort */ }
-            }
-        }
-    } catch (err) {
-        setBiliPlayerStatus('error');
-        if (err && err.name === 'AbortError') {
-            showBiliOverlay('error', 'bili.overlay_timeout');
-        } else {
-            showBiliOverlay('error', 'bili.overlay_no_stream');
-            showToast('error', biliFailure(null, 'bili.video_error'));
-        }
+        return;
+    }
+    setBiliPlayerStatus('error');
+    if (outcome.error === 'timeout') {
+        showBiliOverlay('error', 'bili.overlay_timeout');
+    } else {
+        showBiliOverlay('error', 'bili.overlay_no_stream');
+        showToast('error', biliFailure(outcome.result, 'bili.video_error'));
     }
 }
 
@@ -12195,4 +12203,590 @@ function updateSearchButton() {
     if (!input || !button) return;
     button.disabled = !(input.value || '').trim();
     button.textContent = combined.loading ? t('search.loading') : t('search.btn');
+}
+
+
+/* ========================================================================
+ * 收藏三件事：收藏夹 / 订阅的合集 / 追的番剧
+ * ====================================================================== */
+
+/** Which of the three the favourites page is showing. */
+const biliFavSeg = { kind: 'folders', collections: [], bangumi: [], loading: false, error: '' };
+
+/** Switch between the folders, the collections and the bangumi. */
+function setBiliFavSegment(seg) {
+    const known = ['folders', 'collections', 'bangumi'];
+    biliFavSeg.kind = known.indexOf(seg) >= 0 ? seg : 'folders';
+    document.querySelectorAll('#bili-fav-segments .chip').forEach((chip) =>
+        chip.classList.toggle('is-active', chip.dataset.seg === biliFavSeg.kind));
+    const boxes = {
+        folders: 'bili-seg-folders',
+        collections: 'bili-seg-collections',
+        bangumi: 'bili-seg-bangumi'
+    };
+    Object.keys(boxes).forEach((key) => {
+        const box = document.getElementById(boxes[key]);
+        if (box) box.hidden = key !== biliFavSeg.kind;
+    });
+    if (biliFavSeg.kind === 'folders') loadBiliFolders();
+    if (biliFavSeg.kind === 'collections') loadBiliCollections(false);
+    if (biliFavSeg.kind === 'bangumi') loadBiliBangumi(false);
+}
+
+/** A plain tile: a cover, a title, a line under it and an optional badge. */
+function biliTileElement(options) {
+    const opts = options || {};
+    const card = document.createElement('button');
+    card.className = 'video-card is-tile';
+    card.type = 'button';
+    card.setAttribute('aria-label', opts.title || '');
+    const thumb = document.createElement('div');
+    thumb.className = 'vc-thumb';
+    if (opts.cover) {
+        const image = document.createElement('img');
+        image.src = opts.cover;
+        image.alt = '';
+        image.loading = 'lazy';
+        image.addEventListener('error', () => { image.remove(); });
+        thumb.appendChild(image);
+    }
+    if (opts.badge) {
+        const badge = document.createElement('span');
+        badge.className = 'vc-dur';
+        badge.textContent = opts.badge;
+        thumb.appendChild(badge);
+    }
+    if (opts.badgePercent > 0) {
+        const bar = document.createElement('span');
+        bar.className = 'vc-progress';
+        bar.style.width = Math.min(100, opts.badgePercent) + '%';
+        thumb.appendChild(bar);
+    }
+    card.appendChild(thumb);
+    const title = document.createElement('span');
+    title.className = 'vc-title';
+    title.textContent = opts.title || '';
+    card.appendChild(title);
+    const sub = document.createElement('span');
+    sub.className = 'vc-sub';
+    const up = document.createElement('span');
+    up.className = 'vc-up';
+    up.textContent = opts.sub || '';
+    sub.appendChild(up);
+    card.appendChild(sub);
+    card.addEventListener('click', () => {
+        if (typeof opts.onClick === 'function') opts.onClick();
+    });
+    return card;
+}
+
+/** The collections this account follows. */
+async function loadBiliCollections(force) {
+    const grid = document.getElementById('bili-collection-results');
+    const stateEl = document.getElementById('bili-collection-state');
+    if (!grid) return;
+    if (biliFavSeg.collections.length && !force) {
+        renderBiliCollections();
+        return;
+    }
+    if (!bridgeHas('get_bili_subscribed_collections')) {
+        if (stateEl) stateEl.textContent = t('bili.need_desktop');
+        return;
+    }
+    biliFavSeg.loading = true;
+    biliFavSeg.error = '';
+    renderBiliCollections();
+    try {
+        const result = await state.api.get_bili_subscribed_collections();
+        if (result && result.success) {
+            biliFavSeg.collections = result.collections || [];
+        } else {
+            biliFavSeg.collections = [];
+            biliFavSeg.error = (result && result.message) || t('error.network');
+        }
+    } catch (err) {
+        biliFavSeg.collections = [];
+        biliFavSeg.error = t('error.network');
+    }
+    biliFavSeg.loading = false;
+    renderBiliCollections();
+}
+
+function renderBiliCollections() {
+    const grid = document.getElementById('bili-collection-results');
+    const stateEl = document.getElementById('bili-collection-state');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (stateEl) stateEl.textContent = biliFavSeg.loading ? t('common.loading') : '';
+    if (!biliFavSeg.loading && biliFavSeg.error) {
+        if (stateEl) stateEl.textContent = biliFavSeg.error;
+        return;
+    }
+    if (!biliFavSeg.loading && !biliFavSeg.collections.length) {
+        if (stateEl) stateEl.textContent = t('bili.no_collections');
+        return;
+    }
+    biliFavSeg.collections.forEach((item) => {
+        const count = Number(item.count) || 0;
+        grid.appendChild(biliTileElement({
+            cover: item.cover ? biliImageSrc(item.cover) : '',
+            title: item.title || '',
+            sub: item.author_name
+                ? t('bili.collection_sub', { name: item.author_name, count: count })
+                : t('bili.collection_count', { count: count }),
+            badge: count ? t('bili.video_count', { count: count }) : '',
+            // A collection has no video list of its own here, so the way in
+            // is the uploader: their page lists what they made.
+            onClick: () => {
+                if (item.author_mid) openBiliSpace(item.author_mid);
+                else if (item.url) state.api.open_external(item.url);
+            }
+        }));
+    });
+}
+
+/** The bangumi this account follows. */
+async function loadBiliBangumi(force) {
+    const grid = document.getElementById('bili-bangumi-results');
+    const stateEl = document.getElementById('bili-bangumi-state');
+    if (!grid) return;
+    if (biliFavSeg.bangumi.length && !force) {
+        renderBiliBangumi();
+        return;
+    }
+    if (!bridgeHas('get_bili_bangumi')) {
+        if (stateEl) stateEl.textContent = t('bili.need_desktop');
+        return;
+    }
+    biliFavSeg.loading = true;
+    biliFavSeg.error = '';
+    renderBiliBangumi();
+    try {
+        const result = await state.api.get_bili_bangumi();
+        if (result && result.success) {
+            biliFavSeg.bangumi = result.shows || [];
+        } else {
+            biliFavSeg.bangumi = [];
+            biliFavSeg.error = (result && result.message) || t('error.network');
+        }
+    } catch (err) {
+        biliFavSeg.bangumi = [];
+        biliFavSeg.error = t('error.network');
+    }
+    biliFavSeg.loading = false;
+    renderBiliBangumi();
+}
+
+function renderBiliBangumi() {
+    const grid = document.getElementById('bili-bangumi-results');
+    const stateEl = document.getElementById('bili-bangumi-state');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (stateEl) stateEl.textContent = biliFavSeg.loading ? t('common.loading') : '';
+    if (!biliFavSeg.loading && biliFavSeg.error) {
+        if (stateEl) stateEl.textContent = biliFavSeg.error;
+        return;
+    }
+    if (!biliFavSeg.loading && !biliFavSeg.bangumi.length) {
+        if (stateEl) stateEl.textContent = t('bili.no_bangumi');
+        return;
+    }
+    biliFavSeg.bangumi.forEach((show) => {
+        const total = Number(show.total) || 0;
+        const sub = show.progress
+            ? show.progress
+            : (total ? t('bili.total_eps', { count: total }) : (show.ep_index || ''));
+        grid.appendChild(biliTileElement({
+            cover: show.cover ? biliImageSrc(show.cover) : '',
+            title: show.title || '',
+            sub: sub,
+            badgePercent: Number(show.progress_percent) || 0,
+            onClick: () => playBangumiShow(show)
+        }));
+    });
+}
+
+/**
+ * Play one bangumi episode.
+ *
+ * A bangumi has no bvid, so the separate window (which is addressed by
+ * bvid) cannot show it; this one always plays in the main window.  The
+ * episode handed over is the newest one the follow list knows about --
+ * B站 does not say which episode the user was on.
+ */
+async function playBangumiShow(show) {
+    const seasonId = Number(show && show.season_id) || 0;
+    const episodeId = Number(show && show.ep_id) || 0;
+    if (!seasonId) {
+        showToast('error', t('bili.video_error'));
+        return;
+    }
+    if (!bridgeHas('get_bili_bangumi_streams')) {
+        showToast('error', t('bili.need_desktop'));
+        return;
+    }
+    biliPlayer.track = { name: (show && show.title) || '', bvid: '', cover: (show && show.cover) || '' };
+    biliPlayer.quality = 0;
+    openBiliPlayer(biliPlayer.track);
+    showBiliOverlay('loading');
+    let result = null;
+    try {
+        result = await state.api.get_bili_bangumi_streams(seasonId, episodeId, 0);
+    } catch (err) {
+        result = null;
+    }
+    if (!result || !result.success) {
+        setBiliPlayerStatus('error');
+        showBiliOverlay('error', 'bili.overlay_no_stream');
+        // B站 answers "大会员专享限制" itself, and that is worth showing as is.
+        showToast('error', (result && result.message) || t('bili.video_error'));
+        return;
+    }
+    biliPlayer.streams = result;
+    biliPlayer.title = result.title || (show && show.title) || '';
+    renderBiliQualities(result);
+    const videoEl = document.getElementById('bili-video');
+    const played = await window.BiliStreamLoader.play(videoEl, result, {
+        onStatus: (code) => setBiliPlayerStatus(code)
+    });
+    if (played) {
+        hideBiliOverlay();
+    } else {
+        setBiliPlayerStatus('error');
+        showBiliOverlay('error', 'bili.overlay_no_stream');
+    }
+}
+
+/* ========================================================================
+ * 别人的动态
+ * ====================================================================== */
+
+const biliSpaceSeg = { kind: 'videos', dynamics: [], loading: false, error: '' };
+
+function setBiliSpaceSegment(seg) {
+    biliSpaceSeg.kind = seg === 'dynamics' ? 'dynamics' : 'videos';
+    document.querySelectorAll('#bili-space-segments .chip').forEach((chip) =>
+        chip.classList.toggle('is-active', chip.dataset.seg === biliSpaceSeg.kind));
+    const videos = document.getElementById('bili-space-seg-videos');
+    const dynamics = document.getElementById('bili-space-seg-dynamics');
+    if (videos) videos.hidden = biliSpaceSeg.kind !== 'videos';
+    if (dynamics) dynamics.hidden = biliSpaceSeg.kind !== 'dynamics';
+    if (biliSpaceSeg.kind === 'dynamics') loadBiliDynamics();
+}
+
+async function loadBiliDynamics(force) {
+    const grid = document.getElementById('bili-space-dynamics');
+    const stateEl = document.getElementById('bili-dynamics-state');
+    if (!grid) return;
+    const mid = biliSpace.mid || '';
+    if (!mid) return;
+    if (biliSpaceSeg.dynamics.length && !force) {
+        renderBiliDynamics();
+        return;
+    }
+    if (!bridgeHas('get_bili_dynamics')) {
+        if (stateEl) stateEl.textContent = t('bili.need_desktop');
+        return;
+    }
+    biliSpaceSeg.loading = true;
+    biliSpaceSeg.error = '';
+    renderBiliDynamics();
+    try {
+        const result = await state.api.get_bili_dynamics(mid, 1);
+        if (result && result.success) {
+            biliSpaceSeg.dynamics = result.items || [];
+        } else {
+            biliSpaceSeg.dynamics = [];
+            biliSpaceSeg.error = (result && result.message) || t('error.network');
+        }
+    } catch (err) {
+        biliSpaceSeg.dynamics = [];
+        biliSpaceSeg.error = t('error.network');
+    }
+    biliSpaceSeg.loading = false;
+    renderBiliDynamics();
+}
+
+function renderBiliDynamics() {
+    const grid = document.getElementById('bili-space-dynamics');
+    const stateEl = document.getElementById('bili-dynamics-state');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (stateEl) stateEl.textContent = biliSpaceSeg.loading ? t('common.loading') : '';
+    if (!biliSpaceSeg.loading && biliSpaceSeg.error) {
+        if (stateEl) stateEl.textContent = biliSpaceSeg.error;
+        return;
+    }
+    if (!biliSpaceSeg.loading && !biliSpaceSeg.dynamics.length) {
+        if (stateEl) stateEl.textContent = t('bili.no_dynamics');
+        return;
+    }
+    biliSpaceSeg.dynamics.forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'bili-dynamic is-' + (item.type || 'other');
+        const head = document.createElement('div');
+        head.className = 'bd-head';
+        if (item.author_face) {
+            const face = document.createElement('img');
+            face.className = 'bd-face';
+            face.src = biliImageSrc(item.author_face);
+            face.alt = '';
+            face.loading = 'lazy';
+            face.addEventListener('error', () => { face.remove(); });
+            head.appendChild(face);
+        }
+        const who = document.createElement('span');
+        who.className = 'bd-name';
+        who.textContent = item.author_name || '';
+        head.appendChild(who);
+        const when = document.createElement('span');
+        when.className = 'bd-time';
+        when.textContent = item.pub_time_text || '';
+        head.appendChild(when);
+        row.appendChild(head);
+
+        if (item.text) {
+            const text = document.createElement('div');
+            text.className = 'bd-text';
+            text.textContent = item.text;
+            row.appendChild(text);
+        }
+        // A video post is a card you can play; a picture post is a strip.
+        if (item.bvid) {
+            const thumb = document.createElement('button');
+            thumb.className = 'bd-video';
+            thumb.type = 'button';
+            if (item.cover) {
+                const image = document.createElement('img');
+                image.src = biliImageSrc(item.cover);
+                image.alt = '';
+                image.loading = 'lazy';
+                image.addEventListener('error', () => { image.remove(); });
+                thumb.appendChild(image);
+            }
+            const name = document.createElement('span');
+            name.className = 'bd-video-title';
+            name.textContent = item.title || '';
+            thumb.appendChild(name);
+            thumb.addEventListener('click', () => {
+                playBiliTrack({
+                    bvid: item.bvid,
+                    name: item.title || '',
+                    cover_url: item.cover || '',
+                    duration: 0
+                });
+            });
+            row.appendChild(thumb);
+        }
+        if (Array.isArray(item.images) && item.images.length) {
+            const strip = document.createElement('div');
+            strip.className = 'bd-images';
+            item.images.slice(0, 9).forEach((src) => {
+                const image = document.createElement('img');
+                image.src = biliImageSrc(src);
+                image.alt = '';
+                image.loading = 'lazy';
+                image.addEventListener('error', () => { image.remove(); });
+                strip.appendChild(image);
+            });
+            row.appendChild(strip);
+        }
+        grid.appendChild(row);
+    });
+}
+
+/* ========================================================================
+ * 本地视频（实验性）
+ * ====================================================================== */
+
+const localVideo = {
+    items: [],
+    dirs: [],
+    errors: [],
+    loading: false,
+    error: '',
+    folder: '',
+    keyword: ''
+};
+
+async function loadLocalVideoLibrary(force) {
+    const grid = document.getElementById('local-video-results');
+    const stateEl = document.getElementById('local-video-state');
+    if (!grid) return;
+    if (!bridgeHas('get_local_video_library')) {
+        if (stateEl) stateEl.textContent = t('bili.need_desktop');
+        return;
+    }
+    if (localVideo.items.length && !force) {
+        renderLocalVideos();
+        return;
+    }
+    localVideo.loading = true;
+    localVideo.error = '';
+    renderLocalVideos();
+    try {
+        const result = await state.api.get_local_video_library();
+        if (result && result.success) {
+            localVideo.items = result.items || [];
+            localVideo.dirs = result.dirs || [];
+            localVideo.errors = result.errors || [];
+        } else {
+            localVideo.items = [];
+            localVideo.dirs = (result && result.dirs) || [];
+            localVideo.error = (result && result.message) || t('error.network');
+        }
+    } catch (err) {
+        localVideo.items = [];
+        localVideo.error = t('error.network');
+    }
+    localVideo.loading = false;
+    renderLocalVideos();
+    renderLocalVideoFolders();
+}
+
+function renderLocalVideoFolders() {
+    const row = document.getElementById('local-video-folders');
+    if (!row) return;
+    row.innerHTML = '';
+    const all = document.createElement('button');
+    all.className = 'chip' + (localVideo.folder ? '' : ' is-active');
+    all.type = 'button';
+    all.textContent = t('local_video.all_folders');
+    all.addEventListener('click', () => {
+        localVideo.folder = '';
+        renderLocalVideoFolders();
+        renderLocalVideos();
+    });
+    row.appendChild(all);
+    localVideo.dirs.forEach((dir) => {
+        const name = String(dir).split('/').filter(Boolean).pop() || String(dir);
+        const chip = document.createElement('button');
+        chip.className = 'chip' + (localVideo.folder === dir ? ' is-active' : '');
+        chip.type = 'button';
+        chip.textContent = name;
+        chip.title = dir;
+        chip.addEventListener('click', () => {
+            localVideo.folder = localVideo.folder === dir ? '' : dir;
+            renderLocalVideoFolders();
+            renderLocalVideos();
+        });
+        row.appendChild(chip);
+    });
+}
+
+function renderLocalVideos() {
+    const grid = document.getElementById('local-video-results');
+    const stateEl = document.getElementById('local-video-state');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (stateEl) stateEl.textContent = localVideo.loading ? t('common.loading') : '';
+    if (!localVideo.loading && localVideo.error) {
+        if (stateEl) stateEl.textContent = localVideo.error;
+        return;
+    }
+    if (!localVideo.loading && !localVideo.dirs.length) {
+        if (stateEl) stateEl.textContent = t('local_video.no_folder');
+        return;
+    }
+    const keyword = localVideo.keyword.trim().toLowerCase();
+    const rows = localVideo.items.filter((item) => {
+        const path = String(item.path || '');
+        if (localVideo.folder && path.indexOf(localVideo.folder) !== 0) return false;
+        if (keyword && String(item.name || '').toLowerCase().indexOf(keyword) < 0) return false;
+        return true;
+    });
+    if (!localVideo.loading && !rows.length) {
+        if (stateEl) stateEl.textContent = t('local_video.no_video');
+        return;
+    }
+    rows.forEach((item) => {
+        const seconds = Number(item.duration) || 0;
+        grid.appendChild(biliTileElement({
+            cover: '',
+            title: item.name || '',
+            sub: seconds > 0
+                ? fmtTime(Math.round(seconds))
+                : t('local_video.size', { size: formatBytes(Number(item.size) || 0) }),
+            onClick: () => playLocalVideoFile(item)
+        }));
+    });
+    const end = document.getElementById('local-video-end');
+    if (end) {
+        end.hidden = !rows.length;
+        end.textContent = t('local_video.count', { count: rows.length });
+    }
+}
+
+async function playLocalVideoFile(item) {
+    if (!item || !item.path) return;
+    if (!bridgeHas('open_local_video')) {
+        showToast('error', t('bili.need_desktop'));
+        return;
+    }
+    try {
+        const result = await state.api.open_local_video(item.path, '');
+        if (!result || !result.success) {
+            showToast('error', (result && result.message) || t('local_video.open_failed'));
+        }
+    } catch (err) {
+        showToast('error', t('local_video.open_failed'));
+    }
+}
+
+async function addLocalVideoFolder() {
+    if (!bridgeHas('add_local_video_folder')) {
+        showToast('error', t('bili.need_desktop'));
+        return;
+    }
+    try {
+        const result = await state.api.add_local_video_folder();
+        if (result && result.success && !result.cancelled) {
+            localVideo.dirs = result.dirs || [];
+            localVideo.items = [];
+            renderLocalVideoFolders();
+            await loadLocalVideoLibrary(true);
+        }
+    } catch (err) {
+        showToast('error', t('error.unknown'));
+    }
+}
+
+/* ------------------------------------------------------------------ wiring */
+
+function bindNewBiliFeatures() {
+    const segments = document.getElementById('bili-fav-segments');
+    if (segments) {
+        segments.addEventListener('click', (event) => {
+            const chip = event.target.closest('.chip');
+            if (!chip) return;
+            setBiliFavSegment(chip.dataset.seg);
+        });
+    }
+    const spaceSegments = document.getElementById('bili-space-segments');
+    if (spaceSegments) {
+        spaceSegments.addEventListener('click', (event) => {
+            const chip = event.target.closest('.chip');
+            if (!chip) return;
+            setBiliSpaceSegment(chip.dataset.seg);
+        });
+    }
+    const addButton = document.getElementById('btn-local-video-add');
+    if (addButton) addButton.addEventListener('click', addLocalVideoFolder);
+    const refreshButton = document.getElementById('btn-local-video-refresh');
+    if (refreshButton) refreshButton.addEventListener('click', () => loadLocalVideoLibrary(true));
+    const backButton = document.getElementById('btn-local-video-back');
+    if (backButton) backButton.addEventListener('click', () => showView('home'));
+    const search = document.getElementById('local-video-search');
+    if (search) {
+        search.addEventListener('input', () => {
+            localVideo.keyword = search.value || '';
+            renderLocalVideos();
+        });
+    }
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bindNewBiliFeatures);
+} else {
+    bindNewBiliFeatures();
 }

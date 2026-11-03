@@ -97,6 +97,10 @@ class PlaybackSettings:
     report_play_count: bool = False
     #: Folders scanned for local music.
     local_dirs: list[str] = field(default_factory=list)
+    #: Folders scanned for local video.  Kept apart from ``local_dirs``: a
+    #: video folder inside a music folder would otherwise be listed twice,
+    #: once by each side, and the two lists are chosen separately.
+    local_video_dirs: list[str] = field(default_factory=list)
     #: Folder the last "play a folder" action used.
     last_local_dir: str = ""
     scan_depth: int = 6
@@ -401,6 +405,10 @@ class Settings:
         if not isinstance(playback.local_dirs, list):
             playback.local_dirs = []
         playback.local_dirs = [str(item) for item in playback.local_dirs if str(item or "").strip()]
+        if not isinstance(playback.local_video_dirs, list):
+            playback.local_video_dirs = []
+        playback.local_video_dirs = [str(item) for item in playback.local_video_dirs
+                                     if str(item or "").strip()]
         for flag in ("overwrite", "download_lyrics", "lyrics_translation"):
             setattr(self._data.download, flag, _as_bool(getattr(self._data.download, flag)))
         playback.crossfade_duration = self._clamp_float(playback.crossfade_duration, 0.0, 12.0, 0.0)

@@ -283,6 +283,7 @@ class GuiBridge:
                 "resume_playback": self.settings.playback.resume_playback,
                 "report_play_count": self.settings.playback.report_play_count,
                 "local_dirs": list(self.settings.playback.local_dirs),
+                "local_video_dirs": list(self.settings.playback.local_video_dirs),
                 "scan_depth": self.settings.playback.scan_depth,
                 "show_translation": self.settings.playback.show_translation,
                 "lyrics_scroll_idle_seconds": self.settings.playback.lyrics_scroll_idle_seconds,
@@ -406,6 +407,7 @@ class GuiBridge:
     def _clean_playback(self, data: dict[str, Any]) -> dict[str, Any]:
         cleaned = self._clean(data, {"prefer_online", "online_quality", "play_mode", "volume",
                                       "resume_playback", "report_play_count", "local_dirs",
+                                      "local_video_dirs",
                                       "scan_depth", "show_translation", "last_local_dir",
                                       "lyrics_scroll_idle_seconds"})
         if "play_mode" in cleaned and cleaned["play_mode"] not in PLAY_MODES:
@@ -413,6 +415,9 @@ class GuiBridge:
         if isinstance(cleaned.get("local_dirs"), list):
             cleaned["local_dirs"] = [str(item) for item in cleaned["local_dirs"]
                                      if str(item or "").strip()]
+        if isinstance(cleaned.get("local_video_dirs"), list):
+            cleaned["local_video_dirs"] = [str(item) for item in cleaned["local_video_dirs"]
+                                           if str(item or "").strip()]
         return cleaned
 
     def reset_settings(self) -> dict[str, Any]:
@@ -2129,13 +2134,274 @@ class GuiBridge:
         result["tracks"] = [self._bilibili_track_payload(item) for item in items]
         return result
 
-    def get_bilibili_recommend(self, page_size: int = 12,
-                                fresh_index: int = 1) -> dict[str, Any]:
-        """The Bilibili home feed (personalised when the account is signed in)."""
-        result = self.bilibili.recommend(page_size=page_size, fresh_index=fresh_index)
+    def get_bilibili_recommend(self, page_size: int = 12, fresh_index: int = 1,
+                               scroll: bool = False) -> dict[str, Any]:
+        """The Bilibili home feed (personalised when the account is signed in).
+
+        ``scroll`` asks for the next page of the feed rather than the home
+        page itself, which is what the "load more" button needs.
+        """
+        result = self.bilibili.recommend(page_size=page_size,
+                                         fresh_index=fresh_index,
+                                         scroll=scroll)
         items = result.get("items") or []
         result["tracks"] = [self._bilibili_track_payload(item) for item in items]
         return result
+
+    def get_bili_subscribed_collections(self) -> dict[str, Any]:
+        """The collections the signed-in account follows."""
+        return self.bilibili.subscribed_collections()
+
+    def get_bili_bangumi(self) -> dict[str, Any]:
+        """The anime the signed-in account follows."""
+        return self.bilibili.bangumi()
+
+    def get_bili_bangumi_streams(self, season_id: int = 0, episode_id: int = 0,
+                                 quality: int = 0) -> dict[str, Any]:
+        """Playable streams of one bangumi episode, same shape as a video."""
+        return self.bilibili.bangumi_streams(season_id=season_id,
+                                             episode_id=episode_id,
+                                             quality=quality)
+
+    def get_bili_dynamics(self, mid: str = "", page: int = 1) -> dict[str, Any]:
+        """The posts of one account."""
+        return self.bilibili.dynamics(mid=mid, page=page)
+
+    # ------------------------------------------------------ 本地视频（实验性）
+    def add_local_video_folder(self) -> dict[str, Any]:
+        """Ask for a video folder and remember it."""
+        if self._window is None:
+            return {"success": False, "message": "窗口还没准备好", "dirs": []}
+        try:
+            result = self._window.create_file_dialog(webview.FOLDER_DIALOG,
+                                                     directory=str(Path.home()))
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("video folder dialog failed: %s", exc)
+            return {"success": False, "message": str(exc), "dirs": []}
+        if not result:
+            # Cancelled: not a failure, the list simply did not change.
+            return {"success": True, "cancelled": True,
+                    "dirs": list(self.settings.playback.local_video_dirs)}
+        chosen = str(Path(result[0]).expanduser().resolve())
+        dirs = list(self.settings.playback.local_video_dirs)
+        if chosen not in dirs:
+            dirs.append(chosen)
+            self.settings.playback.local_video_dirs = dirs
+            self.settings.save()
+        self._allow_local_video_dirs(dirs)
+        return {"success": True, "cancelled": False, "dirs": dirs, "added": chosen}
+
+    def remove_local_video_folder(self, path: str = "") -> dict[str, Any]:
+        """Forget a video folder."""
+        target = str(path or "").strip()
+        dirs = [item for item in self.settings.playback.local_video_dirs if item != target]
+        self.settings.playback.local_video_dirs = dirs
+        self.settings.save()
+        return {"success": True, "dirs": dirs}
+
+    def get_local_video_library(self) -> dict[str, Any]:
+        """Everything the remembered video folders hold.
+
+        The media server is told about the folders first: it refuses to hand
+        out a file outside its allowed roots, and a video the app cannot
+        fetch is a video the player window cannot play.
+        """
+        from src.core import localvideo
+
+        dirs = list(self.settings.playback.local_video_dirs)
+        self._allow_local_video_dirs(dirs)
+        try:
+            answer = localvideo.library(dirs)
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("local video scan failed: %s", exc)
+            return {"success": False, "items": [], "count": 0,
+                    "dirs": dirs, "errors": [str(exc)]}
+        items = []
+        for item in answer.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "")
+            items.append({
+                "path": path,
+                "name": str(item.get("name") or ""),
+                "size": int(item.get("size") or 0),
+                "mtime": item.get("mtime") or 0,
+                "duration": float(item.get("duration") or 0),
+                "url": self._local_video_url(path),
+            })
+        return {"success": True, "items": items, "count": len(items),
+                "dirs": dirs, "errors": list(answer.get("errors") or [])}
+
+    def pick_local_video_subtitle(self) -> dict[str, Any]:
+        """Ask for a subtitle file for the local video that is open."""
+        if self._window is None:
+            return {"success": False, "message": "窗口还没准备好"}
+        try:
+            result = self._window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False,
+                file_types=("Subtitle (*.srt;*.ass;*.vtt)", "All files (*.*)"))
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("subtitle dialog failed: %s", exc)
+            return {"success": False, "message": str(exc)}
+        if not result:
+            return {"success": True, "cancelled": True}
+        chosen = str(Path(result[0]).expanduser().resolve())
+        return self._subtitle_answer(chosen, "")
+
+    def get_local_video_subtitle(self, video: str = "", extra: str = "") -> dict[str, Any]:
+        """The subtitle of one video, as WebVTT text.
+
+        The text is handed over instead of a file url: the player window is
+        served by the media server, and a subtitle read out of a file://
+        path would be blocked there.
+        """
+        return self._subtitle_answer(extra, video)
+
+    def open_local_video(self, path: str = "", subtitle: str = "") -> dict[str, Any]:
+        """Open a local video in a window of its own."""
+        target = str(path or "").strip()
+        if not target:
+            return {"success": False, "message": "缺少视频文件"}
+        # The media server only serves files under its allowed roots.
+        self._allow_local_video_dirs([str(Path(target).parent),
+                                      *self.settings.playback.local_video_dirs])
+        video_url = self._local_video_url(target)
+        if not video_url:
+            return {"success": False, "message": "这个文件读不了"}
+
+        query: dict[str, str] = {"video": video_url,
+                                 "title": Path(target).name,
+                                 "name": Path(target).name}
+        if subtitle:
+            answer = self._subtitle_answer(subtitle, target)
+            if answer.get("success") and answer.get("text"):
+                query["subtitleText"] = str(answer["text"])
+        # The rest of the folder goes along, so the window can offer the next
+        # episode without asking the backend for it again.
+        siblings = self._sibling_videos(target)
+        if siblings:
+            query["files"] = json.dumps(siblings, ensure_ascii=False)
+
+        if self._webview_module is None:
+            return {"success": False, "message": "", "url": self._local_video_url_page(query)}
+        url = self._local_video_url_page(query)
+        try:
+            window = self._webview_module.create_window(
+                title=Path(target).name or "SkycMedia",
+                url=url,
+                js_api=self,
+                width=1180,
+                height=780,
+                min_size=(760, 520),
+                resizable=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("could not open the local video window: %s", exc)
+            return {"success": False, "message": str(exc)}
+        self._local_video_windows.append(window)
+
+        def forget() -> None:
+            try:
+                self._local_video_windows.remove(window)
+            except ValueError:
+                pass
+
+        try:
+            window.events.closed += forget
+        except Exception:  # noqa: BLE001 - a missing event is not fatal
+            pass
+        return {"success": True, "opened": True, "message": "", "url": url}
+
+    # ------------------------------------------------------------ 本地视频助手
+    def _allow_local_video_dirs(self, dirs: list[str]) -> None:
+        """Let the media server read the video folders.
+
+        ``set_allowed_roots`` replaces the whole list, so the roots that were
+        already there are carried over; dropping them would take the covers
+        and the local music away with it.
+        """
+        media = getattr(self, "media", None)
+        if media is None:
+            return
+        roots = [str(item) for item in getattr(media, "allowed_roots", []) or []]
+        for item in dirs:
+            text = str(item or "").strip()
+            if text and text not in roots:
+                roots.append(text)
+        try:
+            media.set_allowed_roots(roots)
+        except Exception as exc:  # noqa: BLE001 - never break the window
+            self.logger.warning("could not widen the media roots: %s", exc)
+
+    def _local_video_url(self, path: str) -> str:
+        """A loopback url for one file, or an empty string."""
+        media = getattr(self, "media", None)
+        if media is None or not str(path or "").strip():
+            return ""
+        try:
+            return media.url_for_local(path) or ""
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("could not url the local video: %s", exc)
+            return ""
+
+    def _local_video_url_page(self, query: dict[str, str]) -> str:
+        """The address of the local video page."""
+        from src.resources import resource_path
+        html_path = resource_path("src", "gui", "assets", "local-video.html")
+        media = getattr(self, "media", None)
+        encoded = urlencode(query)
+        if media is not None and getattr(media, "running", False):
+            media.set_ui_root(html_path.parent)
+            return media.ui_url("local-video.html", query=encoded)
+        return f"{html_path.as_uri()}?{encoded}"
+
+    def _sibling_videos(self, path: str) -> list[dict[str, Any]]:
+        """The other videos next to this one, for the list in the window."""
+        from src.core import localvideo
+
+        folder = Path(path).parent
+        try:
+            answer = localvideo.scan_folder(str(folder))
+        except Exception:  # noqa: BLE001 - the list is a nicety
+            return []
+        rows = []
+        for item in answer.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            file_path = str(item.get("path") or "")
+            url = self._local_video_url(file_path)
+            if not url:
+                continue
+            rows.append({
+                "path": file_path,
+                "name": str(item.get("name") or ""),
+                "url": url,
+                "duration": float(item.get("duration") or 0),
+            })
+        return rows[:200]
+
+    def _subtitle_answer(self, subtitle: str, video: str) -> dict[str, Any]:
+        """Read one subtitle file and hand back WebVTT text."""
+        from src.core import localvideo
+
+        chosen = str(subtitle or "").strip()
+        try:
+            if chosen:
+                answer = localvideo.subtitle_for(video or chosen, chosen)
+            elif video:
+                answer = localvideo.subtitle_for(video)
+            else:
+                return {"success": False, "message": "缺少字幕文件", "text": ""}
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("subtitle read failed: %s", exc)
+            return {"success": False, "message": str(exc), "text": ""}
+        text = str(answer.get("text") or "")
+        if not text:
+            return {"success": False, "message": "这个字幕文件读不出内容", "text": ""}
+        return {"success": True, "message": "", "text": text,
+                "path": str(answer.get("path") or ""),
+                "kind": str(answer.get("kind") or "")}
+
 
     def bili_report_playback(self, bvid: str = "", cid: int = 0,
                              played_time: int = 0, video_duration: int = 0,

@@ -83,6 +83,13 @@
                         <span class="home-card-desc" data-i18n="home.entry_netease_desc"></span>
                         <span class="home-card-count" id="home-count-netease"></span>
                     </button>
+                    <button class="home-card" type="button" data-entry="local-video"
+                            id="home-entry-local-video">
+                        <span class="home-card-icon" data-entry="local-video" data-icon="monitor" aria-hidden="true"></span>
+                        <span class="home-card-title" data-i18n="home.entry_local_video"></span>
+                        <span class="home-card-desc" data-i18n="home.entry_local_video_desc"></span>
+                        <span class="home-card-count" id="home-count-local-video"></span>
+                    </button>
                     <button class="home-card" type="button" data-entry="bili" id="home-entry-bili">
                         <span class="home-card-icon" data-entry="bili" data-icon="play" aria-hidden="true"></span>
                         <span class="home-card-title" data-i18n="home.entry_bili"></span>
@@ -295,6 +302,34 @@
             </div>
         </section>
 
+        <!-- ========================= local video view ========================= -->
+        <section class="view" id="view-local-video">
+            <div class="bili-page">
+                <div class="page-head">
+                    <button class="btn btn-icon" id="btn-local-video-back" type="button"
+                            data-icon="back" data-i18n-title="home.back_home" aria-label="back"></button>
+                    <h1 class="page-title" id="local-video-title" tabindex="-1"
+                        data-i18n="local_video.title"></h1>
+                    <div class="page-actions">
+                        <button class="btn btn-sm" id="btn-local-video-add" type="button"
+                                data-i18n="local_video.add_folder"></button>
+                        <button class="btn btn-icon" id="btn-local-video-refresh" type="button"
+                                data-icon="refresh" data-i18n-title="local_video.refresh"
+                                aria-label="refresh"></button>
+                    </div>
+                </div>
+                <div class="bili-folders-title" data-i18n="local_video.folders_title"></div>
+                <div class="chip-row" id="local-video-folders"></div>
+                <div class="filter-bar">
+                    <input class="input" id="local-video-search" type="search"
+                           data-i18n-placeholder="local_video.search">
+                </div>
+                <div class="bili-grid" id="local-video-results"></div>
+                <div id="local-video-state"></div>
+                <div class="result-end" id="local-video-end" hidden></div>
+            </div>
+        </section>
+
         <!-- ========================= bili view ========================= -->
         <section class="view" id="view-bili">
             <div class="bili-page">
@@ -336,15 +371,38 @@
                         data-i18n="bili.load_more"></button>
                 <div class="result-end" id="bili-end" hidden></div>
 
-                <!-- 我的收藏：收藏夹一排，内容用同一套卡片 -->
+                <!-- 我的收藏：收藏夹 / 订阅的合集 / 追的番剧 -->
                 <div id="bili-favorites" hidden>
-                    <div class="bili-folders-title" data-i18n="bili.folders_title"></div>
-                    <div class="chip-row" id="bili-folder-chips"></div>
-                    <div class="bili-grid" id="bili-fav-results"></div>
-                    <div id="bili-fav-state"></div>
-                    <button class="btn btn-sm btn-block" id="btn-bili-fav-more" type="button" hidden
-                            data-i18n="bili.load_more"></button>
-                    <div class="result-end" id="bili-fav-end" hidden></div>
+                    <div class="filter-chips" id="bili-fav-segments" role="tablist">
+                        <button class="chip is-active" type="button" data-seg="folders"
+                                data-i18n="bili.seg_folders"></button>
+                        <button class="chip" type="button" data-seg="collections"
+                                data-i18n="bili.seg_collections"></button>
+                        <button class="chip" type="button" data-seg="bangumi"
+                                data-i18n="bili.seg_bangumi"></button>
+                    </div>
+
+                    <!-- 收藏夹 -->
+                    <div id="bili-seg-folders">
+                        <div class="chip-row" id="bili-folder-chips"></div>
+                        <div class="bili-grid" id="bili-fav-results"></div>
+                        <div id="bili-fav-state"></div>
+                        <button class="btn btn-sm btn-block" id="btn-bili-fav-more" type="button" hidden
+                                data-i18n="bili.load_more"></button>
+                        <div class="result-end" id="bili-fav-end" hidden></div>
+                    </div>
+
+                    <!-- 订阅的合集 -->
+                    <div id="bili-seg-collections" hidden>
+                        <div class="bili-grid" id="bili-collection-results"></div>
+                        <div id="bili-collection-state"></div>
+                    </div>
+
+                    <!-- 追的番剧 -->
+                    <div id="bili-seg-bangumi" hidden>
+                        <div class="bili-grid" id="bili-bangumi-results"></div>
+                        <div id="bili-bangumi-state"></div>
+                    </div>
                 </div>
 
                 <!-- 观看历史 -->
@@ -1848,11 +1906,26 @@
                 </div>
                 <button class="btn btn-sm btn-primary" id="btn-bili-space-follow" type="button"></button>
             </div>
-            <div class="bili-section-title" data-i18n="bili.space_videos"></div>
-            <div class="bili-space-videos" id="bili-space-videos"></div>
-            <div id="bili-space-state"></div>
-            <button class="btn btn-sm btn-block" id="btn-bili-space-more" type="button" hidden
-                    data-i18n="bili.load_more"></button>
+            <div class="filter-chips" id="bili-space-segments" role="tablist">
+                <button class="chip is-active" type="button" data-seg="videos"
+                        data-i18n="bili.space_videos"></button>
+                <button class="chip" type="button" data-seg="dynamics"
+                        data-i18n="bili.space_dynamics"></button>
+            </div>
+
+            <!-- 他的视频 -->
+            <div id="bili-space-seg-videos">
+                <div class="bili-space-videos" id="bili-space-videos"></div>
+                <div id="bili-space-state"></div>
+                <button class="btn btn-sm btn-block" id="btn-bili-space-more" type="button" hidden
+                        data-i18n="bili.load_more"></button>
+            </div>
+
+            <!-- 他的动态：图文、视频、转发 -->
+            <div id="bili-space-seg-dynamics" hidden>
+                <div class="bili-dynamics" id="bili-space-dynamics"></div>
+                <div id="bili-dynamics-state"></div>
+            </div>
         </div>
     </div>
 </div>
@@ -1933,6 +2006,7 @@
 <div class="toast-container" id="toast-container"></div>
 
 <script src="icons.js"></script>
+<script src="bili-stream-loader.js"></script>
 <script src="bili-player.js"></script>
 <script src="bili-overlay.js"></script>
 <script src="app.js"></script>

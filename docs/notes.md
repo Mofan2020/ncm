@@ -3541,3 +3541,100 @@ BV1HgxJ6tEsM progress=0   duration=1713   -> 没看过，不跳
 
 回归测试加了三条，其中一条做了变异测试：把 `BILI_FOLDER_PAGE` 改回 50，
 测试确实红了。
+
+**独立窗口「有声音没视频」，找了很久，根因是一行 CSS 被漏了。**
+
+症状：内联播放器正常，独立窗口一直黑屏但有声音。走了不少弯路——以为是
+AV1 不解码、以为是 MSE 在 WKWebView 里只出声不出画、以为是 pywebview 第二个
+窗口没有硬件解码。都改过，都没解决，因为那些都不是原因。
+
+真正的判据是 `document.elementFromPoint()`：在视频中心点上取最顶层的元素。
+探针回来的是 `bp-overlay-card`，不是 `bp-video`。也就是说视频在播、声音在出，
+上面盖着一层 `rgba(10, 12, 16, 0.72)` 加 `backdrop-filter: blur(3px)` 的遮罩。
+
+遮罩本来该在播放开始后被 `hidden` 掉。`bili-player.css` 里 `.bp-overlay` 写了
+`display: flex`，而 `hidden` 属性只有浏览器默认样式的 `display: none` 撑着——
+作者样式优先级更高，直接盖掉。少写一条规则：
+
+```css
+[hidden] { display: none !important; }
+```
+
+主窗口的 `style.css` 第一行就有这条，所以内联播放器一直正常；独立窗口是另一份
+样式表，漏了。同一个坑还压着 `#bp-fatal`（`position: fixed; inset: 0` 的不透明层，
+z-index 10）和几个 popover——整个窗口都被盖着，不只是视频。
+
+修法就是补这一条。另外写了个扫描器（`tests/test_hidden_attribute_css.py`）：
+把每个页面里带 `hidden` 属性的元素找出来，看有没有样式给它设了 `display`、
+却没有对应的 `[hidden]` 规则把它收回去。加规则、删规则都做了变异测试。
+
+**教训**：`readyState`、`videoWidth`、`canvas.drawImage()` 读到的像素，全部只能
+证明「解码器产出了帧」，证明不了「屏幕上有画面」。判断「用户看不看得见」要看
+合成结果——`elementFromPoint()` 是最便宜的那个。
+
+**取流超时是个假的。** 之前给独立窗口加了 20 秒超时，写的是
+`AbortController` + `setTimeout(() => controller.abort())`。问题是 pywebview 的
+bridge 方法没有 `signal` 参数，这个 abort 从来没有连到调用上，timer 到期只是
+触发一个没人监听的 abort 事件，请求照样无限等下去。用户说「卡在正在获取视频」
+就是它。
+
+改成 `Promise.race([桥接调用, 到期就 reject 的 promise])`。桥接调用本身没法取消，
+就让它自己在后台跑完，调用方立刻拿到超时。
+
+顺手把两边重复的编排抽成了 `src/gui/assets/bili-stream-loader.js`：取流、超时、
+错误映射、续播 seek 全在这一份里，内联播放器和独立窗口都走它。之前两边各有一份
+几乎一样的代码，正因为如此才会一边有超时一边没有、一边有续播一边没有。
+`scripts/check-bili-stream-loader.mjs` 真跑这个模块（vm + 假桥接），其中一条
+就是把 `Promise.race` 换回旧写法，测试立刻挂住不动。
+
+**推荐页的「加载更多」按钮压根没做。** `#btn-bili-more` 只在热门 tab 渲染，
+推荐 tab 没有。而且 `loadBiliRecommend()` 每次都是覆盖 `biliSection.items`，
+就算有按钮也只会刷出同一批。后端那边 `fresh_type`、`fresh_idx`、`brush` 三个参数
+全绑在 `fresh_index` 上，所以只能拿到「第 n 次刷新」，拿不到「第 n 页」。
+
+实测出来的正确形状：首页用 `fresh_type=1, fresh_idx=1`；往下翻用
+`fresh_type=4, fresh_idx=N, fresh_idx_1h=N, brush=N`，每次 N+1 就是新的一批。
+前端加了 `biliSection.recommendPage`，第一次 `scroll=false`，之后 `scroll=true`
+并把结果 `concat` 上去，空批次才算到底。
+
+`scripts/check-bili-recommend-paging.mjs` 在 vm 里加载 app.js 真跑这两个函数，
+断言第二页是追加的、按钮在推荐 tab 可见。三个变异（按钮藏回去、改成覆盖、
+去掉 scroll 标志）全被抓住。
+
+**B 站：合集、追番、番剧、动态。** 四条都是只读接口，字段口径踩了几个坑。
+
+「订阅的合集」不在 `seasons_series_list`（那条给的是某个 mid 名下的合集，
+这个账号上一片空），真正装订阅合集的是 `/x/v3/fav/folder/collected/list`，
+而且必须带 `platform=web`，条目用 `type` 区分：**21 是视频合集，11 是收藏夹**，
+不按 type 过滤会把收藏夹当合集塞进来。验证办法很简单——按 `ps=20` 请求，
+结果正好 20 条，说明过滤没有白丢东西。
+
+追番的 `/x/v2/follow/bangumi/v3/follows` 已经整条 404，要用
+`/x/space/bangumi/follow/list`，**必须带 vmid**，不带就 `code=-400`。
+`follow_status` 取 0（全部）就够。进度只有一句人话（`看到第3话`），接口不给
+结构化的百分比，`progress_percent` 是由集数和 `follow_status` 推出来的近似值；
+`ep_id` 只能取 `new_ep.id`（最新一集），接口不返回「用户看到的那一集」。
+用户这个账号实测 total=0，一条都没追——空列表是正确答案，不是失败。
+
+番剧播放走 `/pgc/player/web/playurl`，**不打 WBI 签名**（不在 `/wbi/` 下）。
+非会员的剧集 dash 为空、只有 `durl` 的 MP4 预览，所以 dash 空时用 durl 兜
+muxed。会员专享的剧集接口直接回「大会员专享限制」，这句话原样给用户看——
+它说的是实话，换成「网络错误」才是撒谎。
+
+动态走 `/x/polymer/web-dynamic/v1/feed/space`，字段按 `type` 分叉且分两代：
+图文老版在 `major.draw.items[].src`，新版（`MAJOR_TYPE_OPUS`）在
+`major.opus.pics[].url`，只认一种就会得到空图片列表；视频在 `major.archive`，
+时长只有 `duration_text`（`12:34`）没有秒数；转发把原动态整个塞在 `item["orig"]`，
+结构一模一样，直接递归。别人的动态只要账号是公开的就能读。
+
+**本地视频：不要在 webview 里用 file:// 读用户文件。**
+播放页是媒体服务器提供的 http 页面，去读 `file://` 的视频和字幕会被挡。
+正确做法是 `media.set_allowed_roots()` 把视频目录加进去（它会**整个替换**列表，
+所以原有的 roots 要带上，不然后台封面和本地音乐一起失效），再用
+`media.url_for_local()` 拿回环地址。字幕不走文件路径，直接把解析好的 WebVTT
+文本用 query 传给页面，页面转成 blob URL 挂到 `<track>`——这样不依赖任何
+跨目录读权限。
+
+字幕只做手动指定（用户明确要求不自动发现）。srt 走最小解析、ass 转成等价的
+WebVTT cue，都不引第三方库。时长解析用标准库读 mp4/mkv 的容器头，读不到就是 0，
+不装依赖也不假装知道。

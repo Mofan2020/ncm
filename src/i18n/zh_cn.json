@@ -728,7 +728,9 @@
     "count_signed_out": "未登录",
     "back_home": "返回首页",
     "partial_unavailable": "部分数据不可用",
-    "offline": "当前离线"
+    "offline": "当前离线",
+    "entry_local_video": "本地视频",
+    "entry_local_video_desc": "播放本机的视频文件，可以自己指定字幕"
   },
   "search": {
     "title": "聚合搜索",
@@ -999,6 +1001,31 @@
     "overlay_retry": "重试",
     "overlay_timeout": "获取视频超时，请重试",
     "resumed_from": "已从 {time} 继续播放",
-    "settings_resume_playback": "重新打开视频时从上次的进度继续"
+    "settings_resume_playback": "重新打开视频时从上次的进度继续",
+    "seg_folders": "收藏夹",
+    "seg_collections": "订阅的合集",
+    "seg_bangumi": "追的番剧",
+    "no_collections": "还没有订阅任何合集",
+    "no_bangumi": "还没有追任何番剧",
+    "collection_sub": "{name} · {count} 个视频",
+    "collection_count": "{count} 个视频",
+    "video_count": "{count} 个视频",
+    "total_eps": "全 {count} 话",
+    "need_desktop": "这个功能要在桌面版里用",
+    "space_dynamics": "他的动态",
+    "no_dynamics": "没有可以看的动态"
+  },
+  "local_video": {
+    "title": "本地视频",
+    "add_folder": "添加文件夹",
+    "refresh": "重新扫描",
+    "folders_title": "文件夹",
+    "search": "搜索视频文件名",
+    "all_folders": "全部",
+    "no_folder": "还没有添加文件夹。点右上角「添加文件夹」选一个放视频的目录。",
+    "no_video": "这个范围里没有视频文件",
+    "count": "共 {count} 个视频",
+    "size": "{size}",
+    "open_failed": "打不开这个视频"
   }
 }

@@ -1839,7 +1839,7 @@ class BiliClient:
         return self._partition_feed(rid, page, page_size)
 
     def recommend(self, page_size: int = 12, fresh_index: int = 1,
-                  session_id: str = "") -> list[dict[str, Any]]:
+                  session_id: str = "", scroll: bool = False) -> list[dict[str, Any]]:
         """The personalised home feed of this account.
 
         ``/x/web-interface/wbi/index/top/feed/rcmd`` is the route the web home
@@ -1847,21 +1847,44 @@ class BiliClient:
         instead of a personal one -- so the caller gets rows either way and can
         say so in the interface.
 
-        ``fresh_index`` is "the n-th refresh"; reusing 1 keeps the feed stable
-        while the user scrolls, which is what the page does too.
+        ``scroll`` decides which of the two parameter sets is sent, and they
+        are not interchangeable: ``fresh_type=1`` is "the n-th refresh of the
+        home page" (the server then ignores ``fresh_idx`` and always answers
+        the first screen), ``fresh_type=4`` is "the n-th scroll downward".
+        Measured on a real account: type 1 / idx 1, type 4 / idx 1, 2 and 3
+        each answer 20 rows, and every one of them is a different set.  So the
+        old code -- which tied ``fresh_type`` to ``fresh_index`` -- could only
+        ever refetch the first screen.
         """
         self._ensure_buvid()
         page_size = max(1, min(int(page_size or 12), 30))
+        index = max(1, int(fresh_index))
+        # 两套参数不能混：scroll=False 是「刷新首页」，服务端只认 fresh_type=1，
+        # fresh_idx 给多少都还是第一屏；scroll=True 是「往下翻」，fresh_type=4
+        # 配递增的 fresh_idx 才真能翻出新内容（实测 idx=1/2/3 各不相同）。
+        if scroll:
+            fresh_type = "4"
+            fresh_idx = str(index)
+            fresh_idx_1h = str(index)
+            brush = str(index)
+            # 翻页时一屏只取 3 行，和网页往下拖时一致；给 8 会重复上一屏。
+            y_num = "3"
+        else:
+            fresh_type = "1"
+            fresh_idx = "1"
+            fresh_idx_1h = "1"
+            brush = "1"
+            y_num = "8"
         params = {
             # The home slot; the route wants it even though it is not in any
             # public parameter list.
             "web_location": "1430650",
-            "y_num": "8",
-            "last_y_num": "8",
-            "fresh_type": str(max(1, int(fresh_index))),
-            "fresh_idx": str(max(1, int(fresh_index))),
-            "fresh_idx_1h": "1",
-            "brush": str(max(1, int(fresh_index))),
+            "y_num": y_num,
+            "last_y_num": y_num,
+            "fresh_type": fresh_type,
+            "fresh_idx": fresh_idx,
+            "fresh_idx_1h": fresh_idx_1h,
+            "brush": brush,
             "fetch_row": "1",
             "feed_version": "V8",
             "homepage_ver": "1",
@@ -2981,6 +3004,462 @@ class BiliClient:
         value = str(raw or "")
         # jar 里拿到的是 "name=value" 形式的 cookie 对象。
         return value.split("=", 1)[1] if "=" in value else value
+
+    # ------------------------------------------------------------------
+    # 合集订阅 / 追番 / 用户动态 / 番剧播放流
+    #
+    # 这一批全是只读接口，规矩和前面一致：拿不到就返回空列表或空 dict，
+    # 绝不让异常冒到界面或导出流程里；原始 code 也不往上传。
+    # ------------------------------------------------------------------
+    def _self_mid(self) -> str:
+        """当前登录用户的 mid；未登录时退回 cookie 里的 ``DedeUserID``。
+
+        ``/nav`` 未登录会回 ``code -101`` 且 ``data.mid`` 是 0，所以不能
+        只看 code，要看 ``isLogin``——否则会拿 mid=0 去打接口，拿到的是
+        空列表，看起来像「这个人没有合集」。
+        """
+        info = self.account_info()
+        mid = str(info.get("mid") or "") if info.get("logged_in") else ""
+        if not mid:
+            mid = str(self._cookie.get("DedeUserID") or "")
+        return mid
+
+    def subscribed_collections(self) -> list[dict[str, Any]]:
+        """Return the UGC collections (合集) the signed in user subscribes to.
+
+        合集是 UP 主在创作中心组织的视频分组，和收藏夹是两样东西：收藏夹
+        是用户自己的列表，合集是挂在稿件下面的分组。
+
+        路由上踩过两个坑，都是实测出来的：
+        - 流传较广的 ``/x/v3/fav/collection/list`` 现在是 404（整条路由
+          没了，不是参数错）；
+        - ``/x/polymer/web-space/seasons_series_list`` 能给合集，但给的是
+          「某个 mid 的合集和视频列表」，实测这个账号在这条路上一片空，
+          订阅过的合集根本不在里面。
+
+        真正装「订阅的合集」的是 ``/x/v3/fav/folder/collected/list``：它默认
+        只回收藏夹，必须带 ``platform=web`` 才会把收藏的合集一起返回；条目
+        用 ``type`` 区分，``21`` 是视频合集、``11`` 是收藏夹，不按 type 过滤
+        会把收藏夹当合集塞进列表。这条拿不到时才退回 seasons_series_list
+        （至少能给出自己名下的合集）。
+
+        字段上的坑：合集的 id 就是 ``id``（不是收藏夹那种 fid+mid 尾号），
+        标题是 ``title``，视频数是 ``media_count``；退回去的那条接口则完全
+        不同——``meta.name`` / ``meta.total``，两层结构都要认。
+        """
+        mid = self._self_mid()
+        if not mid:
+            return []
+        payload = self._get(
+            "/x/v3/fav/folder/collected/list",
+            {"up_mid": mid, "pn": 1, "ps": 20, "platform": "web"},
+        )
+        if payload and payload.get("code") == 0:
+            data = payload.get("data") or {}
+            raw = data.get("list")
+            collected: list[dict[str, Any]] = []
+            if isinstance(raw, list):
+                for item in raw:
+                    if not isinstance(item, dict):
+                        continue
+                    # 21 = 视频合集；11 是收藏夹，不要混进来。
+                    if _as_int(item.get("type")) != 21:
+                        continue
+                    season_id = str(item.get("id") or "")
+                    if not season_id:
+                        continue
+                    upper = item.get("upper") if isinstance(item.get("upper"), dict) else {}
+                    author_mid = str(upper.get("mid") or item.get("mid") or "")
+                    collected.append({
+                        "id": season_id,
+                        "title": str(item.get("title") or ""),
+                        "cover": _absolute_url(item.get("cover")),
+                        "count": _as_int(item.get("media_count")),
+                        "description": str(item.get("intro") or ""),
+                        "author_mid": author_mid,
+                        "author_name": str(upper.get("name") or ""),
+                        "url": (
+                            f"https://space.bilibili.com/{author_mid}/lists/"
+                            f"{season_id}?type=season"
+                        ),
+                    })
+            if collected:
+                return collected
+        # 退路：自己空间里的合集/视频列表。结构套三层，
+        # 标题叫 meta.name、视频数叫 meta.total。
+        payload = self._get(
+            "/x/polymer/web-space/seasons_series_list",
+            {"mid": mid, "page_num": 1, "page_size": 20},
+        )
+        if not payload or payload.get("code") != 0:
+            return []
+        data = payload.get("data") or {}
+        raw_lists = data.get("items_lists")
+        lists: dict[str, Any] = raw_lists if isinstance(raw_lists, dict) else {}
+        raw = lists.get("seasons_list")
+        if not isinstance(raw, list):
+            return []
+        collections: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            season_id = str(meta.get("season_id") or "")
+            if not season_id:
+                continue
+            author_mid = str(meta.get("mid") or "")
+            collections.append({
+                "id": season_id,
+                "title": str(meta.get("name") or ""),
+                "cover": _absolute_url(meta.get("cover")),
+                "count": _as_int(meta.get("total")),
+                "description": str(meta.get("description") or ""),
+                "author_mid": author_mid,
+                "author_name": "",
+                "url": (
+                    f"https://space.bilibili.com/{author_mid or mid}/lists/{season_id}?type=season"
+                ),
+            })
+        return collections
+
+    def bangumi(self) -> list[dict[str, Any]]:
+        """Return the anime the signed in user follows (追番).
+
+        两代路由：``/x/v2/follow/bangumi/v3/follows`` 是 app 那代（现在直接
+        404），网页端用的是 ``/x/space/bangumi/follow/list``（``vmid`` +
+        ``type=1`` + ``follow_status=0``）。实测 app 那条稳定 404，所以先打
+        网页那条，拿不到再退回 app 那条——反过来会给每个用户白打一次 404。
+        两条都拿不到就返回 ``[]``——这也覆盖了「隐私设置未公开」的 53013，
+        那是看不了，不是出错。
+
+        字段上的坑：
+        - 总集数是 ``total_count``，不是 ``total``；
+        - 观看进度只有一句人话 ``progress``（"看到第3话"），接口不给结构化的
+          百分比，所以 ``progress_percent`` 是由这句话和 ``follow_status``
+          推出来的近似值，用来说明大概看到哪，别拿它当精确数据；
+        - 当前 ep_id 只能取 ``new_ep.id``（最新一集的 epid），用户实际看到
+          哪一集的 epid 列表接口不返回。
+        """
+        empty: list[dict[str, Any]] = []
+        mid = self._self_mid()
+        payload = None
+        if mid:
+            payload = self._get(
+                "/x/space/bangumi/follow/list",
+                {"type": 1, "follow_status": 0, "vmid": mid, "pn": 1, "ps": 20},
+            )
+        if not payload or payload.get("code") != 0:
+            payload = self._get("/x/v2/follow/bangumi/v3/follows", {"pn": 1, "ps": 20})
+        if not payload or payload.get("code") != 0:
+            return empty
+        data = payload.get("data") or {}
+        raw = data.get("list")
+        if not isinstance(raw, list):
+            return []
+        shows: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            season_id = _as_int(item.get("season_id"))
+            if not season_id:
+                continue
+            new_ep = item.get("new_ep") if isinstance(item.get("new_ep"), dict) else {}
+            total = _as_int(item.get("total_count"))
+            progress = str(item.get("progress") or "")
+            follow_status = _as_int(item.get("follow_status"))
+            watched = _as_int(progress.strip("看到第话集")) if progress else 0
+            percent = 0
+            if follow_status == 3:
+                # 3 = 看过，整季都追完了。
+                percent = 100
+            elif total > 0 and watched > 0:
+                percent = max(0, min(100, int(watched * 100 / total)))
+            shows.append({
+                "season_id": season_id,
+                "media_id": _as_int(item.get("media_id")),
+                "title": str(item.get("title") or ""),
+                "cover": _absolute_url(item.get("cover") or item.get("square_cover")),
+                "total": total,
+                "watched": watched,
+                "progress": progress,
+                "progress_percent": percent,
+                "ep_id": _as_int(new_ep.get("id")),
+                "ep_index": str(new_ep.get("index_show") or ""),
+                "follow_status": follow_status,
+                "url": str(item.get("url") or f"https://www.bilibili.com/bangumi/play/ss{season_id}"),
+            })
+        return shows
+
+    def _from_dynamic(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Normalise one entry of a dynamic feed.
+
+        动态的字段按 ``type`` 分叉，而且分叉了两代：
+        - 图文老版在 ``major.draw.items[].src``，新版（``MAJOR_TYPE_OPUS``）
+          在 ``major.opus.pics[].url``，只认一种就会得到空的图片列表；
+        - 视频在 ``major.archive``，时长只有 ``duration_text``（"12:34"），
+          没有秒数；
+        - 转发把原动态整个塞在 ``item["orig"]`` 里，结构一模一样，所以直接
+          递归，别另写一套解析。
+        正文新老两代都在 ``module_dynamic.desc.text``，缺了才看 opus 的
+        ``summary.text``。
+        """
+        modules = item.get("modules") if isinstance(item.get("modules"), dict) else {}
+        author = modules.get("module_author") if isinstance(modules.get("module_author"), dict) else {}
+        dynamic = modules.get("module_dynamic") if isinstance(modules.get("module_dynamic"), dict) else {}
+        desc = dynamic.get("desc") if isinstance(dynamic.get("desc"), dict) else {}
+        major = dynamic.get("major") if isinstance(dynamic.get("major"), dict) else {}
+        kind = str(item.get("type") or "")
+
+        images: list[str] = []
+        draw = major.get("draw") if isinstance(major.get("draw"), dict) else {}
+        for pic in draw.get("items") or []:
+            if not isinstance(pic, dict):
+                continue
+            url = _absolute_url(pic.get("src") or pic.get("url"))
+            if url and url not in images:
+                images.append(url)
+        opus = major.get("opus") if isinstance(major.get("opus"), dict) else {}
+        for pic in opus.get("pics") or []:
+            if not isinstance(pic, dict):
+                continue
+            url = _absolute_url(pic.get("url"))
+            if url and url not in images:
+                images.append(url)
+
+        text = str(desc.get("text") or "")
+        if not text:
+            summary = opus.get("summary") if isinstance(opus.get("summary"), dict) else {}
+            text = str(summary.get("text") or "")
+
+        archive = major.get("archive") if isinstance(major.get("archive"), dict) else {}
+        bvid = str(archive.get("bvid") or "")
+        cover = _absolute_url(archive.get("cover") or archive.get("pic"))
+        title = str(archive.get("title") or "")
+        duration = _duration_seconds(archive.get("duration_text") or archive.get("duration"))
+
+        if kind == "DYNAMIC_TYPE_AV":
+            entry_type = "video"
+        elif kind == "DYNAMIC_TYPE_FORWARD":
+            entry_type = "forward"
+        elif kind == "DYNAMIC_TYPE_DRAW":
+            entry_type = "draw"
+        else:
+            entry_type = "other"
+
+        entry: dict[str, Any] = {
+            "id": str(item.get("id_str") or ""),
+            "type": entry_type,
+            "author_mid": str(author.get("mid") or ""),
+            "author_name": str(author.get("name") or ""),
+            "author_face": _absolute_url(author.get("face")),
+            "pub_time": _as_int(author.get("pub_ts")),
+            "pub_time_text": str(author.get("pub_time") or ""),
+            "text": text,
+            "cover": cover or (images[0] if images else ""),
+            "bvid": bvid,
+            "title": title,
+            "duration": duration,
+            "images": images,
+            "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
+        }
+        if entry_type == "forward":
+            orig = item.get("orig") if isinstance(item.get("orig"), dict) else {}
+            original = self._from_dynamic(orig) if orig else {}
+            entry["orig"] = original
+            if not entry["text"]:
+                entry["text"] = str(original.get("text") or "")
+            if not entry["cover"]:
+                entry["cover"] = str(original.get("cover") or "")
+            if not entry["bvid"]:
+                entry["bvid"] = str(original.get("bvid") or "")
+                if entry["bvid"]:
+                    entry["url"] = f"https://www.bilibili.com/video/{entry['bvid']}"
+        return entry
+
+    def dynamics(self, mid: str, page: int = 1) -> list[dict[str, Any]]:
+        """Return one page of a user's dynamics (动态).
+
+        分页不是 ``pn``，是 ``offset``：第一页传空串，之后把上一页
+        ``data.offset`` 原样传回来。``page`` 因此没有「直接跳到第 n 页」的
+        语义，这里按顺序把前 page 屏走完再拼起来——一屏 9 到 20 条，走几屏
+        就是几个请求，调用方翻一屏时传 page=n 即可。
+
+        ``features`` 那一串照网页端发的抄：少了它图文动态会退化成纯文字块，
+        ``opus.pics`` 直接不给。``dm_img`` 系列风控参数未登录时网页才发，
+        登录态不需要，别自己拼。
+        """
+        mid = str(mid or "").strip()
+        page = max(1, _as_int(page, 1))
+        if not mid:
+            return []
+        offset = ""
+        items: list[dict[str, Any]] = []
+        for _ in range(page):
+            payload = self._get(
+                "/x/polymer/web-dynamic/v1/feed/space",
+                {
+                    "host_mid": mid,
+                    "offset": offset,
+                    "timezone_offset": -480,
+                    "platform": "web",
+                    "features": "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote",
+                },
+            )
+            if not payload or payload.get("code") != 0:
+                # 半页也算数：已经拿到的条目比空列表有用，但不再往下请求。
+                return items
+            data = payload.get("data") or {}
+            raw = data.get("items")
+            if not isinstance(raw, list) or not raw:
+                return items
+            for item in raw:
+                if isinstance(item, dict):
+                    items.append(self._from_dynamic(item))
+            offset = str(data.get("offset") or "")
+            if not offset or not data.get("has_more"):
+                return items
+        return items
+
+    def bangumi_streams(
+        self,
+        season_id: int,
+        episode_id: int = 0,
+        quality: int = 0,
+    ) -> dict[str, Any]:
+        """Resolve the playable streams of one bangumi episode.
+
+        形状和 :meth:`video_streams` 对齐（video / audio / muxed 三路），
+        这样播放器只认一套结构。
+
+        PGC 和普通投稿是两套东西，踩过的坑都在这儿：
+        - 数据在 ``result`` 里，不在 ``data`` 里；照普通 playurl 读 ``data``
+          会永远拿到空 dash，看起来像「这集没有流」；
+        - 未登录只能拿到 MP4 预览（``is_preview=1``、有 ``durl``、没有
+          ``dash``），所以 dash 为空时要回退 durl，不能直接判失败；
+        - 清晰度编号仍是 16/32/64/80/112/116/120/125/126/127，但「这个账号
+          能看哪些」由 ``accept_quality`` 决定，不能写死一张表；
+        - ``timelength`` 是毫秒，普通投稿的 ``duration`` 是秒，别直接混用。
+        """
+        result: dict[str, Any] = {
+            "success": False,
+            "season_id": _as_int(season_id),
+            "ep_id": _as_int(episode_id),
+            "title": "",
+            "duration": 0,
+            "qualities": [],
+            "audio": None,
+            "video": None,
+            "muxed": None,
+            "flac": None,
+            "dolby": None,
+            "message": "",
+        }
+        season = _as_int(season_id)
+        episode = _as_int(episode_id)
+        if not season and not episode:
+            result["message"] = "缺少剧集或分集编号"
+            return result
+        params = {
+            "ep_id": episode,
+            "season_id": season,
+            "qn": int(quality or 127),
+            "fnval": _FNVAL_DASH,
+            "fnver": 0,
+            "fourk": 1,
+            "platform": "pc",
+        }
+        payload = self._get("/pgc/player/web/playurl", params)
+        if not payload:
+            result["message"] = "播放地址获取失败"
+            return result
+        if payload.get("code") != 0:
+            result["message"] = str(payload.get("message") or payload.get("code"))
+            return result
+        block = payload.get("result")
+        if not isinstance(block, dict):
+            block = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        if not block:
+            result["message"] = "服务端没有返回播放数据"
+            return result
+
+        length = _as_int(block.get("timelength"))
+        # PGC 的 timelength 是毫秒；小于 1000 的值当秒处理，避免 0.3 秒的视频。
+        result["duration"] = length // 1000 if length > 1000 else length
+        result["title"] = str(block.get("title") or block.get("season_title") or "")
+
+        dash = block.get("dash") if isinstance(block.get("dash"), dict) else {}
+        video_entries = [item for item in (dash.get("video") or []) if isinstance(item, dict)]
+        chosen = self._pick_video(video_entries, quality)
+        result["video"] = self._stream_payload(chosen, with_video=True)
+        result["audio"] = self._pick_audio(dash.get("audio") or [])
+        flac_section = (dash.get("flac") or {}).get("audio") or []
+        dolby_section = (dash.get("dolby") or {}).get("audio") or []
+        result["flac"] = self._pick_audio(flac_section)
+        result["dolby"] = self._pick_audio(dolby_section)
+
+        got_ids = {_as_int(item.get("id")) for item in video_entries if item.get("id")}
+        result["qualities"] = self._pgc_qualities(block, got_ids)
+
+        durl = block.get("durl") or []
+        if not durl:
+            # 分段视频的 MP4 走 durls[].durl[]，第 0 段就是开头。
+            groups = block.get("durls") or []
+            if groups and isinstance(groups[0], dict):
+                durl = groups[0].get("durl") or []
+        if durl and isinstance(durl[0], dict):
+            url = _absolute_url(durl[0].get("url"))
+            if url:
+                result["muxed"] = {
+                    "url": url,
+                    "backup_urls": _ordered_bili_urls(
+                        [_absolute_url(item) for item in (durl[0].get("backup_url") or [])
+                         if isinstance(item, str)]
+                    ),
+                    "mime": "video/mp4",
+                    "size": _as_int(durl[0].get("size")),
+                    "quality": _as_int(block.get("quality")),
+                }
+        result["success"] = bool(result["video"] or result["audio"] or result["muxed"])
+        if not result["success"]:
+            result["message"] = "服务端没有返回可用的播放流"
+        return result
+
+    @staticmethod
+    def _pgc_qualities(block: dict[str, Any], got_ids: set[int]) -> list[dict[str, Any]]:
+        """Describe every PGC quality the account may pick.
+
+        不能复用 :meth:`_build_qualities`：它把 ``accept_quality`` 当成
+        ``"80,64,32"`` 这种逗号串来切，而 PGC 返回的是 JSON 数组
+        ``[112, 80, 64, 32, 16]``，``str()`` 之后切出来全是废值。两种形态
+        在这里都认。
+        """
+        names: dict[int, str] = {}
+        for item in block.get("support_formats") or []:
+            if not isinstance(item, dict):
+                continue
+            code = _as_int(item.get("quality"))
+            if not code:
+                continue
+            names[code] = str(item.get("new_description") or item.get("description") or "")
+        accepted: set[int] = set()
+        raw = block.get("accept_quality")
+        if isinstance(raw, list):
+            accepted = {_as_int(value) for value in raw if _as_int(value)}
+        elif isinstance(raw, str):
+            for part in raw.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    accepted.add(int(part))
+        qualities: list[dict[str, Any]] = []
+        for code in sorted(set(names) | accepted, reverse=True):
+            qualities.append({
+                "id": code,
+                "name": names.get(code) or video_quality_name(code),
+                "available": code in accepted,
+                "current": code in got_ids,
+            })
+        return qualities
+
 
 def qr_png_data_url(text: str, size: int = 256) -> str:
     """把一段文字画成二维码，返回 ``data:`` 图片地址。

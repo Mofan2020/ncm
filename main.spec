@@ -99,6 +99,10 @@ hiddenimports = [
     "src.core.bili_danmaku",
     "src.core.bili_im",
     "src.core.bili_upload",
+    # 本地视频模块是在 bridge 的方法里导入的（`from src.core import
+    # localvideo`），只在点开本地视频时才走到；静态分析容易漏掉它，
+    # 漏掉的后果是打包版一点那张卡就 ImportError。
+    "src.core.localvideo",
 ]
 if sys.platform == "win32":
     hiddenimports += ["webview.platforms.winforms", "webview.platforms.edgechromium"]

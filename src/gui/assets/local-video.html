@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkycMedia - 本地视频</title>
+<link rel="stylesheet" href="local-video.css">
+</head>
+<body>
+<div class="lv-root">
+    <header class="lv-head">
+        <div class="lv-head-text">
+            <div class="lv-title" id="lv-title">本地视频</div>
+            <div class="lv-sub" id="lv-sub"></div>
+        </div>
+        <button class="lv-btn lv-btn-ghost" id="lv-close" type="button" title="关闭">×</button>
+    </header>
+
+    <main class="lv-main">
+        <aside class="lv-side">
+            <div class="lv-side-bar">
+                <input type="search" id="lv-search" class="lv-input" placeholder="搜索文件名" autocomplete="off">
+                <div class="lv-side-actions">
+                    <label class="lv-btn lv-btn-ghost lv-file-label" title="添加整个文件夹">
+                        文件夹
+                        <input type="file" id="lv-dir" class="lv-file-input" webkitdirectory directory multiple>
+                    </label>
+                    <label class="lv-btn lv-btn-ghost lv-file-label" title="添加单个视频文件">
+                        文件
+                        <input type="file" id="lv-files" class="lv-file-input" accept="video/*,.mkv,.flv,.ts,.m4v" multiple>
+                    </label>
+                    <label class="lv-btn lv-btn-ghost lv-file-label" title="给当前视频挂一个字幕">
+                        字幕
+                        <input type="file" id="lv-subtitle" class="lv-file-input" accept=".srt,.ass,.vtt">
+                    </label>
+                </div>
+            </div>
+            <div class="lv-list" id="lv-list"></div>
+            <div class="lv-empty" id="lv-empty">还没有视频文件。</div>
+        </aside>
+
+        <section class="lv-stage">
+            <div class="lv-video-wrap">
+                <video id="lv-video" class="lv-video" controls playsinline preload="metadata"></video>
+                <div class="lv-hint" id="lv-hint" hidden></div>
+            </div>
+            <div class="lv-bar">
+                <span class="lv-status" id="lv-status"></span>
+                <span class="lv-keys">空格 播放/暂停 · ←/→ 快退 10 秒</span>
+            </div>
+        </section>
+    </main>
+</div>
+<script src="local-video.js"></script>
+</body>
+</html>

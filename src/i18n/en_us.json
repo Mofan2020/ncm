@@ -728,7 +728,9 @@
     "count_signed_out": "Not signed in",
     "back_home": "Back to home",
     "partial_unavailable": "Some data unavailable",
-    "offline": "You are offline"
+    "offline": "You are offline",
+    "entry_local_video": "Local video",
+    "entry_local_video_desc": "Play video files from this machine, with a subtitle you pick"
   },
   "search": {
     "title": "Combined search",
@@ -999,6 +1001,31 @@
     "overlay_retry": "Retry",
     "overlay_timeout": "Fetching the video timed out, please retry",
     "resumed_from": "Resumed from {time}",
-    "settings_resume_playback": "Continue a video from where it was left off"
+    "settings_resume_playback": "Continue a video from where it was left off",
+    "seg_folders": "Folders",
+    "seg_collections": "Collections",
+    "seg_bangumi": "Anime",
+    "no_collections": "No collections followed yet",
+    "no_bangumi": "No anime followed yet",
+    "collection_sub": "{name} · {count} videos",
+    "collection_count": "{count} videos",
+    "video_count": "{count} videos",
+    "total_eps": "{count} episodes",
+    "need_desktop": "This one needs the desktop app",
+    "space_dynamics": "Posts",
+    "no_dynamics": "Nothing to show"
+  },
+  "local_video": {
+    "title": "Local video",
+    "add_folder": "Add folder",
+    "refresh": "Rescan",
+    "folders_title": "Folders",
+    "search": "Search by file name",
+    "all_folders": "All",
+    "no_folder": "No folder yet. Use \"Add folder\" to pick one.",
+    "no_video": "No video files here",
+    "count": "{count} videos",
+    "size": "{size}",
+    "open_failed": "Cannot open this video"
   }
 }

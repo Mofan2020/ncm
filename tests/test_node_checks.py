@@ -27,6 +27,8 @@ CHECKS = (
     ("check-player-js.mjs", "the play modes of the queue"),
     ("check-lyrics-scroll.mjs", "the scrolling of the lyrics"),
     ("check-backup-js.mjs", "the backup window"),
+    ("check-bili-stream-loader.mjs", "the shared Bilibili stream loader"),
+    ("check-bili-recommend-paging.mjs", "the paging of the recommendation feed"),
 )
 
 NODE = shutil.which("node")

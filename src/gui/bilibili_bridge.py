@@ -472,6 +472,138 @@ class BilibiliBridge:
         }
 
     # --------------------------------------------------------------- favorites
+    # ------------------------------------------- 合集 / 追番 / 番剧 / 动态
+    def subscribed_collections(self) -> dict[str, Any]:
+        """The UGC collections the signed-in user follows.
+
+        Not the favourites: a collection (合集) is a series of videos an
+        uploader put together, and following it is what keeps new episodes
+        coming.  The favourites are a separate list, in :meth:`favorites`.
+        """
+        if not self._client.is_logged_in:
+            return {"success": False, "code": CODE_NOT_LOGGED_IN,
+                    "collections": [], "count": 0, "message": "没有登录 B站"}
+        try:
+            raw = self._client.subscribed_collections() or []
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            log.warning("bilibili collections failed: %s", exc)
+            return {"success": False, "collections": [], "count": 0, "message": str(exc)}
+        rows = [
+            {
+                "id": str(item.get("id") or ""),
+                "title": str(item.get("title") or ""),
+                "cover": str(item.get("cover") or ""),
+                "count": _as_int(item.get("count"), 0),
+                "author_mid": str(item.get("author_mid") or ""),
+                "author_name": str(item.get("author_name") or ""),
+                "description": str(item.get("description") or ""),
+                "url": str(item.get("url") or ""),
+            }
+            for item in raw if isinstance(item, dict)
+        ]
+        return {"success": True, "collections": rows, "count": len(rows), "message": ""}
+
+    def bangumi(self) -> dict[str, Any]:
+        """The anime the signed-in user follows (追番).
+
+        An account that follows nothing gets an empty list and success: that
+        is an answer, not a failure.
+        """
+        if not self._client.is_logged_in:
+            return {"success": False, "code": CODE_NOT_LOGGED_IN,
+                    "shows": [], "count": 0, "message": "没有登录 B站"}
+        try:
+            raw = self._client.bangumi() or []
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            log.warning("bilibili bangumi failed: %s", exc)
+            return {"success": False, "shows": [], "count": 0, "message": str(exc)}
+        shows = [
+            {
+                "season_id": _as_int(item.get("season_id"), 0),
+                "media_id": _as_int(item.get("media_id"), 0),
+                "title": str(item.get("title") or ""),
+                "cover": str(item.get("cover") or ""),
+                "total": _as_int(item.get("total"), 0),
+                "watched": _as_int(item.get("watched"), 0),
+                "progress": str(item.get("progress") or ""),
+                "progress_percent": _as_int(item.get("progress_percent"), 0),
+                "ep_id": _as_int(item.get("ep_id"), 0),
+                "ep_index": str(item.get("ep_index") or ""),
+                "follow_status": _as_int(item.get("follow_status"), 0),
+                "url": str(item.get("url") or ""),
+            }
+            for item in raw if isinstance(item, dict)
+        ]
+        return {"success": True, "shows": shows, "count": len(shows), "message": ""}
+
+    def bangumi_streams(self, season_id: int = 0, episode_id: int = 0,
+                        quality: int = 0) -> dict[str, Any]:
+        """The playable streams of one bangumi episode.
+
+        The shape is the same as :meth:`video_streams`, so the same player
+        can show it.  What it cannot do is give away a member-only episode:
+        B站 answers "大会员专享限制" and that sentence goes to the user as it
+        came, because it is the truth and nothing here can change it.
+        """
+        season = _as_int(season_id, 0)
+        if not season:
+            return {"success": False, "message": "缺少番剧编号"}
+        try:
+            streams = self._client.bangumi_streams(
+                season, _as_int(episode_id, 0), _as_int(quality, 0)) or {}
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            log.warning("bilibili bangumi streams failed: %s", exc)
+            return {"success": False, "message": str(exc)}
+        if not streams.get("success"):
+            return {"success": False, "message": str(streams.get("message") or "取播放地址失败")}
+        return {
+            "success": True,
+            "season_id": season,
+            "episode_id": _as_int(episode_id, 0),
+            "duration": _as_int(streams.get("duration"), 0),
+            "title": str(streams.get("title") or ""),
+            "qualities": streams.get("qualities") or [],
+            "audio": self._proxied(streams.get("audio")),
+            "video": self._proxied(streams.get("video")),
+            "muxed": self._proxied(streams.get("muxed")),
+            "message": "",
+        }
+
+    def dynamics(self, mid: str = "", page: int = 1) -> dict[str, Any]:
+        """The posts of one account (图文 / 视频 / 转发).
+
+        Reading someone else's dynamics works without their permission as
+        long as the account is public; a private one simply answers nothing.
+        """
+        author = str(mid or "").strip()
+        if not author:
+            return {"success": False, "items": [], "count": 0, "message": "缺少用户编号"}
+        try:
+            raw = self._client.dynamics(author, _as_int(page, 1)) or []
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            log.warning("bilibili dynamics failed: %s", exc)
+            return {"success": False, "items": [], "count": 0, "message": str(exc)}
+        items = [
+            {
+                "id": str(item.get("id") or ""),
+                "type": str(item.get("type") or "other"),
+                "author_mid": str(item.get("author_mid") or ""),
+                "author_name": str(item.get("author_name") or ""),
+                "author_face": str(item.get("author_face") or ""),
+                "pub_time": _as_int(item.get("pub_time"), 0),
+                "pub_time_text": str(item.get("pub_time_text") or ""),
+                "text": str(item.get("text") or ""),
+                "title": str(item.get("title") or ""),
+                "cover": str(item.get("cover") or ""),
+                "bvid": str(item.get("bvid") or ""),
+                "duration": str(item.get("duration") or ""),
+                "images": [str(src) for src in (item.get("images") or []) if src],
+                "url": str(item.get("url") or ""),
+            }
+            for item in raw if isinstance(item, dict)
+        ]
+        return {"success": True, "items": items, "count": len(items), "message": ""}
+
     def favorites(self) -> dict[str, Any]:
         """The folders of the signed-in user."""
         if not self._client.is_logged_in:
@@ -756,10 +888,18 @@ class BilibiliBridge:
         }
 
     # ------------------------------------------------------------ 推荐
-    def recommend(self, page_size: int = 12, fresh_index: int = 1) -> dict[str, Any]:
-        """The home feed, as B站 thinks it should look for this account."""
+    def recommend(self, page_size: int = 12, fresh_index: int = 1,
+                  scroll: bool = False) -> dict[str, Any]:
+        """The home feed, as B站 thinks it should look for this account.
+
+        ``scroll`` asks for the next page of the feed instead of a fresh
+        home page: B站 pulls the same route with a growing fresh index, and
+        without that the list can never grow past the first batch.
+        """
         try:
-            rows = self._client.recommend(page_size=page_size, fresh_index=fresh_index) or []
+            rows = self._client.recommend(page_size=page_size,
+                                           fresh_index=fresh_index,
+                                           scroll=scroll) or []
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             log.warning("bilibili recommend failed: %s", exc)
             return {"success": False, "items": [], "count": 0,
