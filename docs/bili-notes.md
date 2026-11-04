@@ -233,3 +233,43 @@ B 站的读接口在 `src/core/bili_cache.py` 里按类型分开缓存，寿命�
 `.ncmbk` 的第 4 版多了 `bilibili` 一节，装着账号信息和收藏夹。规则见
 `AGENTS.md` 的「The `.ncmbk` backup file」一节：导出只要登录任意一边，
 导入时缺哪边就跳过哪边，不因为缺一部分而拒绝整个文件。
+
+## 收藏夹的多选、批量改、合集、选集
+
+这几条路由的参数形状都试过才写死的，装反了或者少给一项，B 站 只回一句
+「请求错误」，界面上看不出哪里错了。
+
+- **一个视频进多个收藏夹还是同一条路由。** `POST /x/v3/fav/resource/deal`，
+  `rid` 是稿件 aid、`type=2`，收藏夹 id 用逗号拼在 `add_media_ids`（新勾上的）
+  和 `del_media_ids`（取消勾选的）里。网页播放器就是这么发的：一张勾选表，
+  一次请求改完，不是循环发 N 次。
+- **勾选表要知道哪些收藏夹里已经有它。** `GET /x/v3/fav/folder/created/list-all`
+  平时只给收藏夹列表，**必须带 `rid=<aid>` 和 `type=2`** 才在每条里给
+  `fav_state`（1 = 已在此夹）。不带这两个参数，所有收藏夹都没有 `fav_state`，
+  界面会把它们全画成未收藏。
+- **批量移动 / 复制** `POST /x/v3/fav/resource/move`（或 `/copy`），参数是
+  `resources`、`src_media_id`、`tar_media_id`、`mid`、`platform`。`resources`
+  的每一段都是 **`<aid>:<type>`**，类型是条目的一部分，不是单独的参数——
+  只给 aid 会被判成参数错误。
+- **批量移出** `POST /x/v3/fav/resource/batch-del`，参数 `resources`、
+  `media_id`、`platform`。
+- **合集里的视频** `GET /x/polymer/web-space/seasons_archives_list`，要
+  `mid` + `season_id` + `page_num` + `page_size`。合集的 id 只有配上 UP 主 的
+  mid 才有意义，单独一个 season_id 什么都拿不到。条目里的封面叫 `pic`、
+  时长是秒数，和收藏夹那套（`cover`、字符串时长）不是一套字段。
+- **番剧选集** `GET /pgc/view/web/season?season_id=` 给 `episodes`，每集有
+  `id`（ep_id）、`aid`、`cid`、`title`、`long_title`。追番列表只给最新一集的
+  ep_id，想从第一集看只能问这一条，播放还是走 `bangumi_streams`。
+
+## 批量下载的限速
+
+会被 B 站 当成刷接口的是**取流**（`/x/player/wbi/playurl`），不是搬字节。
+一次排几十个视频，几十条取流请求同时打过去就回风控错误；文件传输本身不会。
+
+所以 `BiliDownloader` 把取流这一步排成队：一把锁 + 上一次发请求的时刻，两次
+之间至少隔 `interval` 秒（默认 1.5，下载页可调，上限 10）。字节搬运不在锁里，
+并发数照旧，下载速度不受影响。`interval=0` 表示不排队，测试用它验「关掉就
+真的没等」。
+
+`track_payload` 多带了一个 `aid`：收藏夹的批量接口要 aid 列表，只有 bvid 拼不出
+`resources`。

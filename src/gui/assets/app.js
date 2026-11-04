@@ -9010,9 +9010,24 @@ function renderBiliChips() {
 }
 
 /** One video card: the picture opens the page, the buttons play and download. */
-function biliCardElement(track) {
+function biliCardElement(track, options) {
+    const opts = options || {};
     const wrap = document.createElement('div');
     wrap.className = 'bili-card-wrap';
+    // 收藏夹里可以勾选：勾上几个，底下的批量条才出现。复选框放在卡片
+    // 外面——按钮里塞按钮是不合法的标记。
+    if (opts.selectable) {
+        const pick = document.createElement('input');
+        pick.type = 'checkbox';
+        pick.className = 'bili-card-check';
+        pick.checked = !!opts.checked;
+        pick.setAttribute('aria-label', track.name || '');
+        pick.addEventListener('click', (event) => event.stopPropagation());
+        pick.addEventListener('change', () => {
+            if (typeof opts.onSelect === 'function') opts.onSelect(!!pick.checked);
+        });
+        wrap.appendChild(pick);
+    }
     const card = document.createElement('button');
     card.className = 'video-card';
     card.type = 'button';
@@ -9287,7 +9302,9 @@ const biliFavorites = {
     hasMore: false,
     loading: false,
     error: '',
-    loaded: false
+    loaded: false,
+    /** 勾选的视频（bvid）；换收藏夹就清空。 */
+    selected: new Set()
 };
 
 /** The video player: the open track, the streams and the chosen quality. */
@@ -9881,6 +9898,7 @@ function renderBiliFolderChips() {
 
 /** Open one folder and read its first page. */
 function openBiliFolder(folderId) {
+    biliFavorites.selected.clear();
     biliFavorites.folderId = folderId;
     biliFavorites.page = 1;
     biliFavorites.items = [];
@@ -9984,7 +10002,12 @@ function renderBiliFavorites() {
         if (box) box.appendChild(buildStateBlock('folder', t('bili.no_folders'), ''));
         return;
     }
-    biliFavorites.items.forEach((track) => grid.appendChild(biliCardElement(track)));
+    biliFavorites.items.forEach((track) => grid.appendChild(biliCardElement(track, {
+        selectable: true,
+        checked: biliFavorites.selected.has(track.bvid),
+        onSelect: (on) => toggleBiliFavSelection(track.bvid, on)
+    })));
+    renderBiliFavBulk();
     if (biliFavorites.loading) return;
     if (biliFavorites.error && box) {
         box.appendChild(buildStateBlock('close', t('bili.error_title'),
@@ -10005,6 +10028,298 @@ function renderBiliFavorites() {
     if (end) {
         end.hidden = biliFavorites.loading || !biliFavorites.items.length || biliFavorites.hasMore;
         end.textContent = t('bili.no_more');
+    }
+}
+
+/* --------------------------------------- 收藏夹的多选：批量下载与改收藏夹 */
+
+/** Tick / untick one video of the folder grid. */
+function toggleBiliFavSelection(bvid, on) {
+    if (!bvid) return;
+    if (on) biliFavorites.selected.add(bvid);
+    else biliFavorites.selected.delete(bvid);
+    renderBiliFavBulk();
+}
+
+/** The bulk bar only exists while something is ticked. */
+function renderBiliFavBulk() {
+    const bar = document.getElementById('bili-fav-bulk');
+    if (!bar) return;
+    const size = biliFavorites.selected.size;
+    bar.hidden = size === 0;
+    const count = document.getElementById('bili-fav-bulk-count');
+    if (count) count.textContent = t('bili.bulk_selected', { count: size });
+}
+
+/** Drop the selection and redraw the grid. */
+function clearBiliFavSelection() {
+    biliFavorites.selected.clear();
+    renderBiliFavorites();
+}
+
+/** The ticked videos, in the order they sit on screen. */
+function selectedBiliFavTracks() {
+    return biliFavorites.items.filter((item) => biliFavorites.selected.has(item.bvid));
+}
+
+/** The aids of the ticked videos; the batch routes need the numbers. */
+function selectedBiliFavAids() {
+    return selectedBiliFavTracks()
+        .map((track) => Number(track.aid) || 0)
+        .filter((aid) => aid > 0);
+}
+
+/**
+ * Put every ticked video into the download queue and jump to that page.
+ *
+ * 队列本身已经有「全选 / 全部开始」，这里只负责把一批视频一次性放进去，
+ * 剩下的交给下载页——延迟由后端按次排队，不在界面上控制。
+ */
+function bulkDownloadBiliFavorites() {
+    const tracks = selectedBiliFavTracks();
+    if (!tracks.length) return;
+    let added = 0;
+    tracks.forEach((track) => {
+        if (queueBiliDownload(track, true)) added += 1;
+    });
+    if (added) showToast('success', t('bili.bulk_queued', { count: added }));
+    clearBiliFavSelection();
+    if (added) showView('bili-download');
+}
+
+/** Which batch action is waiting for a target folder. */
+const biliFavTarget = { action: 'move' };
+
+/** Ask which folder the ticked videos should go to. */
+async function openBiliFavTargetModal(mode) {
+    const tracks = selectedBiliFavTracks();
+    if (!tracks.length) return;
+    if (!bridgeHas('bili_favorite_move')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    biliFavTarget.action = mode === 'copy' ? 'copy' : 'move';
+    const heading = document.getElementById('bili-fav-target-title');
+    if (heading) {
+        heading.textContent = t(biliFavTarget.action === 'copy' ? 'bili.bulk_copy' : 'bili.bulk_move');
+    }
+    const list = document.getElementById('bili-fav-target-list');
+    if (!list) return;
+    list.innerHTML = '';
+    openModal('bili-fav-target-modal');
+    let folders = biliFavorites.folders || [];
+    if (!folders.length && bridgeHas('get_bilibili_favorites')) {
+        try {
+            const result = await state.api.get_bilibili_favorites();
+            folders = (result && result.folders) || [];
+        } catch (err) {
+            folders = [];
+        }
+    }
+    const source = String(biliFavorites.folderId || '');
+    const usable = folders.filter((folder) => folder && String(folder.id) !== source);
+    if (!usable.length) {
+        list.appendChild(buildStateBlock('folder', t('bili.no_other_folders'), ''));
+        return;
+    }
+    usable.forEach((folder) => {
+        const button = document.createElement('button');
+        button.className = 'btn btn-sm btn-secondary bili-fav-item';
+        button.type = 'button';
+        button.textContent = (folder.title || '') + ' · '
+            + t('bili.folder_media_count', { count: folder.media_count || 0 });
+        button.addEventListener('click', () => applyBiliFavTarget(String(folder.id)));
+        list.appendChild(button);
+    });
+}
+
+/** Move (or copy) the ticked videos into the folder the user picked. */
+async function applyBiliFavTarget(targetId) {
+    const source = String(biliFavorites.folderId || '');
+    const aids = selectedBiliFavAids();
+    if (!source || !targetId || !aids.length) {
+        showToast('error', t('bili.bulk_move_failed'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_favorite_move(
+            source, targetId, aids, biliFavTarget.action === 'copy');
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.bulk_move_failed'));
+            return;
+        }
+        closeModal('bili-fav-target-modal');
+        showToast('success', t('bili.bulk_moved', { count: Number(result.count) || aids.length }));
+        clearBiliFavSelection();
+        await loadBiliFavoriteVideos(true);
+    } catch (err) {
+        showToast('error', t('bili.bulk_move_failed'));
+    }
+}
+
+/** Take the ticked videos out of the folder that is open. */
+async function bulkRemoveBiliFavorites() {
+    const folder = String(biliFavorites.folderId || '');
+    const aids = selectedBiliFavAids();
+    if (!folder || !aids.length) return;
+    if (!bridgeHas('bili_favorite_batch_delete')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.bili_favorite_batch_delete(folder, aids);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.bulk_remove_failed'));
+            return;
+        }
+        showToast('success', t('bili.bulk_removed', { count: Number(result.count) || aids.length }));
+        clearBiliFavSelection();
+        await loadBiliFavoriteVideos(true);
+    } catch (err) {
+        showToast('error', t('bili.bulk_remove_failed'));
+    }
+}
+
+/* ------------------------------------------------------- 合集里的视频 */
+
+const biliCollection = {
+    id: '',
+    mid: '',
+    page: 1,
+    items: [],
+    hasMore: false,
+    loading: false,
+    error: ''
+};
+
+/** Open one subscribed collection and list what is in it. */
+async function openBiliCollection(item) {
+    if (!item || !item.id) return;
+    const heading = document.getElementById('bili-collection-title');
+    if (heading) heading.textContent = item.title || '';
+    biliCollection.id = String(item.id);
+    biliCollection.mid = String(item.author_mid || '');
+    biliCollection.page = 1;
+    biliCollection.items = [];
+    biliCollection.hasMore = false;
+    biliCollection.error = '';
+    openModal('bili-collection-modal');
+    await loadBiliCollectionVideos(true);
+}
+
+/** Read one page of the collection's videos. */
+async function loadBiliCollectionVideos(reset) {
+    if (!bridgeHas('get_bili_collection_videos')) {
+        const stateEl = document.getElementById('bili-collection-videos-state');
+        if (stateEl) stateEl.textContent = t('bili.need_desktop');
+        return;
+    }
+    if (biliCollection.loading) return;
+    if (!reset && !biliCollection.hasMore) return;
+    if (reset) {
+        biliCollection.page = 1;
+        biliCollection.items = [];
+        biliCollection.error = '';
+    }
+    biliCollection.loading = true;
+    renderBiliCollectionVideos();
+    try {
+        const page = reset ? 1 : biliCollection.page + 1;
+        const result = await state.api.get_bili_collection_videos(
+            biliCollection.id, biliCollection.mid, page);
+        if (result && result.success) {
+            (result.tracks || result.items || []).forEach((entry) => {
+                if (entry) biliCollection.items.push(entry);
+            });
+            biliCollection.page = page;
+            biliCollection.hasMore = !!result.has_more;
+        } else {
+            biliCollection.error = (result && result.message) || t('error.network');
+        }
+    } catch (err) {
+        biliCollection.error = t('error.network');
+    }
+    biliCollection.loading = false;
+    renderBiliCollectionVideos();
+}
+
+/** Draw the collection's videos. */
+function renderBiliCollectionVideos() {
+    const grid = document.getElementById('bili-collection-videos');
+    const stateEl = document.getElementById('bili-collection-videos-state');
+    const more = document.getElementById('btn-bili-collection-more');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (stateEl) stateEl.textContent = biliCollection.loading ? t('common.loading') : '';
+    if (biliCollection.error && stateEl && !biliCollection.loading) {
+        stateEl.textContent = biliCollection.error;
+    }
+    if (!biliCollection.loading && !biliCollection.error && !biliCollection.items.length) {
+        if (stateEl) stateEl.textContent = t('bili.collection_empty');
+    }
+    biliCollection.items.forEach((track) => grid.appendChild(biliCardElement(track)));
+    if (more) {
+        more.hidden = !biliCollection.hasMore || biliCollection.loading;
+        more.disabled = biliCollection.loading;
+        more.textContent = biliCollection.loading ? t('common.loading') : t('bili.load_more');
+    }
+}
+
+/* --------------------------------------------------------- 番剧选集 */
+
+/** Open the episode list of one followed bangumi. */
+async function openBiliBangumiEpisodes(show) {
+    const seasonId = Number(show && show.season_id) || 0;
+    if (!seasonId) {
+        // 没有季号就只能直接播最知道的那一集。
+        await playBangumiShow(show);
+        return;
+    }
+    if (!bridgeHas('get_bili_bangumi_season')) {
+        await playBangumiShow(show);
+        return;
+    }
+    const heading = document.getElementById('bili-episodes-title');
+    if (heading) heading.textContent = (show && show.title) || '';
+    const list = document.getElementById('bili-episode-list');
+    const stateEl = document.getElementById('bili-episodes-state');
+    if (!list) return;
+    list.innerHTML = '';
+    if (stateEl) stateEl.textContent = t('common.loading');
+    openModal('bili-episodes-modal');
+    try {
+        const result = await state.api.get_bili_bangumi_season(seasonId);
+        list.innerHTML = '';
+        if (!result || !result.success) {
+            if (stateEl) stateEl.textContent = (result && result.message) || t('error.network');
+            return;
+        }
+        if (stateEl) stateEl.textContent = '';
+        const episodes = result.episodes || [];
+        if (!episodes.length) {
+            if (stateEl) stateEl.textContent = t('bili.no_episodes');
+            return;
+        }
+        episodes.forEach((episode, index) => {
+            const button = document.createElement('button');
+            button.className = 'btn btn-sm btn-secondary bili-episode-item';
+            button.type = 'button';
+            const label = String(episode.title || '').trim();
+            const long = String(episode.long_title || '').trim();
+            button.textContent = (label || ('EP' + (index + 1))) + (long ? ' · ' + long : '');
+            button.addEventListener('click', () => {
+                closeModal('bili-episodes-modal');
+                playBangumiShow({
+                    season_id: seasonId,
+                    ep_id: Number(episode.ep_id) || 0,
+                    title: (show && show.title) || '',
+                    cover: (show && show.cover) || ''
+                });
+            });
+            list.appendChild(button);
+        });
+    } catch (err) {
+        if (stateEl) stateEl.textContent = t('error.network');
     }
 }
 
@@ -10420,10 +10735,10 @@ const biliDownloadQueue = {
 };
 
 /** Put one video into the queue.  The same video is only queued once. */
-function queueBiliDownload(track) {
+function queueBiliDownload(track, quiet) {
     if (!track || !track.bvid) return false;
     if (biliDownloadQueue.items.some((item) => item.bvid === track.bvid)) {
-        showToast('info', t('bili.download_already_queued'));
+        if (!quiet) showToast('info', t('bili.download_already_queued'));
         return false;
     }
     biliDownloadQueue.items.push({
@@ -10435,7 +10750,7 @@ function queueBiliDownload(track) {
     });
     biliDownloadQueue.selected.add(track.bvid);
     renderBiliDownloadQueue();
-    showToast('success', t('bili.download_queued'));
+    if (!quiet) showToast('success', t('bili.download_queued'));
     return true;
 }
 
@@ -10510,6 +10825,8 @@ async function startBiliDownloads() {
     const options = {
         quality: Number(document.getElementById('bili-download-quality')?.value || 0),
         max_concurrent: Number(document.getElementById('bili-download-concurrent')?.value || 2),
+        // 取流之间至少隔这么久，一批几十条也不会把 B站打到限流。
+        interval: Number(document.getElementById('bili-download-interval')?.value || 1.5),
         overwrite: !!document.getElementById('bili-download-overwrite')?.checked,
         merge_audio: !!document.getElementById('bili-download-merge')?.checked
     };
@@ -10707,11 +11024,15 @@ async function likeBiliVideo() {
     }
 }
 
-/** Open the coin panel and read the balance. */
+/**
+ * Open the coin dialog and read the balance.
+ *
+ * 投币以前是贴在页面里的一块，投完不点掉就一直占着地方；现在是一个
+ * 弹窗，右上角的 X、点背景、Esc 都能直接关，不需要先投一枚才能走。
+ */
 async function openBiliCoinPanel() {
-    const panel = document.getElementById('bili-coin-panel');
-    if (!panel) return;
-    panel.hidden = false;
+    if (!biliDetail.bvid) return;
+    openModal('bili-coin-modal');
     const box = document.getElementById('bili-coin-balance');
     if (box) box.textContent = '';
     if (!bridgeHas('get_bilibili_coin_balance')) return;
@@ -10778,8 +11099,7 @@ async function coinBiliVideo(count) {
             return;
         }
         showToast('success', t('bili.coin_success'));
-        const panel = document.getElementById('bili-coin-panel');
-        if (panel) panel.hidden = true;
+        // 弹窗留着：余额和「已投满」的提示都要跟着变。
         await loadBiliDetailStat();
         await openBiliCoinPanel();
     } catch (err) {
@@ -10787,86 +11107,115 @@ async function coinBiliVideo(count) {
     }
 }
 
-/** Open the folder picker for the video that is open. */
+/**
+ * Open the favourite picker.
+ *
+ * 不是「点一下某个收藏夹就等于收藏了」的一排按钮，而是勾选列表：B站一个
+ * 视频本来就能同时进好几个收藏夹，勾上几个就是几个，取消勾选就是从那个
+ * 收藏夹里拿出来。弹窗右上角的 X 和「取消」都能直接关掉，不必先选点什么
+ * —— 以前那块贴在页面里的列表，选错了就只能硬着头皮选一个才能走。
+ */
 async function openBiliFavoritePanel() {
-    const panel = document.getElementById('bili-fav-panel');
     const list = document.getElementById('bili-fav-list');
-    if (!panel || !list) return;
-    panel.hidden = false;
+    const bvid = biliDetail.bvid;
+    if (!list || !bvid) return;
     list.innerHTML = '';
-    if (!bridgeHas('get_bilibili_favorites')) {
-        showToast('error', t('error.unknown'));
-        return;
-    }
+    const loading = document.createElement('div');
+    loading.className = 'muted';
+    loading.textContent = t('common.loading');
+    list.appendChild(loading);
+    openModal('bili-fav-modal');
+    const request = bridgeHas('get_bilibili_favorite_states')
+        ? state.api.get_bilibili_favorite_states(bvid)
+        : state.api.get_bilibili_favorites();
     try {
-        const result = await state.api.get_bilibili_favorites();
+        const result = await request;
         const folders = (result && result.folders) || [];
+        list.innerHTML = '';
         if (!folders.length) {
             list.appendChild(buildStateBlock('folder', t('bili.no_folders'), ''));
             return;
         }
         folders.forEach((folder) => {
             if (!folder) return;
-            const button = document.createElement('button');
-            button.className = 'btn btn-sm btn-secondary';
-            button.type = 'button';
-            const count = t('bili.folder_media_count', { count: folder.media_count || 0 });
-            button.textContent = (folder.title || '') + ' · ' + count;
-            button.addEventListener('click', () => favoriteBiliVideo(folder.id));
-            list.appendChild(button);
+            const row = document.createElement('label');
+            row.className = 'bili-fav-item is-check';
+            const check = document.createElement('input');
+            check.type = 'checkbox';
+            check.className = 'option checkbox';
+            check.dataset.folder = String(folder.id || '');
+            check.checked = !!folder.favoured;
+            // 记下打开时是什么状态，保存时才知道哪些是这次改的。
+            check.dataset.was = check.checked ? '1' : '0';
+            const text = document.createElement('span');
+            text.textContent = (folder.title || '') + ' · '
+                + t('bili.folder_media_count', { count: folder.media_count || 0 });
+            row.appendChild(check);
+            row.appendChild(text);
+            list.appendChild(row);
         });
     } catch (err) {
-        showToast('error', t('bili.favorite_failed'));
+        list.innerHTML = '';
+        list.appendChild(buildStateBlock('folder', t('bili.favorite_failed'), ''));
     }
 }
 
-/** Put the video that is open into a favourite folder. */
-async function favoriteBiliVideo(folderId) {
+/**
+ * Send the picker: newly ticked folders in, unticked ones out, one request.
+ *
+ * 一次请求改完整个列表——和网页播放器一样：勾上的进 add_media_ids，
+ * 取消勾选的进 del_media_ids，两边都不为空时也只发一条。
+ */
+async function saveBiliFavoriteSelection() {
     const bvid = biliDetail.bvid;
-    if (!bvid) return;
-    if (!bridgeHas('bili_favorite_video')) {
-        showToast('error', t('error.unknown'));
+    const list = document.getElementById('bili-fav-list');
+    if (!bvid || !list) return;
+    const add = [];
+    const remove = [];
+    let stillFavoured = false;
+    list.querySelectorAll('input[data-folder]').forEach((check) => {
+        const id = check.dataset.folder;
+        if (!id) return;
+        if (check.checked) stillFavoured = true;
+        if (check.checked && check.dataset.was !== '1') add.push(id);
+        else if (!check.checked && check.dataset.was === '1') remove.push(id);
+    });
+    if (!add.length && !remove.length) {
+        closeModal('bili-fav-modal');
         return;
     }
+    if (!bridgeHas('bili_favorite_video_multi')) {
+        // 老后端只有单个收藏夹的接口：挑了多个就分开一个个来。
+        for (const folderId of add) {
+            await state.api.bili_favorite_video(bvid, folderId, false);
+        }
+        for (const folderId of remove) {
+            await state.api.bili_favorite_video(bvid, folderId, true);
+        }
+        biliDetail.favorited = stillFavoured;
+        renderBiliDetailHeader();
+        closeModal('bili-fav-modal');
+        showToast('success', t('bili.favorite_saved'));
+        await loadBiliDetailStat();
+        return;
+    }
+    const button = document.getElementById('btn-bili-fav-save');
+    if (button) button.disabled = true;
     try {
-        const result = await state.api.bili_favorite_video(bvid, folderId, false);
+        const result = await state.api.bili_favorite_video_multi(bvid, add, remove);
         if (!result || !result.success) {
             showToast('error', biliFailure(result, 'bili.favorite_failed'));
             return;
         }
-        biliDetail.favorited = true;
+        biliDetail.favorited = stillFavoured;
         renderBiliDetailHeader();
-        const panel = document.getElementById('bili-fav-panel');
-        if (panel) panel.hidden = true;
-        showToast('success', t('bili.favorite_folder_done'));
+        closeModal('bili-fav-modal');
+        showToast('success', t('bili.favorite_saved'));
         await loadBiliDetailStat();
     } catch (err) {
         showToast('error', t('bili.favorite_failed'));
-    }
-}
-
-/** Take the video that is open out of its favourite folder. */
-async function unfavoriteBiliVideo() {
-    const bvid = biliDetail.bvid;
-    if (!bvid) return;
-    if (!bridgeHas('bili_favorite_video')) {
-        showToast('error', t('error.unknown'));
-        return;
-    }
-    try {
-        const result = await state.api.bili_favorite_video(bvid, '', true);
-        if (!result || !result.success) {
-            showToast('error', biliFailure(result, 'bili.favorite_failed'));
-            return;
-        }
-        biliDetail.favorited = false;
-        renderBiliDetailHeader();
-        const panel = document.getElementById('bili-fav-panel');
-        if (panel) panel.hidden = true;
-        showToast('success', t('bili.favorite_remove'));
-        await loadBiliDetailStat();
-    } catch (err) {
-        showToast('error', t('bili.favorite_failed'));
+    } finally {
+        if (button) button.disabled = false;
     }
 }
 
@@ -12081,8 +12430,21 @@ function bindSectionEvents() {
     if (coinOne) coinOne.addEventListener('click', () => coinBiliVideo(1));
     const coinTwo = document.getElementById('btn-bili-coin-two');
     if (coinTwo) coinTwo.addEventListener('click', () => coinBiliVideo(2));
-    const favRemove = document.getElementById('btn-bili-fav-remove');
-    if (favRemove) favRemove.addEventListener('click', unfavoriteBiliVideo);
+    const favSave = document.getElementById('btn-bili-fav-save');
+    if (favSave) favSave.addEventListener('click', saveBiliFavoriteSelection);
+    // 收藏夹的多选：勾上几个视频之后才出现的这一条。
+    const favBulkDownload = document.getElementById('btn-bili-fav-download');
+    if (favBulkDownload) favBulkDownload.addEventListener('click', bulkDownloadBiliFavorites);
+    const favBulkMove = document.getElementById('btn-bili-fav-move');
+    if (favBulkMove) favBulkMove.addEventListener('click', () => openBiliFavTargetModal('move'));
+    const favBulkCopy = document.getElementById('btn-bili-fav-copy');
+    if (favBulkCopy) favBulkCopy.addEventListener('click', () => openBiliFavTargetModal('copy'));
+    const favBulkRemove = document.getElementById('btn-bili-fav-batch-remove');
+    if (favBulkRemove) favBulkRemove.addEventListener('click', bulkRemoveBiliFavorites);
+    const favBulkClear = document.getElementById('btn-bili-fav-clear');
+    if (favBulkClear) favBulkClear.addEventListener('click', clearBiliFavSelection);
+    const collectionMore = document.getElementById('btn-bili-collection-more');
+    if (collectionMore) collectionMore.addEventListener('click', () => loadBiliCollectionVideos(false));
     const detailUp = document.getElementById('bili-detail-up');
     if (detailUp) detailUp.addEventListener('click', () => openBiliSpace(biliDetail.authorMid));
     const commentSend = document.getElementById('btn-bili-comment-send');
@@ -12335,12 +12697,8 @@ function renderBiliCollections() {
                 ? t('bili.collection_sub', { name: item.author_name, count: count })
                 : t('bili.collection_count', { count: count }),
             badge: count ? t('bili.video_count', { count: count }) : '',
-            // A collection has no video list of its own here, so the way in
-            // is the uploader: their page lists what they made.
-            onClick: () => {
-                if (item.author_mid) openBiliSpace(item.author_mid);
-                else if (item.url) state.api.open_external(item.url);
-            }
+            // 点开就是这个合集里有哪些视频，比跳到 UP 主空间再自己找直接。
+            onClick: () => openBiliCollection(item)
         }));
     });
 }
@@ -12401,7 +12759,7 @@ function renderBiliBangumi() {
             title: show.title || '',
             sub: sub,
             badgePercent: Number(show.progress_percent) || 0,
-            onClick: () => playBangumiShow(show)
+            onClick: () => openBiliBangumiEpisodes(show)
         }));
     });
 }

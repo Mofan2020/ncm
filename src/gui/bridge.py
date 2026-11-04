@@ -2683,6 +2683,38 @@ class GuiBridge:
         return self.bilibili.favorite_video(bvid, folder_id=folder_id,
                                              remove=remove)
 
+    def get_bilibili_favorite_states(self, bvid: str = "") -> dict[str, Any]:
+        """The favourite folders, each flagged with whether it holds this video."""
+        return self.bilibili.favorite_folders_state(bvid)
+
+    def bili_favorite_video_multi(self, bvid: str,
+                                  add_folder_ids: list[str] | None = None,
+                                  remove_folder_ids: list[str] | None = None) -> dict[str, Any]:
+        """Put one video into several folders (and out of others) at once."""
+        return self.bilibili.favorite_video_multi(bvid, add_folder_ids,
+                                                  remove_folder_ids)
+
+    def bili_favorite_move(self, src_folder_id: str, target_folder_id: str,
+                           aids: list[int] | None = None,
+                           copy: bool = False) -> dict[str, Any]:
+        """Move (or copy) videos from one favourite folder into another."""
+        return self.bilibili.favorite_move(src_folder_id, target_folder_id,
+                                           aids, copy)
+
+    def bili_favorite_batch_delete(self, folder_id: str,
+                                   aids: list[int] | None = None) -> dict[str, Any]:
+        """Take several videos out of one favourite folder at once."""
+        return self.bilibili.favorite_batch_delete(folder_id, aids)
+
+    def get_bili_collection_videos(self, season_id: str = "", mid: str = "",
+                                   page: int = 1) -> dict[str, Any]:
+        """One page of the videos inside a UGC collection (合集)."""
+        return self.bilibili.collection_videos(season_id, mid, page)
+
+    def get_bili_bangumi_season(self, season_id: str = "") -> dict[str, Any]:
+        """One bangumi season with its episode list (选集)."""
+        return self.bilibili.bangumi_season(season_id)
+
     def bili_favorite_folder(self, folder_id: str,
                              remove: bool = False) -> dict[str, Any]:
         """Favourite somebody else's Bilibili folder."""

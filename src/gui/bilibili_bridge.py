@@ -65,6 +65,8 @@ def track_payload(item: dict[str, Any]) -> dict[str, Any]:
         "play_count": _as_int(item.get("play_count"), 0),
         "url": str(item.get("url") or ""),
         "bvid": bvid,
+        # 收藏夹的批量接口（移动 / 移出）要的是 aid 列表，只有 bvid 不够。
+        "aid": _as_int(item.get("aid"), 0),
         "cid": _as_int(item.get("cid"), 0),
         "kind": "video",
     }
@@ -798,6 +800,102 @@ class BilibiliBridge:
                 "folder_id": str(result.get("folder_id") or ""),
                 "message": str(result.get("message") or "")}
 
+    def favorite_folders_state(self, bvid: str = "") -> dict[str, Any]:
+        """The favourite folders, each flagged with "holds this video"."""
+        try:
+            folders = self._client.favorite_folders_with_state(bvid)
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            log.warning("bilibili favorite_folders_with_state failed: %s", exc)
+            return {"success": False, "folders": [], "count": 0,
+                    "message": "操作失败，请稍后再试"}
+        rows = []
+        for folder in folders or []:
+            if not isinstance(folder, dict):
+                continue
+            rows.append({
+                "id": str(folder.get("id") or ""),
+                "title": str(folder.get("title") or ""),
+                "media_count": _as_int(folder.get("media_count"), 0),
+                "cover": str(folder.get("cover") or ""),
+                "favoured": bool(folder.get("favoured")),
+            })
+        return {"success": True, "folders": rows, "count": len(rows)}
+
+    def favorite_video_multi(self, bvid: str,
+                             add_folder_ids: list[str] | None = None,
+                             remove_folder_ids: list[str] | None = None) -> dict[str, Any]:
+        """Put one video into several folders (and out of others) in one request."""
+        result = self._call_core("favorite_video_multi",
+                                 self._client.favorite_video_multi,
+                                 bvid, add_folder_ids, remove_folder_ids)
+        return {"success": bool(result.get("success")),
+                "message": str(result.get("message") or ""),
+                "folder_ids": list(result.get("folder_ids") or [])}
+
+    def favorite_move(self, src_folder_id: str, target_folder_id: str,
+                      aids: list[int] | None = None, copy: bool = False) -> dict[str, Any]:
+        """Move (or copy) videos from one favourite folder into another."""
+        result = self._call_core("favorite_move", self._client.favorite_move,
+                                 src_folder_id, target_folder_id, aids, copy)
+        return {"success": bool(result.get("success")),
+                "count": _as_int(result.get("count"), 0),
+                "message": str(result.get("message") or "")}
+
+    def favorite_batch_delete(self, folder_id: str,
+                              aids: list[int] | None = None) -> dict[str, Any]:
+        """Take several videos out of one favourite folder at once."""
+        result = self._call_core("favorite_batch_delete",
+                                 self._client.favorite_batch_delete,
+                                 folder_id, aids)
+        return {"success": bool(result.get("success")),
+                "count": _as_int(result.get("count"), 0),
+                "message": str(result.get("message") or "")}
+
+    def collection_videos(self, season_id: str = "", mid: str = "",
+                          page: int = 1) -> dict[str, Any]:
+        """One page of the videos inside a UGC collection (合集)."""
+        result = self._call_core("collection_videos",
+                                 self._client.collection_videos,
+                                 season_id, mid, page)
+        items = [
+            track_payload(item) for item in (result.get("items") or [])
+            if isinstance(item, dict) and item.get("bvid")
+        ]
+        return {
+            "success": not result.get("error"),
+            "message": str(result.get("error") or ""),
+            "items": items,
+            "tracks": items,
+            "count": len(items),
+            "has_more": bool(result.get("has_more")),
+            "page": _as_int(result.get("page"), 1),
+        }
+
+    def bangumi_season(self, season_id: str = "") -> dict[str, Any]:
+        """One bangumi season with its episode list (选集)."""
+        result = self._call_core("bangumi_season", self._client.bangumi_season,
+                                 season_id)
+        episodes = []
+        for item in result.get("episodes") or []:
+            if not isinstance(item, dict):
+                continue
+            episodes.append({
+                "ep_id": _as_int(item.get("ep_id"), 0),
+                "aid": _as_int(item.get("aid"), 0),
+                "cid": _as_int(item.get("cid"), 0),
+                "title": str(item.get("title") or ""),
+                "long_title": str(item.get("long_title") or ""),
+                "cover": str(item.get("cover") or ""),
+            })
+        return {
+            "success": bool(result.get("success")),
+            "message": str(result.get("message") or ""),
+            "title": str(result.get("title") or ""),
+            "cover": str(result.get("cover") or ""),
+            "episodes": episodes,
+            "count": len(episodes),
+        }
+
     def favorite_folder(self, folder_id: str, remove: bool = False) -> dict[str, Any]:
         """Favourite somebody else's folder."""
         result = self._call_core("favorite_folder", self._client.favorite_folder,
@@ -1083,7 +1181,7 @@ class BilibiliBridge:
         ``path``, ``downloaded``, ``total`` and ``progress`` (percent), and
         ``status`` once the file is done.
         """
-        from src.core.bili_download import BiliDownloader
+        from src.core.bili_download import DEFAULT_INTERVAL, BiliDownloader
 
         items = [track for track in (tracks or []) if isinstance(track, dict)]
         if not items:
@@ -1107,6 +1205,7 @@ class BilibiliBridge:
             overwrite=bool(options.get("overwrite")),
             max_concurrent=_as_int(options.get("max_concurrent"), 2),
             merge_audio=bool(merge_audio),
+            interval=float(options.get("interval") or DEFAULT_INTERVAL),
         )
         if progress is not None:
             downloader.set_progress_callback(progress)

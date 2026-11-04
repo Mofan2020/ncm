@@ -734,19 +734,36 @@
         }
     }
 
-    /** The favourite folders, so the video can be put into one. */
+    /** Close the coin dialog. */
+    function closeCoinPanel() {
+        const panel = el('bp-coin-panel');
+        if (panel) panel.hidden = true;
+    }
+
+    /** Close the favourite dialog; an open pick list is simply dropped. */
+    function closeFavoritePanel() {
+        const panel = el('bp-fav-panel');
+        if (panel) panel.hidden = true;
+    }
+
+    /** The favourite folders as a tick list: ticked means "already in it". */
     async function openFavoritePanel() {
         const panel = el('bp-fav-panel');
         const list = el('bp-fav-list');
         if (!panel || !list) return;
         panel.hidden = false;
         list.innerHTML = '';
+        const save = el('bp-fav-save');
+        if (save) save.textContent = t('bili.favorite_save');
         const loading = document.createElement('div');
         loading.className = 'bp-empty';
         loading.textContent = t('common.loading');
         list.appendChild(loading);
         try {
-            const result = await state.api.get_bilibili_favorites();
+            // 带状态的这条才知道哪些收藏夹里已经有它；后端没有就退回普通列表。
+            const result = (typeof state.api.get_bilibili_favorite_states === 'function')
+                ? await state.api.get_bilibili_favorite_states(state.bvid)
+                : await state.api.get_bilibili_favorites();
             list.innerHTML = '';
             const folders = (result && result.folders) || [];
             if (!folders.length) {
@@ -758,12 +775,18 @@
             }
             folders.forEach((folder) => {
                 if (!folder) return;
-                const button = document.createElement('button');
-                button.className = 'bp-fav-item';
-                button.type = 'button';
-                button.textContent = folder.title || '';
-                button.addEventListener('click', () => addToFolder(folder.id || ''));
-                list.appendChild(button);
+                const row = document.createElement('label');
+                row.className = 'bp-fav-check';
+                const check = document.createElement('input');
+                check.type = 'checkbox';
+                check.dataset.folder = String(folder.id || '');
+                check.checked = !!folder.favoured;
+                check.dataset.was = check.checked ? '1' : '0';
+                const text = document.createElement('span');
+                text.textContent = folder.title || '';
+                row.appendChild(check);
+                row.appendChild(text);
+                list.appendChild(row);
             });
         } catch (err) {
             list.innerHTML = '';
@@ -774,17 +797,45 @@
         }
     }
 
-    /** Put the video into one favourite folder. */
-    async function addToFolder(folderId) {
+    /**
+     * Save the tick list.
+     *
+     * 网页播放器就是这么做的：新勾上的进 add_media_ids，取消勾选的进
+     * del_media_ids，一条请求改完。旧后端只有单个收藏夹的接口时，退化成
+     * 一个一个发。
+     */
+    async function saveFavorites() {
         if (!state.api || !state.bvid) return;
-        const panel = el('bp-fav-panel');
+        const list = el('bp-fav-list');
+        if (!list) return;
+        const add = [];
+        const remove = [];
+        list.querySelectorAll('input[data-folder]').forEach((check) => {
+            const id = check.dataset.folder;
+            if (!id) return;
+            if (check.checked && check.dataset.was !== '1') add.push(id);
+            else if (!check.checked && check.dataset.was === '1') remove.push(id);
+        });
+        if (!add.length && !remove.length) {
+            closeFavoritePanel();
+            return;
+        }
         try {
-            const result = await state.api.bili_favorite_video(state.bvid, folderId, false);
-            if (!result || !result.success) {
-                el('bp-status').textContent = t('bili.favorite_failed');
-                return;
+            if (typeof state.api.bili_favorite_video_multi === 'function') {
+                const result = await state.api.bili_favorite_video_multi(state.bvid, add, remove);
+                if (!result || !result.success) {
+                    el('bp-status').textContent = t('bili.favorite_failed');
+                    return;
+                }
+            } else {
+                for (const folderId of add) {
+                    await state.api.bili_favorite_video(state.bvid, folderId, false);
+                }
+                for (const folderId of remove) {
+                    await state.api.bili_favorite_video(state.bvid, folderId, true);
+                }
             }
-            if (panel) panel.hidden = true;
+            closeFavoritePanel();
             await loadStat();
         } catch (err) {
             el('bp-status').textContent = t('bili.favorite_failed');
@@ -1017,6 +1068,17 @@
         if (favorite) {
             favorite.addEventListener('click', openFavoritePanel);
         }
+        // 两个弹窗的关闭：× 和点背景都关，Esc 先关弹窗再退出窗口。
+        const coinClose = el('bp-coin-close');
+        if (coinClose) coinClose.addEventListener('click', closeCoinPanel);
+        const coinBackdrop = el('bp-coin-backdrop');
+        if (coinBackdrop) coinBackdrop.addEventListener('click', closeCoinPanel);
+        const favClose = el('bp-fav-close');
+        if (favClose) favClose.addEventListener('click', closeFavoritePanel);
+        const favBackdrop = el('bp-fav-backdrop');
+        if (favBackdrop) favBackdrop.addEventListener('click', closeFavoritePanel);
+        const favSave = el('bp-fav-save');
+        if (favSave) favSave.addEventListener('click', saveFavorites);
         const sendDanmakuButton = el('bp-danmaku-send');
         if (sendDanmakuButton) {
             sendDanmakuButton.addEventListener('click', sendDanmaku);
@@ -1063,6 +1125,17 @@
             const tag = (event.target && event.target.tagName) || '';
             const typing = tag === 'INPUT' || tag === 'TEXTAREA';
             if (event.key === 'Escape') {
+                // 有弹窗先关弹窗；两层都关完了才退出播放窗口。
+                const coinPanel = el('bp-coin-panel');
+                const favPanel = el('bp-fav-panel');
+                if (coinPanel && !coinPanel.hidden) {
+                    closeCoinPanel();
+                    return;
+                }
+                if (favPanel && !favPanel.hidden) {
+                    closeFavoritePanel();
+                    return;
+                }
                 if (window.stopBiliVideo) window.stopBiliVideo();
                 window.close();
                 return;

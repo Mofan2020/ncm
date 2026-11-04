@@ -24,6 +24,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,16 @@ CHUNK_SIZE = 64 * 1024
 
 #: 同时下几个文件。视频文件比歌大，再多就把带宽吃满了。
 DEFAULT_CONCURRENT = 2
+
+#: 两个视频之间最少隔多久去问一次取流地址（秒）。
+#:
+#: 真正会被 B站限流的是「取流」这一步，不是搬字节：一次点十几集，十几条
+#: 取流请求同时打过去，回的就是 -352 风控。文件传输还在并发跑，只有取流
+#: 这一下按这个间隔排队。
+DEFAULT_INTERVAL = 1.5
+
+#: 间隔的上限。再慢下去用户会以为卡住了。
+MAX_INTERVAL = 10.0
 
 
 class BiliDownloadResult:
@@ -77,6 +88,7 @@ class BiliDownloader:
         timeout: int = 60,
         max_retries: int = 3,
         merge_audio: bool = False,
+        interval: float = DEFAULT_INTERVAL,
     ) -> None:
         self.download_dir = Path(download_dir).expanduser()
         self.client = client
@@ -87,10 +99,15 @@ class BiliDownloader:
         self.max_retries = max(1, int(max_retries))
         #: Put the picture and the sound back into one file after the download.
         self.merge_audio = bool(merge_audio)
+        #: 取流请求之间的最小间隔（秒）。0 表示完全不排队。
+        self.interval = max(0.0, min(float(interval or 0), MAX_INTERVAL))
         self.logger = logging.getLogger("ncm.bili.downloader")
 
         self._lock = threading.RLock()
         self._cancelled = threading.Event()
+        #: 取流是排队做的：一把锁 + 上一次发请求的时刻。
+        self._pace_lock = threading.Lock()
+        self._pace_last = 0.0
         self._progress_callback: Callable[[dict[str, Any]], None] | None = None
         self._done_callback: Callable[[dict[str, Any]], None] | None = None
         self._session = requests.Session()
@@ -278,6 +295,25 @@ class BiliDownloader:
         return ""
 
     # ------------------------------------------------------------------ batch
+    @contextmanager
+    def _paced(self):
+        """Take the resolve turn, and keep a gap between two of them.
+
+        取流是唯一会被 B站当成「刷接口」的一步：一次排十个视频，十条取流
+        请求一起飞过去就是 -352。这里把这一步排成队，并且保证两次之间至少
+        隔 ``interval`` 秒；字节搬运不在锁里，所以下载速度不受影响。
+        """
+        with self._pace_lock:
+            if self.interval > 0 and self._pace_last > 0:
+                wait = self._pace_last + self.interval + random.uniform(0, self.interval / 3)
+                delay = wait - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+            try:
+                yield
+            finally:
+                self._pace_last = time.monotonic()
+
     def _resolve(self, bvid: str) -> dict[str, Any]:
         try:
             try:
@@ -290,6 +326,11 @@ class BiliDownloader:
         except Exception as exc:  # pragma: no cover - the client does not raise
             self.logger.warning("cannot resolve the streams of %s: %s", bvid, exc)
             return {}
+
+    def _resolve_paced(self, bvid: str) -> dict[str, Any]:
+        """Resolve the streams of one video, inside the paced queue."""
+        with self._paced():
+            return self._resolve(bvid)
 
     @staticmethod
     def _best_audio(streams: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -314,7 +355,7 @@ class BiliDownloader:
         if not bvid:
             return results
 
-        streams = self._resolve(bvid)
+        streams = self._resolve_paced(bvid)
         video = streams.get("video") or {}
         muxed = streams.get("muxed") or {}
         # 音质挑最好的那一条：Hi-Res 无损 > 杜比 > 普通音轨。

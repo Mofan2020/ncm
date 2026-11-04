@@ -385,6 +385,20 @@
                     <!-- 收藏夹 -->
                     <div id="bili-seg-folders">
                         <div class="chip-row" id="bili-folder-chips"></div>
+                        <!-- 勾了几个视频才出现：批量下载、改收藏夹、移出 -->
+                        <div class="bili-bulk-bar" id="bili-fav-bulk" hidden>
+                            <span class="bili-bulk-count" id="bili-fav-bulk-count"></span>
+                            <button class="btn btn-sm btn-secondary" id="btn-bili-fav-download"
+                                    type="button" data-i18n="bili.bulk_download"></button>
+                            <button class="btn btn-sm btn-secondary" id="btn-bili-fav-move"
+                                    type="button" data-i18n="bili.bulk_move"></button>
+                            <button class="btn btn-sm btn-secondary" id="btn-bili-fav-copy"
+                                    type="button" data-i18n="bili.bulk_copy"></button>
+                            <button class="btn btn-sm btn-ghost" id="btn-bili-fav-batch-remove"
+                                    type="button" data-i18n="bili.bulk_remove"></button>
+                            <button class="btn btn-sm btn-ghost" id="btn-bili-fav-clear"
+                                    type="button" data-i18n="bili.bulk_clear"></button>
+                        </div>
                         <div class="bili-grid" id="bili-fav-results"></div>
                         <div id="bili-fav-state"></div>
                         <button class="btn btn-sm btn-block" id="btn-bili-fav-more" type="button" hidden
@@ -451,6 +465,16 @@
                                     <option value="1">1</option>
                                     <option value="2">2</option>
                                     <option value="3">3</option>
+                                </select>
+                            </label>
+                            <label class="option">
+                                <span data-i18n="bili.download_interval_label"></span>
+                                <select id="bili-download-interval">
+                                    <option value="1">1s</option>
+                                    <option value="1.5" selected>1.5s</option>
+                                    <option value="2">2s</option>
+                                    <option value="3">3s</option>
+                                    <option value="5">5s</option>
                                 </select>
                             </label>
                             <label class="option checkbox">
@@ -1832,23 +1856,6 @@
                     <button class="btn btn-sm btn-secondary" id="btn-bili-favorite" type="button"
                             data-i18n="bili.favorite_add"></button>
                 </div>
-                <div class="bili-popover" id="bili-coin-panel" hidden>
-                    <div class="bili-popover-title" id="bili-coin-balance"></div>
-                    <div class="bili-popover-hint" id="bili-coin-hint"></div>
-                    <div class="bili-popover-row">
-                        <button class="btn btn-sm btn-secondary" id="btn-bili-coin-one" type="button"
-                                data-i18n="bili.coin_one"></button>
-                        <button class="btn btn-sm btn-secondary" id="btn-bili-coin-two" type="button"
-                                data-i18n="bili.coin_two"></button>
-                    </div>
-                </div>
-                <div class="bili-popover" id="bili-fav-panel" hidden>
-                    <div class="bili-popover-title" data-i18n="bili.favorite_pick"></div>
-                    <div class="bili-fav-list" id="bili-fav-list"></div>
-                    <button class="btn btn-sm btn-secondary" id="btn-bili-fav-remove" type="button"
-                            data-i18n="bili.favorite_remove"></button>
-                </div>
-
                 <div class="bili-section">
                     <div class="bili-section-title" data-i18n="bili.comments"></div>
                     <div class="bili-comment-list" id="bili-comment-list"></div>
@@ -1884,6 +1891,99 @@
                     <div class="bili-danmaku-list" id="bili-danmaku-list"></div>
                 </div>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ 投币：弹窗，X 或点背景都能关 ============ -->
+<div class="modal" id="bili-coin-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-coin-modal"></div>
+    <div class="modal-box glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="bili.coin"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-coin-modal"
+                    data-icon="close" aria-label="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="bili-popover-title" id="bili-coin-balance"></div>
+            <div class="bili-popover-hint" id="bili-coin-hint"></div>
+            <div class="bili-modal-actions">
+                <button class="btn btn-sm btn-secondary" id="btn-bili-coin-one" type="button"
+                        data-i18n="bili.coin_one"></button>
+                <button class="btn btn-sm btn-secondary" id="btn-bili-coin-two" type="button"
+                        data-i18n="bili.coin_two"></button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ 收藏：勾收藏夹（可多选），一次提交 ============ -->
+<div class="modal" id="bili-fav-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-fav-modal"></div>
+    <div class="modal-box glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="bili.favorite_pick"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-fav-modal"
+                    data-icon="close" aria-label="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="bili-fav-list" id="bili-fav-list"></div>
+            <div class="bili-popover-hint" data-i18n="bili.favorite_multi_hint"></div>
+        </div>
+        <footer class="modal-foot">
+            <button class="btn btn-sm btn-ghost" type="button" data-close="bili-fav-modal"
+                    data-i18n="bili.cancel"></button>
+            <button class="btn btn-sm btn-primary" id="btn-bili-fav-save" type="button"
+                    data-i18n="bili.favorite_save"></button>
+        </footer>
+    </div>
+</div>
+
+<!-- ============ 批量改收藏夹：选目标收藏夹 ============ -->
+<div class="modal" id="bili-fav-target-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-fav-target-modal"></div>
+    <div class="modal-box glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 id="bili-fav-target-title"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-fav-target-modal"
+                    data-icon="close" aria-label="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="bili-fav-list" id="bili-fav-target-list"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ 合集：里面有哪些视频 ============ -->
+<div class="modal" id="bili-collection-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-collection-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 id="bili-collection-title"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-collection-modal"
+                    data-icon="close" aria-label="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="bili-grid" id="bili-collection-videos"></div>
+            <div id="bili-collection-videos-state"></div>
+            <button class="btn btn-sm btn-block" id="btn-bili-collection-more" type="button" hidden
+                    data-i18n="bili.load_more"></button>
+        </div>
+    </div>
+</div>
+
+<!-- ============ 番剧选集 ============ -->
+<div class="modal" id="bili-episodes-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-episodes-modal"></div>
+    <div class="modal-box glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 id="bili-episodes-title"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-episodes-modal"
+                    data-icon="close" aria-label="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="bili-episode-list" id="bili-episode-list"></div>
+            <div id="bili-episodes-state"></div>
         </div>
     </div>
 </div>

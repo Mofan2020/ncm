@@ -64,18 +64,35 @@
                 </div>
             </div>
 
-            <div class="bp-popover" id="bp-coin-panel" hidden>
-                <div class="bp-popover-title" id="bp-coin-balance"></div>
-                <div class="bp-popover-hint" id="bp-coin-hint"></div>
-                <div class="bp-popover-row">
-                    <button class="bp-btn bp-btn-ghost" id="bp-coin-one" type="button"></button>
-                    <button class="bp-btn bp-btn-ghost" id="bp-coin-two" type="button"></button>
+            <!-- 投币：弹窗，X / 点背景 / Esc 都能关 -->
+            <div class="bp-dialog" id="bp-coin-panel" hidden>
+                <div class="bp-dialog-backdrop" id="bp-coin-backdrop"></div>
+                <div class="bp-dialog-box" role="dialog" aria-modal="true">
+                    <div class="bp-dialog-head">
+                        <span class="bp-popover-title" id="bp-coin-balance"></span>
+                        <button class="bp-dialog-close" id="bp-coin-close" type="button"
+                                aria-label="close">×</button>
+                    </div>
+                    <div class="bp-popover-hint" id="bp-coin-hint"></div>
+                    <div class="bp-popover-row">
+                        <button class="bp-btn bp-btn-ghost" id="bp-coin-one" type="button"></button>
+                        <button class="bp-btn bp-btn-ghost" id="bp-coin-two" type="button"></button>
+                    </div>
                 </div>
             </div>
 
-            <div class="bp-popover" id="bp-fav-panel" hidden>
-                <div class="bp-popover-title" id="bp-fav-title"></div>
-                <div class="bp-fav-list" id="bp-fav-list"></div>
+            <!-- 收藏：勾选收藏夹，一个视频可以同时进好几个 -->
+            <div class="bp-dialog" id="bp-fav-panel" hidden>
+                <div class="bp-dialog-backdrop" id="bp-fav-backdrop"></div>
+                <div class="bp-dialog-box" role="dialog" aria-modal="true">
+                    <div class="bp-dialog-head">
+                        <span class="bp-popover-title" id="bp-fav-title"></span>
+                        <button class="bp-dialog-close" id="bp-fav-close" type="button"
+                                aria-label="close">×</button>
+                    </div>
+                    <div class="bp-fav-list" id="bp-fav-list"></div>
+                    <button class="bp-btn" id="bp-fav-save" type="button"></button>
+                </div>
             </div>
 
             <div class="bp-send">

@@ -2404,6 +2404,287 @@ class BiliClient:
         result["message"] = "已取消收藏" if remove else "收藏成功"
         return result
 
+    def favorite_folders_with_state(self, bvid: str) -> list[dict[str, Any]]:
+        """The favourite folders, each flagged with whether it holds this video.
+
+        ``created/list-all`` only answers ``fav_state`` when the request names
+        the resource (``rid`` + ``type``).  Without those two the field is
+        missing on every folder, so a picker cannot tell a ticked box from an
+        unticked one -- the list looks identical to "nothing is favourited".
+        """
+        bvid = str(bvid or "").strip()
+        aid = 0
+        if bvid:
+            try:
+                aid = _as_int(self.video(bvid).get("aid"))
+            except Exception:  # noqa: BLE001 - a bad answer is not fatal here
+                aid = 0
+        mid = self._self_mid()
+        if not aid or not mid:
+            return self.favorite_folders()
+        payload = self._get(
+            "/x/v3/fav/folder/created/list-all",
+            {"up_mid": mid, "rid": aid, "type": 2},
+        )
+        if not payload or payload.get("code") != 0:
+            return self.favorite_folders()
+        data = payload.get("data") or {}
+        items = data.get("list")
+        if not isinstance(items, list):
+            return self.favorite_folders()
+        folders: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            folders.append({
+                "id": str(item.get("id") or ""),
+                "title": str(item.get("title") or ""),
+                "media_count": _as_int(item.get("media_count")),
+                "cover": _absolute_url(item.get("cover")),
+                "favoured": _as_int(item.get("fav_state")) == 1,
+            })
+        return folders
+
+    def favorite_video_multi(
+        self,
+        bvid: str,
+        add_folder_ids: list[Any] | None = None,
+        remove_folder_ids: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        """Put one video into several folders (and pull it out of others) at once.
+
+        Same route as :meth:`favorite_video`, only the ids are comma separated.
+        This is what the site's own player sends when more than one box is
+        ticked: ``add_media_ids`` for the freshly ticked folders, ``del_media_ids``
+        for the unticked ones, one request for the whole picker.
+        """
+        bvid = str(bvid or "").strip()
+        result: dict[str, Any] = {"success": False, "message": "", "folder_ids": []}
+        if not bvid:
+            result["message"] = "缺少视频号"
+            return result
+        if not self.is_logged_in:
+            result["message"] = "请先登录B站账号"
+            return result
+        add_ids = [str(item).strip() for item in (add_folder_ids or []) if str(item).strip()]
+        del_ids = [str(item).strip() for item in (remove_folder_ids or []) if str(item).strip()]
+        if not add_ids and not del_ids:
+            result["message"] = "没有要改的收藏夹"
+            return result
+        aid = int(self.video(bvid).get("aid") or 0)
+        if not aid:
+            result["message"] = "无法获取视频信息，收藏失败"
+            return result
+        data: dict[str, Any] = {
+            # rid 是资源 id（稿件的 aid），add/del_media_ids 才是收藏夹 id。
+            "rid": aid,
+            "type": 2,
+            "platform": "web",
+        }
+        if add_ids:
+            data["add_media_ids"] = ",".join(add_ids)
+        if del_ids:
+            data["del_media_ids"] = ",".join(del_ids)
+        payload = self.post_form("/x/v3/fav/resource/deal", data)
+        if not payload:
+            result["message"] = "网络异常，收藏失败，请稍后重试"
+            return result
+        if payload.get("code") != 0:
+            result["message"] = _error_message(payload, "收藏失败")
+            return result
+        result["success"] = True
+        result["folder_ids"] = add_ids
+        result["message"] = "收藏已更新"
+        return result
+
+    @staticmethod
+    def _fav_resources(aids: list[Any] | None) -> str:
+        """Turn a list of aids into the ``"123:2,456:2"`` the routes expect.
+
+        收藏夹的批量接口要的是「资源 id:类型」拼串，类型是每一条的一部分，
+        不是单独的参数；只给 aid 会被判成参数错误。
+        """
+        parts: list[str] = []
+        for aid in aids or []:
+            value = _as_int(aid)
+            if value > 0:
+                parts.append(f"{value}:2")
+        return ",".join(parts)
+
+    def favorite_move(
+        self,
+        src_folder_id: str,
+        target_folder_id: str,
+        aids: list[Any] | None = None,
+        copy: bool = False,
+    ) -> dict[str, Any]:
+        """Move (or copy) videos from one favourite folder into another."""
+        src = str(src_folder_id or "").strip()
+        target = str(target_folder_id or "").strip()
+        resources = self._fav_resources(aids)
+        if not src or not target:
+            return {"success": False, "message": "缺少收藏夹"}
+        if src == target:
+            return {"success": False, "message": "源收藏夹和目标收藏夹是同一个"}
+        if not resources:
+            return {"success": False, "message": "没有选中视频"}
+        if not self.is_logged_in:
+            return {"success": False, "message": "请先登录B站账号"}
+        mid = self._self_mid()
+        if not mid:
+            return {"success": False, "message": "请先登录B站账号"}
+        path = "/x/v3/fav/resource/copy" if copy else "/x/v3/fav/resource/move"
+        payload = self.post_form(path, {
+            "resources": resources,
+            "src_media_id": src,
+            "tar_media_id": target,
+            "mid": mid,
+            "platform": "web",
+        })
+        if not payload:
+            return {"success": False, "message": "网络异常，操作失败，请稍后重试"}
+        if payload.get("code") != 0:
+            return {"success": False, "message": _error_message(payload, "移动失败")}
+        count = len([part for part in resources.split(",") if part])
+        return {
+            "success": True,
+            "count": count,
+            "message": f"已复制 {count} 个视频" if copy else f"已移动 {count} 个视频",
+        }
+
+    def favorite_batch_delete(self, folder_id: str = "",
+                              aids: list[Any] | None = None) -> dict[str, Any]:
+        """Take several videos out of one favourite folder at once."""
+        folder = str(folder_id or "").strip()
+        resources = self._fav_resources(aids)
+        if not folder:
+            return {"success": False, "message": "缺少收藏夹"}
+        if not resources:
+            return {"success": False, "message": "没有选中视频"}
+        if not self.is_logged_in:
+            return {"success": False, "message": "请先登录B站账号"}
+        payload = self.post_form("/x/v3/fav/resource/batch-del", {
+            "resources": resources,
+            "media_id": folder,
+            "platform": "web",
+        })
+        if not payload:
+            return {"success": False, "message": "网络异常，操作失败，请稍后重试"}
+        if payload.get("code") != 0:
+            return {"success": False, "message": _error_message(payload, "移出收藏夹失败")}
+        count = len([part for part in resources.split(",") if part])
+        return {"success": True, "count": count, "message": f"已移出 {count} 个视频"}
+
+    def collection_videos(
+        self,
+        season_id: str,
+        mid: str = "",
+        page: int = 1,
+        page_size: int = 30,
+    ) -> dict[str, Any]:
+        """One page of the videos inside a UGC collection (合集).
+
+        合集自己不是收藏夹：内容挂在 UP 主的空间下，所以要 ``mid`` +
+        ``season_id`` 一起问。条目里的封面叫 ``pic``、时长是秒数——和收藏夹
+        那套（``cover``、``duration`` 是字符串）不是一套字段。
+        """
+        season = str(season_id or "").strip()
+        owner = str(mid or "").strip()
+        page = max(1, _as_int(page, 1))
+        size = max(1, min(_as_int(page_size, 30), 50))
+        empty: dict[str, Any] = {"items": [], "has_more": False, "page": page}
+        if not season:
+            empty["error"] = "缺少合集 ID"
+            return empty
+        if not owner:
+            empty["error"] = "缺少 UP 主 ID"
+            return empty
+        payload = self._get(
+            "/x/polymer/web-space/seasons_archives_list",
+            {
+                "mid": owner,
+                "season_id": season,
+                "page_num": page,
+                "page_size": size,
+                "sort_reverse": "false",
+            },
+        )
+        if not payload or payload.get("code") != 0:
+            empty["error"] = str((payload or {}).get("message") or "合集读取失败")
+            return empty
+        data = payload.get("data") or {}
+        raw = data.get("archives")
+        if not isinstance(raw, list):
+            raw = data.get("archives_list")
+        if not isinstance(raw, list):
+            return empty
+        items: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            stat = item.get("stat") if isinstance(item.get("stat"), dict) else {}
+            items.append({
+                "bvid": str(item.get("bvid") or ""),
+                "aid": _as_int(item.get("aid")),
+                "title": str(item.get("title") or ""),
+                "cover": _absolute_url(item.get("pic") or item.get("cover")),
+                "duration": _as_int(item.get("duration")),
+                "play_count": _as_int(stat.get("view")),
+                "pub_time": _as_int(item.get("pubdate") or item.get("ctime")),
+            })
+        items = [item for item in items if item.get("bvid")]
+        has_more = data.get("page")
+        if isinstance(has_more, dict):
+            has_more = not bool(has_more.get("page_num") == has_more.get("page_size"))
+        if has_more is None:
+            has_more = len(items) >= size
+        return {"items": items, "has_more": bool(has_more), "page": page}
+
+    def bangumi_season(self, season_id: str) -> dict[str, Any]:
+        """One bangumi season together with its episode list (选集用).
+
+        追番那一页只给最新一集的 ep_id，想从第一集看只能自己去问这一条。
+        ``episodes`` 里每集有 ``id``（ep_id）、``aid``、``cid`` 和长短标题，
+        播放走 :meth:`bangumi_streams`。
+        """
+        season = str(season_id or "").strip()
+        if not season:
+            return {"success": False, "message": "缺少番剧 ID", "episodes": []}
+        payload = self._get("/pgc/view/web/season", {"season_id": season})
+        if not payload or payload.get("code") != 0:
+            return {
+                "success": False,
+                "message": _error_message(payload, "番剧信息读取失败"),
+                "episodes": [],
+            }
+        result = payload.get("result") or payload.get("data") or {}
+        raw = result.get("episodes")
+        if not isinstance(raw, list):
+            raw = []
+        episodes: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            ep_id = _as_int(item.get("id") or item.get("ep_id"))
+            if not ep_id:
+                continue
+            episodes.append({
+                "ep_id": ep_id,
+                "aid": _as_int(item.get("aid")),
+                "cid": _as_int(item.get("cid")),
+                "title": str(item.get("title") or ""),
+                "long_title": str(item.get("long_title") or ""),
+                "cover": _absolute_url(item.get("cover")),
+            })
+        return {
+            "success": True,
+            "season_id": _as_int(season),
+            "title": str(result.get("season_title") or result.get("title") or ""),
+            "cover": _absolute_url(result.get("cover")),
+            "episodes": episodes,
+            "count": len(episodes),
+        }
+
     def favorite_folder(self, folder_id: str, remove: bool = False) -> dict[str, Any]:
         """Favourite somebody else's folder into the own collection."""
         folder_id = str(folder_id or "").strip()
