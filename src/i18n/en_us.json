@@ -744,6 +744,8 @@
     "source_all": "All",
     "source_netease": "NetEase",
     "source_bili": "Bilibili",
+    "pgc_badge": "Bilibili PGC",
+    "pgc_score": "Rated {score}",
     "category_all": "All",
     "category_song": "Songs",
     "category_playlist": "Playlists",

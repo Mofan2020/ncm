@@ -235,8 +235,12 @@
             select.appendChild(option);
             offered.push(option.value);
         });
+        // 名单里没有请求的画质时，显示真正在播的那个，而不是回到「自动」。
         const wanted = String(state.quality || 0);
-        select.value = offered.indexOf(wanted) >= 0 ? wanted : '0';
+        const played = String(Number(streams.picked_quality) || 0);
+        if (offered.indexOf(wanted) >= 0) select.value = wanted;
+        else if (played !== '0' && offered.indexOf(played) >= 0) select.value = played;
+        else select.value = '0';
     }
 
     /** Switch to another quality and keep the place in the video. */

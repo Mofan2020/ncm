@@ -29,6 +29,7 @@ CHECKS = (
     ("check-backup-js.mjs", "the backup window"),
     ("check-bili-stream-loader.mjs", "the shared Bilibili stream loader"),
     ("check-bili-recommend-paging.mjs", "the paging of the recommendation feed"),
+    ("check-bili-default-quality.mjs", "the default quality reaching playback"),
 )
 
 NODE = shutil.which("node")

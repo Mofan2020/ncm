@@ -8015,8 +8015,11 @@ const combined = {
     biliPage: 1,
     neteaseDone: false,
     biliDone: false,
+    // 番剧/影视（PGC）只有第一页：聚合列表里的翻页由网易云和 B站视频两半驱动。
+    pgcDone: false,
     neteaseError: '',
     biliError: '',
+    pgcError: '',
     loading: false,
     requestId: 0
 };
@@ -8567,15 +8570,27 @@ function combinedRowElement(row) {
     nameLine.appendChild(name);
     const badge = document.createElement('span');
     badge.className = row.source === 'bilibili' ? 'source-badge is-bili' : 'source-badge is-netease';
-    badge.textContent = row.source === 'bilibili'
-        ? t('search.source_bili') : t('search.source_netease');
+    if (row.kind === 'pgc') {
+        badge.textContent = t('search.pgc_badge');
+    } else {
+        badge.textContent = row.source === 'bilibili'
+            ? t('search.source_bili') : t('search.source_netease');
+    }
     nameLine.appendChild(badge);
     main.appendChild(nameLine);
     const sub = document.createElement('div');
     sub.className = 'result-sub';
-    sub.textContent = row.source === 'bilibili'
-        ? t('search.sub_bili', { uploader: row.artists, plays: formatPlayCount(row.plays) })
-        : t('search.sub_netease', { artist: row.artists, album: row.album });
+    if (row.kind === 'pgc') {
+        // 番剧的「副标题」是类型、集数、评分和风格，不是上传者和播放量。
+        const parts = [row.pgc.typeName, row.pgc.indexShow];
+        if (row.pgc.score > 0) parts.push(t('search.pgc_score', { score: row.pgc.score.toFixed(1) }));
+        if (row.pgc.styles.length) parts.push(row.pgc.styles.slice(0, 3).join(' / '));
+        sub.textContent = parts.filter(Boolean).join(' · ');
+    } else {
+        sub.textContent = row.source === 'bilibili'
+            ? t('search.sub_bili', { uploader: row.artists, plays: formatPlayCount(row.plays) })
+            : t('search.sub_netease', { artist: row.artists, album: row.album });
+    }
     main.appendChild(sub);
     element.appendChild(main);
 
@@ -8611,6 +8626,16 @@ function combinedRowElement(row) {
 
 /** What happens when a result row is picked. */
 function openCombinedRow(row) {
+    if (row.kind === 'pgc') {
+        // 番剧没有 bvid，播不了画面也就没有意义：先开选集，选哪集播哪集。
+        openBiliBangumiEpisodes({
+            season_id: row.pgc.seasonId,
+            ep_id: 0,
+            title: row.pgc.title,
+            cover: row.pgc.cover
+        });
+        return;
+    }
     if (row.source === 'bilibili') {
         // A video found by the search plays right here: in the player window
         // or in the modal, whichever the settings ask for.  Jumping out to
@@ -8724,6 +8749,9 @@ function combinedVisibleRows() {
         if (category === 'song' && row.kind !== 'song') return false;
         if (category === 'playlist' && row.kind !== 'playlist') return false;
         if (category === 'video' && row.kind !== 'video') return false;
+        // 番剧/影视只在「全部」里出现：挑了「歌曲」「视频」这些类别还塞进来
+        // 就变成了不受筛选影响的东西。
+        if (row.kind === 'pgc' && category !== 'all') return false;
         return combinedMatchesDuration(row, duration);
     });
     const netease = rows.filter((row) => row.source === 'netease');
@@ -8850,7 +8878,7 @@ function renderCombinedRows() {
     const more = document.getElementById('btn-aggr-more');
     const end = document.getElementById('aggr-end');
     if (more) {
-        const exhausted = combined.neteaseDone && combined.biliDone;
+        const exhausted = combined.neteaseDone && combined.biliDone && combined.pgcDone;
         more.hidden = exhausted || combined.loading;
         more.textContent = combined.loading ? t('common.loading') : t('search.load_more');
         more.disabled = combined.loading;
@@ -8858,7 +8886,7 @@ function renderCombinedRows() {
     if (end) {
         // The button gives way to a line of text: "no more" or "too many".
         // It only appears when there is a list to look at.
-        const exhausted = combined.neteaseDone && combined.biliDone;
+        const exhausted = combined.neteaseDone && combined.biliDone && combined.pgcDone;
         const capped = rows.length >= COMBINED_MAX_ROWS;
         end.hidden = combined.loading || !rows.length || (!exhausted && !capped);
         end.textContent = capped ? t('search.cap_hint') : t('search.no_more');
@@ -8927,6 +8955,60 @@ async function loadCombinedBili(requestId) {
     }
 }
 
+/** Ask the Bilibili PGC catalogue (番剧 / 影视) once per search. */
+async function loadCombinedPgc(requestId) {
+    if (combined.pgcDone) return;
+    try {
+        if (!bridgeHas('search_bilibili_pgc')) {
+            combined.pgcError = t('error.unknown');
+            combined.pgcDone = true;
+            return;
+        }
+        const result = await state.api.search_bilibili_pgc(combined.keyword, 1);
+        if (requestId !== combined.requestId) return;
+        if (!result || !result.success) {
+            combined.pgcError = bridgeFailure(result, 'error.network');
+            combined.pgcDone = true;
+            return;
+        }
+        const items = result.items || [];
+        // 番剧排在视频前面：搜一个番剧名，正片比二创更该先出现。
+        items.forEach((item) => combined.rows.unshift(biliPgcRow(item)));
+        combined.pgcDone = true;
+    } catch (err) {
+        if (requestId !== combined.requestId) return;
+        combined.pgcError = t('error.network');
+        combined.pgcDone = true;
+    }
+}
+
+/** One row of the PGC catalogue: 番剧 / 国创 / 影视. */
+function biliPgcRow(item) {
+    const pgc = item || {};
+    return {
+        source: 'bilibili',
+        kind: 'pgc',
+        id: String(pgc.season_id || ''),
+        name: pgc.title || '',
+        artists: pgc.season_type_name || '',
+        album: (pgc.styles || []).slice(0, 2).join(' / '),
+        cover: pgc.cover || '',
+        durationMs: 0,
+        plays: 0,
+        pgc: {
+            seasonId: Number(pgc.season_id) || 0,
+            title: pgc.title || '',
+            cover: pgc.cover || '',
+            indexShow: pgc.index_show || '',
+            typeName: pgc.season_type_name || '',
+            styles: pgc.styles || [],
+            areas: pgc.areas || [],
+            score: Number(pgc.score) || 0,
+            url: pgc.url || ''
+        }
+    };
+}
+
 /** Fetch the next page of every source that has one. */
 async function loadCombinedPage() {
     const requestId = combined.requestId + 1;
@@ -8935,7 +9017,10 @@ async function loadCombinedPage() {
     renderCombinedRows();
     const wanted = [];
     if (combined.source !== 'bilibili') wanted.push(loadCombinedNetease(requestId));
-    if (combined.source !== 'netease') wanted.push(loadCombinedBili(requestId));
+    if (combined.source !== 'netease') {
+        wanted.push(loadCombinedBili(requestId));
+        wanted.push(loadCombinedPgc(requestId));
+    }
     await Promise.all(wanted);
     if (requestId !== combined.requestId) return;
     combined.loading = false;
@@ -8964,12 +9049,17 @@ async function renderCombinedSearch(keyword, filters) {
     combined.biliPage = 1;
     combined.neteaseDone = false;
     combined.biliDone = false;
+    combined.pgcDone = false;
     combined.neteaseError = '';
     combined.biliError = '';
+    combined.pgcError = '';
     // A source that is filtered out is finished by definition: without this
     // the "no more" line would never show when only one source is asked.
     if (combined.source === 'bilibili') combined.neteaseDone = true;
-    if (combined.source === 'netease') combined.biliDone = true;
+    if (combined.source === 'netease') {
+        combined.biliDone = true;
+        combined.pgcDone = true;
+    }
     updateFilterSelects();
     updateFilterChips();
     await renderCombinedPartitions();
@@ -10411,9 +10501,26 @@ function renderBiliQualities(streams) {
         offered.push(option.value);
     });
     // The chosen quality stays, unless it is not in the list any more.
+    // 名单里没有请求的那个画质时，显示真正在播的那个：请求 1080P、这条
+    // 视频只有 720P，下拉框写「720P」比写「自动」更接近事实。
     const wanted = String(biliPlayer.quality || 0);
-    select.value = offered.indexOf(wanted) >= 0 ? wanted : '0';
+    const played = String(Number(streams.picked_quality) || 0);
+    if (offered.indexOf(wanted) >= 0) select.value = wanted;
+    else if (played !== '0' && offered.indexOf(played) >= 0) select.value = played;
+    else select.value = '0';
     renderBiliQualityBadges(streams);
+}
+
+/**
+ * The quality a fresh playback should start with.
+ *
+ * 设置里存的「默认画质」以前只在下载时用过，播放这边一路传的是 0，所以
+ * 不管设置成什么都从「自动」开始。这里统一读一次设置，三个入口（内联
+ * 播放器、独立窗口、番剧）都从它出发。
+ */
+function defaultBiliQuality() {
+    const bili = (state.settings && state.settings.bili) || {};
+    return Number(bili.quality) || 0;
 }
 
 /** Open the player for one track. */
@@ -10545,7 +10652,10 @@ async function playBiliTrack(track) {
         return;
     }
     biliPlayer.track = track || null;
-    biliPlayer.quality = 0;
+    // 设置里的默认画质从这里生效：以前这一行写死 0，不管设置成什么都从
+    // 「自动」开始，看着就像设置没存下来。
+    const quality = defaultBiliQuality();
+    biliPlayer.quality = quality;
     // The video plays in a window of its own, so the main window stays
     // usable while it runs.  The window carries the comments and the
     // danmaku.  The setting can turn that off.
@@ -10553,14 +10663,14 @@ async function playBiliTrack(track) {
         || state.settings.bili.separate_player_window !== false;
     if (separate && bridgeHas('open_bili_player_window')) {
         try {
-            const opened = await state.api.open_bili_player_window(bvid, 1, 0);
+            const opened = await state.api.open_bili_player_window(bvid, 1, quality);
             if (opened && opened.success) return;
         } catch (err) {
             /* The window could not be opened: fall back to the old player. */
         }
     }
     openBiliPlayer(track);
-    await loadBiliStreams(bvid, 0);
+    await loadBiliStreams(bvid, quality);
     // The detail panel lives inside the player, so it is filled once the
     // video is known.
     await openBiliDetail(bvid, {
@@ -12784,12 +12894,14 @@ async function playBangumiShow(show) {
         return;
     }
     biliPlayer.track = { name: (show && show.title) || '', bvid: '', cover: (show && show.cover) || '' };
-    biliPlayer.quality = 0;
+    // 番剧也照设置里的默认画质来；PGC 那边 quality=0 表示「能看的最高」。
+    const quality = defaultBiliQuality();
+    biliPlayer.quality = quality;
     openBiliPlayer(biliPlayer.track);
     showBiliOverlay('loading');
     let result = null;
     try {
-        result = await state.api.get_bili_bangumi_streams(seasonId, episodeId, 0);
+        result = await state.api.get_bili_bangumi_streams(seasonId, episodeId, quality);
     } catch (err) {
         result = null;
     }

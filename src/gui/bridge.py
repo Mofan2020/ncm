@@ -2126,6 +2126,10 @@ class GuiBridge:
         """The Bilibili partitions, with the id and the name of each one."""
         return self.bilibili.partitions()
 
+    def search_bilibili_pgc(self, keyword: str = "", page: int = 1) -> dict[str, Any]:
+        """Search the Bilibili PGC catalogue (番剧 / 国创 / 影视)."""
+        return self.bilibili.search_pgc(keyword, page=page)
+
     def get_bilibili_popular(self, rid: int = 28, page: int = 1,
                               page_size: int = 30) -> dict[str, Any]:
         """The hot list of a Bilibili partition."""

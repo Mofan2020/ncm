@@ -273,3 +273,43 @@ B 站的读接口在 `src/core/bili_cache.py` 里按类型分开缓存，寿命�
 
 `track_payload` 多带了一个 `aid`：收藏夹的批量接口要 aid 列表，只有 bvid 拼不出
 `resources`。
+
+## 聚合搜索要搜 PGC：番剧 / 影视 单独一条搜索
+
+主站搜索（`search_type=video`）只回 UGC 稿件。搜「进击的巨人」得到一堆二创，
+正片一条没有——所以「能播番剧」和「能搜到番剧」是两件事，别只做前者。
+
+PGC 在两个搜索类型后面，都要问，按 `season_id` 去重（同一部剧两边都可能出现）：
+
+| search_type | 内容 |
+|---|---|
+| `media_bangumi` | 番剧 / 国创 / 动画 |
+| `media_ft` | 影视：电影、剧集、纪录片、综艺 |
+
+走的是同一个 `/x/web-interface/wbi/search/type`，一样要 wbi 签名。条目里的字段：
+
+- `title` 带 `<em class="keyword">` 高亮标签，**必须剥掉**，否则列表上显示 HTML 源码；
+- `season_id` 才是播放用的 id（`bangumi_streams` 要它），`media_id` 是另一套编号；
+- 评分在 `media_score.score` / `media_score.user_count`，不在顶层；
+- `index_show`（"全15话"）、`season_type_name`（"国创"）、`styles`、`areas` 用来做副标题；
+- 没有 `season_id` 的条目播放不了，直接丢掉。
+
+播放入口：搜索结果点开先把剧集列表拉出来（`pgc/view/web/season` 的 `episodes`），
+选哪集播哪集；不要盲点就播最新一集。
+
+**漫画（manga）不在这条线上。** `manga.bilibili.com` 是独立站点、独立接口
+（`twirp/comic.v1.Comic/Search`），裸请求回 `code 99`（要它自己的设备凭据），
+而且应用里没有漫画阅读器，就算搜到也只能丢给浏览器。所以聚合搜索里没有漫画。
+
+## 播放画质：请求的、实际在播的，要分开
+
+`video_streams` / `bangumi_streams` 现在都回 `requested_quality` 和
+`picked_quality`。前者是调用方要的，后者是 `_pick_video` 真正选中的那一条
+（≤ 请求值里最高的）。
+
+界面拿它做两件事：请求 1080P 而视频最高 720P 时，下拉框显示 720P 而不是
+「自动」；只有真的请求了 0（自动）才显示「自动」。
+
+还有一处更早的错：设置里的 `bili.quality` 只被下载读过，播放的三个入口
+（内联播放器、独立窗口、番剧）全部写死传 0，所以设成什么都不生效、
+看起来像没保存。三个入口现在都走同一个 `defaultBiliQuality()`。

@@ -676,6 +676,36 @@ class BilibiliBridge:
         }
 
     # ---------------------------------------------------------------- playback
+    def search_pgc(self, keyword: str = "", page: int = 1,
+                   page_size: int = 20) -> dict[str, Any]:
+        """Search the PGC catalogue (番剧 / 国创 / 影视), playable by season."""
+        try:
+            items = self._client.search_pgc(keyword, page=page, page_size=page_size)
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            log.warning("bilibili search_pgc failed: %s", exc)
+            return {"success": False, "items": [], "count": 0,
+                    "message": "搜索失败，请稍后再试"}
+        rows = []
+        for item in items or []:
+            if not isinstance(item, dict) or not item.get("season_id"):
+                continue
+            rows.append({
+                "kind": "pgc",
+                "type": str(item.get("type") or "bangumi"),
+                "season_id": _as_int(item.get("season_id"), 0),
+                "media_id": _as_int(item.get("media_id"), 0),
+                "title": str(item.get("title") or ""),
+                "cover": str(item.get("cover") or ""),
+                "url": str(item.get("url") or ""),
+                "index_show": str(item.get("index_show") or ""),
+                "season_type_name": str(item.get("season_type_name") or ""),
+                "styles": list(item.get("styles") or []),
+                "areas": list(item.get("areas") or []),
+                "score": float(item.get("score") or 0),
+                "is_follow": bool(item.get("is_follow")),
+            })
+        return {"success": True, "keyword": keyword, "items": rows, "count": len(rows)}
+
     def video_streams(self, bvid: str, quality: int = 0) -> dict[str, Any]:
         """The playable streams of one video.
 

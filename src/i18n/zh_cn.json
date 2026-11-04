@@ -744,6 +744,8 @@
     "source_all": "全部",
     "source_netease": "网易云",
     "source_bili": "B站",
+    "pgc_badge": "B站番剧",
+    "pgc_score": "评分 {score}",
     "category_all": "全部",
     "category_song": "歌曲",
     "category_playlist": "歌单",

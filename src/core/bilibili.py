@@ -219,6 +219,14 @@ BILI_MUSIC_RIDS = frozenset({28, 29})
 #: :meth:`BiliClient.search` as the ``category`` argument.
 _RID_CATEGORY = {rid: key for key, rid in BILI_RIDS.items()}
 
+#: The two search types the PGC catalogue is behind, with the label the
+#: frontend groups them by.  ``media_bangumi`` covers 番剧 / 国创 / 动画,
+#: ``media_ft`` covers 影视（电影、剧集、纪录片、综艺）.
+PGC_SEARCH_TYPES: tuple[tuple[str, str], ...] = (
+    ("media_bangumi", "bangumi"),
+    ("media_ft", "cinema"),
+)
+
 #: Official 64-slot permutation table (``API.md`` §5.1).
 MIXIN_PERMUTE = (
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
@@ -768,6 +776,75 @@ class BiliClient:
             return []
         items = [self._from_search_item(item) for item in result if isinstance(item, dict)]
         return [item for item in items if item.get("bvid")]
+
+    def search_pgc(
+        self,
+        keyword: str,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search the PGC catalogue: 番剧 / 国创 / 动画 与 影视.
+
+        主站搜索（``search_type=video``）只回 UGC 稿件，番剧、电影、国创这些
+        PGC 内容根本不在里面——搜「进击的巨人」得到一堆二创，正片一条没有。
+
+        PGC 分两个搜索类型：``media_bangumi``（番剧 / 国创 / 电影之外的自制）
+        与 ``media_ft``（影视：电影、剧集、纪录片、综艺）。两条都问，按
+        ``season_id`` 去重——同一部剧在两条里都可能出现。
+
+        条目里的 ``title`` 带 ``<em class="keyword">`` 高亮标签，必须剥掉，
+        否则列表上显示的是 HTML 源码。
+        """
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return []
+        self._ensure_buvid()
+        mixin = self._ensure_mixin_key()
+        results: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for search_type, kind in PGC_SEARCH_TYPES:
+            params: dict[str, Any] = {
+                "search_type": search_type,
+                "keyword": keyword,
+                "page": max(1, int(page)),
+                "page_size": max(1, min(int(page_size), 20)),
+                "order": "totalrank",
+            }
+            params = sign_params(params, mixin)
+            payload = self._get("/x/web-interface/wbi/search/type", params)
+            if not payload or payload.get("code") != 0:
+                # 一条失败不影响另一条：番剧搜不到时影视还得出来。
+                continue
+            data = payload.get("data") or {}
+            raw = data.get("result")
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                season_id = _as_int(item.get("season_id") or item.get("pgc_season_id"))
+                if not season_id or season_id in seen:
+                    continue
+                seen.add(season_id)
+                score = item.get("media_score")
+                score = score if isinstance(score, dict) else {}
+                results.append({
+                    "kind": "pgc",
+                    "type": kind,
+                    "season_id": season_id,
+                    "media_id": _as_int(item.get("media_id")),
+                    "title": _strip_html(str(item.get("title") or "")),
+                    "cover": _absolute_url(item.get("cover")),
+                    "url": _absolute_url(item.get("url")),
+                    "index_show": str(item.get("index_show") or ""),
+                    "season_type_name": str(item.get("season_type_name") or ""),
+                    "styles": [part for part in str(item.get("styles") or "").split("/") if part],
+                    "areas": [part for part in str(item.get("areas") or "").split("/") if part],
+                    "score": float(score.get("score") or 0),
+                    "media_type": _as_int(item.get("media_type")),
+                    "is_follow": bool(item.get("is_follow")),
+                })
+        return results
 
     def video(self, bvid: str) -> dict[str, Any]:
         """Return the details of one video, or ``{}`` when it is unavailable."""
@@ -1563,6 +1640,8 @@ class BiliClient:
             "author_mid": "",
             "cover": "",
             "qualities": [],
+            "picked_quality": 0,
+            "requested_quality": 0,
             "audio": None,
             "video": None,
             "muxed": None,
@@ -1618,6 +1697,13 @@ class BiliClient:
         video_entries = [item for item in (dash.get("video") or []) if isinstance(item, dict)]
         chosen = self._pick_video(video_entries, quality)
         result["video"] = self._stream_payload(chosen, with_video=True)
+        # 真正选中的画质。请求 1080P 而这条视频最高只有 720P 时，播放器的
+        # 下拉框应该显示 720P，而不是继续写着「自动」——用户看到「自动」
+        # 只会以为设置没生效。
+        result["requested_quality"] = int(quality or 0)
+        result["picked_quality"] = int((chosen or {}).get("id") or 0)
+        if not result["picked_quality"]:
+            result["picked_quality"] = int(data.get("quality") or 0)
         got_ids = {int(item.get("id") or 0) for item in video_entries if item.get("id")}
         result["qualities"] = self._build_qualities(data, got_ids)
 
@@ -3628,6 +3714,8 @@ class BiliClient:
             "title": "",
             "duration": 0,
             "qualities": [],
+            "picked_quality": 0,
+            "requested_quality": 0,
             "audio": None,
             "video": None,
             "muxed": None,
@@ -3672,6 +3760,13 @@ class BiliClient:
         video_entries = [item for item in (dash.get("video") or []) if isinstance(item, dict)]
         chosen = self._pick_video(video_entries, quality)
         result["video"] = self._stream_payload(chosen, with_video=True)
+        # 真正选中的画质。请求 1080P 而这条视频最高只有 720P 时，播放器的
+        # 下拉框应该显示 720P，而不是继续写着「自动」——用户看到「自动」
+        # 只会以为设置没生效。
+        result["requested_quality"] = int(quality or 0)
+        result["picked_quality"] = int((chosen or {}).get("id") or 0)
+        if not result["picked_quality"]:
+            result["picked_quality"] = _as_int(block.get("quality"))
         result["audio"] = self._pick_audio(dash.get("audio") or [])
         flac_section = (dash.get("flac") or {}).get("audio") or []
         dolby_section = (dash.get("dolby") or {}).get("audio") or []
