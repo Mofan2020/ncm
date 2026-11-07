@@ -12526,6 +12526,9 @@ function bindSectionEvents() {
     }
     const favMore = document.getElementById('btn-bili-fav-more');
     if (favMore) favMore.addEventListener('click', () => loadBiliFavoriteVideos(false));
+    // 订阅的合集一页只有 20 条，要能往下翻。
+    const collectionsMore = document.getElementById('btn-bili-collection-more');
+    if (collectionsMore) collectionsMore.addEventListener('click', loadMoreBiliCollections);
     const historyMore = document.getElementById('btn-bili-history-more');
     if (historyMore) historyMore.addEventListener('click', () => loadBiliHistory(false));
 
@@ -12683,7 +12686,17 @@ function updateSearchButton() {
  * ====================================================================== */
 
 /** Which of the three the favourites page is showing. */
-const biliFavSeg = { kind: 'folders', collections: [], bangumi: [], loading: false, error: '' };
+const biliFavSeg = {
+    kind: 'folders',
+    collections: [],
+    // 订阅的合集要翻页：一页只有 20 条，这个账号有 65 个。
+    collectionPage: 1,
+    collectionHasMore: false,
+    collectionTotal: 0,
+    bangumi: [],
+    loading: false,
+    error: ''
+};
 
 /** Switch between the folders, the collections and the bangumi. */
 function setBiliFavSegment(seg) {
@@ -12772,12 +12785,42 @@ async function loadBiliCollections(force) {
         const result = await state.api.get_bili_subscribed_collections();
         if (result && result.success) {
             biliFavSeg.collections = result.collections || [];
+            biliFavSeg.collectionPage = 1;
+            biliFavSeg.collectionHasMore = !!result.has_more;
+            biliFavSeg.collectionTotal = Number(result.total) || 0;
         } else {
             biliFavSeg.collections = [];
+            biliFavSeg.collectionHasMore = false;
             biliFavSeg.error = (result && result.message) || t('error.network');
         }
     } catch (err) {
         biliFavSeg.collections = [];
+        biliFavSeg.collectionHasMore = false;
+        biliFavSeg.error = t('error.network');
+    }
+    biliFavSeg.loading = false;
+    renderBiliCollections();
+}
+
+/** Read the next page of the subscribed collections. */
+async function loadMoreBiliCollections() {
+    if (biliFavSeg.loading || !biliFavSeg.collectionHasMore) return;
+    biliFavSeg.loading = true;
+    renderBiliCollections();
+    try {
+        const page = biliFavSeg.collectionPage + 1;
+        const result = await state.api.get_bili_subscribed_collections(page);
+        if (result && result.success) {
+            const items = result.collections || [];
+            items.forEach((item) => biliFavSeg.collections.push(item));
+            biliFavSeg.collectionPage = page;
+            biliFavSeg.collectionHasMore = !!result.has_more;
+        } else {
+            biliFavSeg.collectionHasMore = false;
+            biliFavSeg.error = (result && result.message) || t('error.network');
+        }
+    } catch (err) {
+        biliFavSeg.collectionHasMore = false;
         biliFavSeg.error = t('error.network');
     }
     biliFavSeg.loading = false;
@@ -12787,9 +12830,14 @@ async function loadBiliCollections(force) {
 function renderBiliCollections() {
     const grid = document.getElementById('bili-collection-results');
     const stateEl = document.getElementById('bili-collection-state');
+    const more = document.getElementById('btn-bili-collection-more');
     if (!grid) return;
     grid.innerHTML = '';
     if (stateEl) stateEl.textContent = biliFavSeg.loading ? t('common.loading') : '';
+    if (more) {
+        more.hidden = !biliFavSeg.collectionHasMore || biliFavSeg.loading;
+        more.disabled = biliFavSeg.loading;
+    }
     if (!biliFavSeg.loading && biliFavSeg.error) {
         if (stateEl) stateEl.textContent = biliFavSeg.error;
         return;

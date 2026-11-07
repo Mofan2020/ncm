@@ -137,8 +137,23 @@ class FakeSession:
                     raise payload
                 return FakeResponse(payload)
         if self.default is not None:
-            if isinstance(self.default, Exception):
-                raise self.default
+            if isinstance(default_exc := self.default, Exception):
+                raise default_exc
+            return FakeResponse(self.default)
+        return FakeResponse({"code": -404, "message": "no route"}, status_code=404)
+
+    def post(self, url, data=None, headers=None, timeout=None):
+        """写操作：收藏、取消收藏、移出。"""
+        self.calls.append({"url": url, "params": dict(data or {}), "headers": headers,
+                           "timeout": timeout})
+        for fragment, payload in self.routes.items():
+            if fragment in url:
+                if isinstance(payload, Exception):
+                    raise payload
+                return FakeResponse(payload)
+        if self.default is not None:
+            if isinstance(default_exc := self.default, Exception):
+                raise default_exc
             return FakeResponse(self.default)
         return FakeResponse({"code": -404, "message": "no route"}, status_code=404)
 
@@ -466,3 +481,173 @@ def test_the_source_methods_exist_on_the_bridge(method, arguments):
     answer = getattr(source, method)(*arguments)
     assert isinstance(answer, dict)
     assert "success" in answer
+
+
+# ------------------------------------------------------- 缓存与它的失效
+# 收藏夹、账号信息、合集都要缓存，但写操作之后必须真的清掉——
+# 否则用户收藏了新视频，看到的还是收藏前的列表。
+
+class FakeMetaCache:
+    """假的磁盘缓存：记住写进去的东西。"""
+
+    def __init__(self) -> None:
+        self.items: dict[tuple[str, str], object] = {}
+
+    def get(self, kind: str, key: str):
+        return self.items.get((kind, key))
+
+    def set(self, kind: str, key: str, value, ttl: float) -> None:
+        self.items[(kind, key)] = value
+
+    def discard(self, kind: str, key: str) -> None:
+        self.items.pop((kind, key), None)
+
+    def discard_prefix(self, kind: str, prefix: str) -> int:
+        gone = 0
+        for entry in list(self.items):
+            if entry[0] == kind and entry[1].startswith(prefix):
+                del self.items[entry]
+                gone += 1
+        return gone
+
+    def clear(self, kind: str | None = None) -> int:
+        gone = 0
+        for entry in list(self.items):
+            if kind is None or entry[0] == kind:
+                del self.items[entry]
+                gone += 1
+        return gone
+
+
+LOGGED_IN_NAV = {
+    "code": 0,
+    "data": {
+        "isLogin": True,
+        "mid": 1946836486,
+        "uname": "深空遗尘",
+        "face": "https://i0.hdslb.com/bfs/face/owner.jpg",
+        "level_info": {"current_level": 6},
+        "vipStatus": 1,
+        "vipLabel": "年度大会员",
+        "money": 42,
+    },
+}
+
+FAVORITE_ROUTES = {
+    "/x/web-interface/nav": LOGGED_IN_NAV,
+    # 写操作之前要先问一次视频详情拿 aid。
+    "/x/web-interface/view": {
+        "code": 0,
+        "data": {"bvid": "BV1EHbhz6EHw", "aid": 11,
+                 "title": "收藏的视频", "pic": "//i0.hdslb.com/bfs/archive/v.jpg"},
+    },
+    "/x/v3/fav/folder/created/list-all": {
+        "code": 0,
+        "data": {"list": [{"id": "1331779786", "title": "默认收藏夹",
+                           "media_count": 383,
+                           "cover": "http://archive.biliimg.com/bfs/archive/c.jpg"}]},
+    },
+    "/x/v3/fav/resource/list": {
+        "code": 0,
+        "data": {"medias": [{"id": 11, "bvid": "BV1EHbhz6EHw", "title": "收藏的视频",
+                             "cover": "http://archive.biliimg.com/bfs/archive/v.jpg",
+                             "duration": 294, "upper": {"mid": 7, "name": "UP"}}],
+                 "has_more": False},
+    },
+    # 三个写操作的路由。
+    "/x/v3/fav/resource/deal": {"code": 0, "data": {}},
+    "/x/v3/fav/resource/move": {"code": 0, "data": {}},
+    "/x/v3/fav/resource/copy": {"code": 0, "data": {}},
+    "/x/v3/fav/resource/batch-del": {"code": 0, "data": {}},
+}
+
+
+def make_cached_bridge(routes=None):
+    """一个用假缓存的 bridge。"""
+    bridge, session = make_bridge(routes or FAVORITE_ROUTES)
+    bridge._cache._cache = FakeMetaCache()
+    return bridge, session
+
+
+def test_the_account_is_cached_and_the_cache_is_dropped_on_a_refresh():
+    bridge, session = make_cached_bridge()
+    bridge._client.set_cookie("SESSDATA=x; DedeUserID=1946836486")
+
+    first = bridge.account()
+    assert first["logged_in"] is True
+    assert first["uname"] == "深空遗尘"
+    assert first["face"] == "https://i0.hdslb.com/bfs/face/owner.jpg"
+
+    # 第二次不打网络
+    calls_after_first = len(session.calls)
+    second = bridge.account()
+    assert second["uname"] == "深空遗尘"
+    assert len(session.calls) == calls_after_first
+
+    # 用户点了刷新：必须真的去问一次
+    bridge.account(refresh=True)
+    assert len(session.calls) > calls_after_first
+
+
+def test_the_logout_drops_the_account_cache():
+    """登出后留着缓存，下一个登录的人会看到上一个人的头像。"""
+    bridge, _session = make_cached_bridge()
+    bridge._client.set_cookie("SESSDATA=x; DedeUserID=1946836486")
+    bridge.account()
+    assert bridge._cache.get("account", "current") is not None
+
+    bridge.logout()
+
+    assert bridge._cache.get("account", "current") is None
+
+
+def test_favouriting_a_video_drops_the_folder_cache():
+    """收藏完必须重取收藏夹，否则界面显示的还是收藏前的列表。"""
+    bridge, _session = make_cached_bridge()
+    bridge._client.set_cookie("SESSDATA=x; DedeUserID=1946836486")
+    bridge.favorites()
+    bridge.favorite_videos("1331779786")
+    assert bridge._cache.get("folders", "all") is not None
+    assert bridge._cache.get("folder_items", "1331779786|1|30") is not None
+
+    bridge.favorite_video("BV1EHbhz6EHw", "1331779786")
+
+    assert bridge._cache.get("folders", "all") is None
+    assert bridge._cache.get("folder_items", "1331779786|1|30") is None
+
+
+def test_favouriting_into_several_folders_drops_the_cache_too():
+    """批量收藏走的是另一个接口，它也得清缓存。"""
+    bridge, _session = make_cached_bridge()
+    bridge._client.set_cookie("SESSDATA=x; DedeUserID=1946836486")
+    bridge.favorites()
+    bridge.favorite_videos("1331779786")
+
+    bridge.favorite_video_multi("BV1EHbhz6EHw", ["1331779786"], [])
+
+    assert bridge._cache.get("folders", "all") is None
+    assert bridge._cache.get("folder_items", "1331779786|1|30") is None
+
+
+def test_moving_a_video_drops_the_cache_too():
+    bridge, _session = make_cached_bridge()
+    bridge._client.set_cookie("SESSDATA=x; DedeUserID=1946836486")
+    bridge.favorites()
+    bridge.favorite_videos("1331779786")
+
+    bridge.favorite_move("1331779786", "4059050486", [11])
+
+    assert bridge._cache.get("folders", "all") is None
+    assert bridge._cache.get("folder_items", "1331779786|1|30") is None
+
+
+def test_removing_a_video_drops_the_cache_too():
+    bridge, _session = make_cached_bridge()
+    bridge._client.set_cookie("SESSDATA=x; DedeUserID=1946836486")
+    bridge.favorites()
+    bridge.favorite_videos("1331779786")
+
+    bridge.favorite_batch_delete("1331779786", [11])
+
+    assert bridge._cache.get("folders", "all") is None
+    assert bridge._cache.get("folder_items", "1331779786|1|30") is None

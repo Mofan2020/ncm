@@ -313,11 +313,37 @@ class BilibiliBridge:
 
     # ----------------------------------------------------------------- account
     def account(self, refresh: bool = False) -> dict[str, Any]:
-        """The account information of the signed-in Bilibili user."""
-        if self._session is not None:
+        """The account information of the signed-in Bilibili user.
+
+        头像、昵称、等级这些几乎不变，所以走磁盘缓存（10 分钟）。
+        ``refresh=True`` 是用户点了「刷新」——那时必须真的去问一次，
+        缓存不能拦着。
+
+        缓存里只放慢变的那几样：硬币余额和会员状态是会变的，但它们本来
+        也不来自 /nav（/nav 只给等级），而且各自有专门的接口，
+        这里沿用 /nav 的那份，避免多打一次请求。
+        """
+        if refresh:
+            self._cache.invalidate_account()
+        cached = None
+        if not refresh:
+            cached = self._cache.get("account", "current")
+        if isinstance(cached, dict) and cached:
+            info = cached
+        elif self._session is not None:
             info = self._session.account_info(refresh=refresh)
         else:
             info = self._client.account_info()
+        if info.get("logged_in"):
+            self._cache.set("account", "current", {
+                "logged_in": True,
+                "mid": str(info.get("mid") or ""),
+                "uname": str(info.get("uname") or ""),
+                "face": str(info.get("face") or ""),
+                "level": _as_int(info.get("level"), 0),
+                "vip_status": _as_int(info.get("vip_status"), 0),
+                "vip_label": str(info.get("vip_label") or ""),
+            })
         return {
             "success": True,
             "logged_in": bool(info.get("logged_in")),
@@ -338,6 +364,12 @@ class BilibiliBridge:
         self._session.save(cookie)
         if self._media is not None:
             self._session.apply_to_media(self._media)
+        # 登录成功 = 换了个人。旧账号的缓存必须全清，否则新账号进来
+        # 看到的是上一个人的头像、收藏夹和合集。
+        self._cache.invalidate_account()
+        self._cache.invalidate_folders()
+        self._cache.invalidate_collections()
+        self._cache.invalidate_bangumi()
 
     def login_qrcode(self) -> dict[str, Any]:
         """Ask for a login QR code."""
@@ -468,6 +500,12 @@ class BilibiliBridge:
             self._session.clear()
             if self._media is not None:
                 self._session.apply_to_media(self._media)
+        # 登出后账号缓存必须清掉：留着的话下一个登录的人会看到
+        # 上一个人的头像和昵称。
+        self._cache.invalidate_account()
+        self._cache.invalidate_folders()
+        self._cache.invalidate_collections()
+        self._cache.invalidate_bangumi()
         return {
             "success": True,
             "message": str(result.get("message") or ""),
@@ -475,21 +513,35 @@ class BilibiliBridge:
 
     # --------------------------------------------------------------- favorites
     # ------------------------------------------- 合集 / 追番 / 番剧 / 动态
-    def subscribed_collections(self) -> dict[str, Any]:
+    def subscribed_collections(self, page: int = 1,
+                               page_size: int = 20) -> dict[str, Any]:
         """The UGC collections the signed-in user follows.
 
         Not the favourites: a collection (合集) is a series of videos an
         uploader put together, and following it is what keeps new episodes
         coming.  The favourites are a separate list, in :meth:`favorites`.
+
+        ``page`` walks the list: the first page alone hides most of it
+        (this account has 65 collections, a page holds 20).
         """
         if not self._client.is_logged_in:
             return {"success": False, "code": CODE_NOT_LOGGED_IN,
-                    "collections": [], "count": 0, "message": "没有登录 B站"}
+                    "collections": [], "count": 0, "has_more": False,
+                    "page": 1, "total": 0, "message": "没有登录 B站"}
+        page_number = max(1, _as_int(page, 1))
+        size = max(1, min(_as_int(page_size, 20), 40))
+        cache_key = f"{page_number}|{size}"
         try:
-            raw = self._client.subscribed_collections() or []
+            result, _cached = self._cache.remember(
+                "collections", cache_key,
+                lambda: self._client.subscribed_collections(
+                    page=page_number, page_size=size) or {},
+            )
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             log.warning("bilibili collections failed: %s", exc)
-            return {"success": False, "collections": [], "count": 0, "message": str(exc)}
+            return {"success": False, "collections": [], "count": 0,
+                    "has_more": False, "page": page_number, "total": 0,
+                    "message": str(exc)}
         rows = [
             {
                 "id": str(item.get("id") or ""),
@@ -501,9 +553,17 @@ class BilibiliBridge:
                 "description": str(item.get("description") or ""),
                 "url": str(item.get("url") or ""),
             }
-            for item in raw if isinstance(item, dict)
+            for item in (result.get("items") or []) if isinstance(item, dict)
         ]
-        return {"success": True, "collections": rows, "count": len(rows), "message": ""}
+        return {
+            "success": True,
+            "collections": rows,
+            "count": len(rows),
+            "has_more": bool(result.get("has_more")),
+            "page": _as_int(result.get("page"), page_number),
+            "total": _as_int(result.get("total"), len(rows)),
+            "message": "",
+        }
 
     def bangumi(self) -> dict[str, Any]:
         """The anime the signed-in user follows (追番).
@@ -515,7 +575,9 @@ class BilibiliBridge:
             return {"success": False, "code": CODE_NOT_LOGGED_IN,
                     "shows": [], "count": 0, "message": "没有登录 B站"}
         try:
-            raw = self._client.bangumi() or []
+            raw, _cached = self._cache.remember(
+                "bangumi", "all", lambda: self._client.bangumi() or [],
+            )
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             log.warning("bilibili bangumi failed: %s", exc)
             return {"success": False, "shows": [], "count": 0, "message": str(exc)}
@@ -858,6 +920,11 @@ class BilibiliBridge:
         result = self._call_core("favorite_video_multi",
                                  self._client.favorite_video_multi,
                                  bvid, add_folder_ids, remove_folder_ids)
+        if result.get("success"):
+            # 收藏夹里的内容变了：列表和条目都得重取，
+            # 否则用户收藏完看到的还是收藏前的列表。
+            self._cache.invalidate_folders()
+            self._cache.discard("stat", str(bvid or ""))
         return {"success": bool(result.get("success")),
                 "message": str(result.get("message") or ""),
                 "folder_ids": list(result.get("folder_ids") or [])}
@@ -867,6 +934,8 @@ class BilibiliBridge:
         """Move (or copy) videos from one favourite folder into another."""
         result = self._call_core("favorite_move", self._client.favorite_move,
                                  src_folder_id, target_folder_id, aids, copy)
+        if result.get("success"):
+            self._cache.invalidate_folders()
         return {"success": bool(result.get("success")),
                 "count": _as_int(result.get("count"), 0),
                 "message": str(result.get("message") or "")}
@@ -877,6 +946,8 @@ class BilibiliBridge:
         result = self._call_core("favorite_batch_delete",
                                  self._client.favorite_batch_delete,
                                  folder_id, aids)
+        if result.get("success"):
+            self._cache.invalidate_folders()
         return {"success": bool(result.get("success")),
                 "count": _as_int(result.get("count"), 0),
                 "message": str(result.get("message") or "")}

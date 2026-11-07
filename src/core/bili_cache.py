@@ -49,6 +49,13 @@ BILI_TTL: dict[str, float] = {
     "stat": 300.0,            # 视频统计数字
     "streams": 600.0,         # 播放地址
     "follow": 300.0,          # 关注状态
+    # 头像、昵称、等级：几乎不变的东西。改了昵称用户自己也知道，
+    # 为了看一个新头像每次都打一次 /nav 不值当。10 分钟足够。
+    "account": 600.0,
+    # 订阅的合集、追的番剧：都是「关注列表」，变动很慢，
+    # 但也不是永远不变——用户新订阅一个合集后要能看见。
+    "collections": 600.0,
+    "bangumi": 600.0,
 }
 
 #: 缓存的存放目录名（和网易云的分开，清缓存时可以分开清）。
@@ -130,9 +137,26 @@ class BiliCache:
         self.discard_prefix("danmaku", f"{bvid}|")
 
     def invalidate_folders(self) -> None:
-        """The favourite folders changed."""
+        """The favourite folders changed.
+
+        **收藏夹列表和收藏夹里的内容都要扔掉**：只扔列表不够——
+        用户刚收藏了一个新视频，列表里的旧条目还带着「不在这个收藏夹里」
+        的状态，界面就会显示成「收藏没生效」。
+        """
         self.discard_prefix("folders", "")
         self.discard_prefix("folder_items", "")
+
+    def invalidate_account(self) -> None:
+        """The signed-in account changed (login, logout, another profile)."""
+        self.discard("account", "current")
+
+    def invalidate_collections(self) -> None:
+        """The subscribed collections changed."""
+        self.discard_prefix("collections", "")
+
+    def invalidate_bangumi(self) -> None:
+        """The followed anime changed."""
+        self.discard_prefix("bangumi", "")
 
     def invalidate_space(self, mid: str) -> None:
         """An uploader's profile changed."""

@@ -394,6 +394,12 @@ class _Handler(BaseHTTPRequestHandler):
         first host that actually answers with data wins, and the winner is
         remembered for the rest of the file so the following range requests
         do not probe the dead node again.
+
+        **图片（封面、头像）走磁盘缓存**：它们和网易云的封面一个待遇。
+        收藏夹、动态、合集这些页面一次要几十张图，每次都从 CDN 重下
+        一遍，翻个页面就是几十个请求。缓存命中直接回本地字节。
+        媒体流（视频/音频）不缓存——它们带 Range、几百兆，缓存下来
+        既占地方又会把带签名的地址钉死。
         """
         candidates: list[str] = []
         for raw in [url] + list(alts or []):
@@ -401,6 +407,9 @@ class _Handler(BaseHTTPRequestHandler):
                 candidates.append(raw)
         if not candidates:
             self._error(403, "url not allowed")
+            return
+        if not self.headers.get("Range") and _is_bili_image_url(url):
+            self._bili_image(url, candidates, send_body)
             return
         key = _bili_stream_key(candidates[0])
         candidates = self.media.bili_failover_order(key, candidates[:MAX_BILI_CANDIDATES])
@@ -484,6 +493,58 @@ class _Handler(BaseHTTPRequestHandler):
             self.close_connection = True
         finally:
             response.close()
+
+    def _bili_image(self, url: str, candidates: list[str], send_body: bool) -> None:
+        """Serve a Bilibili picture, from the disk cache when possible.
+
+        The pictures (covers, avatars) live on ``*.hdslb.com``.  They never
+        change under the same url, so they are worth keeping: a favourites
+        page shows dozens of them and re-downloading each one on every
+        visit is both slow and rude to the CDN.
+
+        The bytes are stored under the same cover cache the NetEase
+        pictures use, keyed by the url, so "clear the covers" in the
+        settings clears these too.
+        """
+        ext = _bili_image_ext(url)
+        cached = self.media.cached_cover(url, ext)
+        if cached is not None:
+            data, mime = cached
+            self._send_cover_bytes(data, mime, send_body)
+            return
+
+        headers = dict(_BILI_HEADERS)
+        cookie = self.media.bili_cookie
+        if cookie:
+            headers["Cookie"] = cookie
+        response = None
+        for candidate in candidates:
+            try:
+                attempt = self.media.session.get(candidate, headers=headers,
+                                                 timeout=(10, 20))
+            except (requests.exceptions.RequestException, OSError) as exc:
+                log.info("bilibili image unreachable (%s): %s",
+                         _host_of(candidate), exc)
+                continue
+            if attempt.status_code == 200 and attempt.content:
+                response = attempt
+                break
+            attempt.close()
+        if response is None:
+            self._error(502, "upstream error")
+            return
+        try:
+            data = response.content
+            mime = response.headers.get("content-type", f"image/{ext}").split(";")[0]
+        finally:
+            response.close()
+        if not data:
+            self._error(502, "upstream refused")
+            return
+        # Persist for next time.  A failure here must not break the answer
+        # we are about to send.
+        self.media.write_cover_cache(url, data, mime)
+        self._send_cover_bytes(data, mime, send_body)
 
     def _background(self, send_body: bool) -> None:
         """Serve the wallpaper, downscaled to what the UI can actually show.
@@ -705,6 +766,44 @@ def _is_bili_url(url: str) -> bool:
     host = (parsed.hostname or "").lower()
     return any(host == suffix[1:] or host.endswith(suffix)
                for suffix in _BILI_HOST_SUFFIXES)
+
+
+#: The picture suffixes B站 serves its covers and avatars with.
+_BILI_IMAGE_EXTS = ("jpg", "jpeg", "png", "webp", "gif", "bmp")
+
+
+def _bili_image_ext(url: str) -> str:
+    """The picture suffix of a Bilibili url, ``jpg`` when it has none.
+
+    B站's avatar urls have no suffix at all (``/bfs/face/xxx.jpg`` usually
+    does, but the ``/bfs/garb/`` ones do not), so the fallback matters.
+    """
+    try:
+        path = urlparse(str(url or "")).path
+    except ValueError:
+        return "jpg"
+    name = path.rsplit("/", 1)[-1].lower()
+    if "." in name:
+        candidate = name.rsplit(".", 1)[-1]
+        if candidate in _BILI_IMAGE_EXTS:
+            return "jpg" if candidate == "jpeg" else candidate
+    return "jpg"
+
+
+def _is_bili_image_url(url: str) -> bool:
+    """Whether a Bilibili url points at a picture rather than a media file.
+
+    The host decides: the covers and the avatars live on ``*.hdslb.com``,
+    while the streams live on ``*.bilivideo.com``.  Judging by the host
+    and not by the suffix keeps a stream that happens to end in ``.jpg``
+    out of the cache.
+    """
+    try:
+        parsed = urlparse(str(url or ""))
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host.endswith(".hdslb.com") or host == "hdslb.com"
 
 
 def _cover_url_candidates(url: str) -> list[str]:

@@ -25,6 +25,16 @@
     --surface-strong: rgba(255, 255, 255, 0.78);
     --border: rgba(255, 255, 255, 0.7);
 
+    /* --panel / --line / --panel-2 are the *opaque* panel colours: the
+       places that sit on top of the glass and must not inherit its
+       translucency (cards inside a modal, the video overlay, the dynamic
+       list).  They are defined per theme -- a hard-coded dark fallback
+       here is what made the account centre black-on-black in the light
+       theme. */
+    --panel: rgba(255, 255, 255, 0.86);
+    --panel-2: rgba(246, 247, 250, 0.9);
+    --line: rgba(16, 24, 40, 0.12);
+
     /* glass surfaces */
     --glass: var(--surface);
     --glass-strong: var(--surface-strong);
@@ -80,6 +90,10 @@
     --surface-strong: rgba(30, 33, 42, 0.8);
     --border: rgba(255, 255, 255, 0.12);
 
+    --panel: rgba(25, 28, 36, 0.92);
+    --panel-2: rgba(20, 22, 28, 0.9);
+    --line: rgba(255, 255, 255, 0.12);
+
     --bili-soft: rgba(251, 114, 153, 0.2);
     --card-lift: 0 2px 8px rgba(0, 0, 0, .45), 0 20px 44px rgba(0, 0, 0, .5);
     --glass-soft: rgba(35, 38, 48, 0.42);
@@ -102,6 +116,9 @@
     --border: rgba(0, 0, 0, 0.08);
     --glass-edge: rgba(255, 255, 255, 0.9);
     --glass-blur: 0px;
+    --panel: #ffffff;
+    --panel-2: #f6f7fa;
+    --line: rgba(0, 0, 0, 0.1);
 }
 /* Turning the glass off has to remove the backdrop filter **entirely**.
    `blur(0px) saturate(200%)` still makes the engine snapshot the backdrop
@@ -118,6 +135,9 @@
     --surface-strong: #1b1e26;
     --glass-soft: rgba(28, 31, 39, 0.96);
     --border: rgba(255, 255, 255, 0.12);
+    --panel: #1b1e26;
+    --panel-2: #181b22;
+    --line: rgba(255, 255, 255, 0.14);
 }
 
 * { box-sizing: border-box; }
@@ -2800,7 +2820,7 @@ input[type="range"]::-webkit-slider-thumb {
     width: min(320px, 42vw); max-height: 46vh; overflow-y: auto;
     display: flex; flex-direction: column; gap: 8px;
     padding: 12px 14px; border-radius: var(--radius-sm);
-    background: var(--panel, var(--bg-1)); border: 1px solid var(--glass-border);
+    background: var(--panel); border: 1px solid var(--glass-border);
     box-shadow: var(--shadow-lg, 0 12px 32px rgb(0 0 0 / 24%));
 }
 .bili-downloads-head { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
@@ -2860,8 +2880,8 @@ input[type="range"]::-webkit-slider-thumb {
     max-width: 80%;
     padding: 18px 22px;
     border-radius: 12px;
-    background: var(--panel, #191c24);
-    border: 1px solid var(--line, #272b36);
+    background: var(--panel);
+    border: 1px solid var(--line);
     text-align: center;
 }
 
@@ -2869,7 +2889,7 @@ input[type="range"]::-webkit-slider-thumb {
     width: 22px;
     height: 22px;
     border-radius: 50%;
-    border: 2px solid var(--line, #272b36);
+    border: 2px solid var(--line);
     border-top-color: var(--accent, #4d9bff);
     animation: bp-spin 0.8s linear infinite;
 }
@@ -2879,7 +2899,7 @@ input[type="range"]::-webkit-slider-thumb {
 .bili-video-wrap .bp-overlay-title {
     font-size: 14px;
     font-weight: 600;
-    color: var(--text, #e8eaf0);
+    color: var(--text);
 }
 
 .bili-video-wrap .bp-overlay[data-state="error"] .bp-overlay-title { color: #ff8f8f; }
@@ -2887,7 +2907,7 @@ input[type="range"]::-webkit-slider-thumb {
 .bili-video-wrap .bp-overlay-detail {
     font-size: 12px;
     line-height: 1.5;
-    color: var(--text-3, #767d8d);
+    color: var(--text-3);
 }
 
 .bili-video-wrap .bp-overlay-detail[hidden] { display: none; }
@@ -2925,8 +2945,8 @@ input[type="range"]::-webkit-slider-thumb {
     gap: 12px;
     padding: 16px;
     border-radius: 14px;
-    background: var(--panel, #191c24);
-    border: 1px solid var(--line, #272b36);
+    background: var(--panel);
+    border: 1px solid var(--line);
 }
 
 .ac-card-head {
@@ -2939,15 +2959,16 @@ input[type="range"]::-webkit-slider-thumb {
 .ac-card-title {
     font-size: 14px;
     font-weight: 600;
-    color: var(--text, #e8eaf0);
+    color: var(--text);
 }
 
 .ac-card-state {
     font-size: 12px;
     padding: 2px 8px;
     border-radius: 999px;
-    color: var(--text-3, #767d8d);
-    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-3);
+    /* 白底叠白在浅色主题下等于没有背景，--sunken 两套主题都合适。 */
+    background: var(--sunken);
 }
 
 .ac-card-state.is-on {
@@ -2968,7 +2989,7 @@ input[type="range"]::-webkit-slider-thumb {
     border-radius: 50%;
     object-fit: cover;
     flex: 0 0 auto;
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--sunken);
 }
 
 .ac-info { min-width: 0; }
@@ -2976,7 +2997,7 @@ input[type="range"]::-webkit-slider-thumb {
 .ac-name {
     font-size: 14px;
     font-weight: 600;
-    color: var(--text, #e8eaf0);
+    color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2984,7 +3005,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .ac-meta {
     font-size: 12px;
-    color: var(--text-3, #767d8d);
+    color: var(--text-3);
 }
 
 .ac-actions {
@@ -2998,7 +3019,7 @@ input[type="range"]::-webkit-slider-thumb {
     flex-direction: column;
     gap: 10px;
     padding-top: 12px;
-    border-top: 1px solid var(--line, #272b36);
+    border-top: 1px solid var(--line);
 }
 
 .ac-login[hidden] { display: none; }
@@ -3015,7 +3036,7 @@ input[type="range"]::-webkit-slider-thumb {
     height: 20px;
     border-radius: 50%;
     object-fit: cover;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--sunken);
 }
 
 .account-center-btn + .account-center-face { margin-left: -10px; }
@@ -3043,9 +3064,9 @@ input[type="range"]::-webkit-slider-thumb {
     padding: 4px 10px;
     font-size: 12px;
     border-radius: 999px;
-    border: 1px solid var(--line, #272b36);
+    border: 1px solid var(--line);
     background: none;
-    color: var(--text-2, #a4aab8);
+    color: var(--text-2);
     cursor: pointer;
 }
 

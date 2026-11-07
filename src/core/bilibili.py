@@ -3391,8 +3391,12 @@ class BiliClient:
             mid = str(self._cookie.get("DedeUserID") or "")
         return mid
 
-    def subscribed_collections(self) -> list[dict[str, Any]]:
-        """Return the UGC collections (合集) the signed in user subscribes to.
+    def subscribed_collections(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
+        """Return one page of the UGC collections (合集) the user subscribes to.
 
         合集是 UP 主在创作中心组织的视频分组，和收藏夹是两样东西：收藏夹
         是用户自己的列表，合集是挂在稿件下面的分组。
@@ -3413,13 +3417,23 @@ class BiliClient:
         字段上的坑：合集的 id 就是 ``id``（不是收藏夹那种 fid+mid 尾号），
         标题是 ``title``，视频数是 ``media_count``；退回去的那条接口则完全
         不同——``meta.name`` / ``meta.total``，两层结构都要认。
+
+        **必须翻页**：这个账号实测 ``count=65``，一页只有 20 条，只取第一页
+        就等于把四分之三的合集藏起来了。返回 ``has_more`` 让界面能继续加载。
+
+        返回 ``{"items": [...], "has_more": bool, "page": int, "total": int}``。
         """
+        page_number = max(1, int(page or 1))
+        size = max(1, min(int(page_size or 20), 40))
+        empty: dict[str, Any] = {
+            "items": [], "has_more": False, "page": page_number, "total": 0,
+        }
         mid = self._self_mid()
         if not mid:
-            return []
+            return empty
         payload = self._get(
             "/x/v3/fav/folder/collected/list",
-            {"up_mid": mid, "pn": 1, "ps": 20, "platform": "web"},
+            {"up_mid": mid, "pn": page_number, "ps": size, "platform": "web"},
         )
         if payload and payload.get("code") == 0:
             data = payload.get("data") or {}
@@ -3451,7 +3465,20 @@ class BiliClient:
                         ),
                     })
             if collected:
-                return collected
+                total = _as_int(data.get("count"))
+                # has_more 接口给了就用，没给就拿这一页的条数跟总数比。
+                has_more = data.get("has_more")
+                if has_more is None:
+                    has_more = bool(total) and page_number * size < total
+                return {
+                    "items": collected,
+                    "has_more": bool(has_more),
+                    "page": page_number,
+                    "total": total,
+                }
+        if page_number > 1:
+            # 退路只回得出第一页，后面没有更多。
+            return empty
         # 退路：自己空间里的合集/视频列表。结构套三层，
         # 标题叫 meta.name、视频数叫 meta.total。
         payload = self._get(
@@ -3459,13 +3486,13 @@ class BiliClient:
             {"mid": mid, "page_num": 1, "page_size": 20},
         )
         if not payload or payload.get("code") != 0:
-            return []
+            return empty
         data = payload.get("data") or {}
         raw_lists = data.get("items_lists")
         lists: dict[str, Any] = raw_lists if isinstance(raw_lists, dict) else {}
         raw = lists.get("seasons_list")
         if not isinstance(raw, list):
-            return []
+            return empty
         collections: list[dict[str, Any]] = []
         for item in raw:
             if not isinstance(item, dict):
@@ -3487,7 +3514,12 @@ class BiliClient:
                     f"https://space.bilibili.com/{author_mid or mid}/lists/{season_id}?type=season"
                 ),
             })
-        return collections
+        return {
+            "items": collections,
+            "has_more": False,
+            "page": page_number,
+            "total": len(collections),
+        }
 
     def bangumi(self) -> list[dict[str, Any]]:
         """Return the anime the signed in user follows (追番).

@@ -325,7 +325,8 @@ def test_subscribed_collections_reads_the_collected_collections():
         "/x/web-interface/nav": NAV_PAYLOAD,
         "/x/v3/fav/folder/collected/list": COLLECTED_PAYLOAD,
     })
-    items = client.subscribed_collections()
+    result = client.subscribed_collections()
+    items = result["items"]
 
     assert len(items) == 1  # type=11 的收藏夹被过滤
     first = items[0]
@@ -343,13 +344,59 @@ def test_subscribed_collections_reads_the_collected_collections():
     assert call["params"]["platform"] == "web"
 
 
+def test_subscribed_collections_walks_the_pages():
+    """一页只有 20 条，必须能翻页——这个账号有 65 个合集。"""
+    client, session = make_client({
+        "/x/web-interface/nav": NAV_PAYLOAD,
+        "/x/v3/fav/folder/collected/list": {
+            "code": 0,
+            "data": {"count": 65, "has_more": True, "list": [
+                {"id": 1, "type": 21, "title": "合集一", "media_count": 3,
+                 "upper": {"mid": 7, "name": "甲"}},
+                {"id": 2, "type": 11, "title": "收藏夹", "media_count": 3},
+            ]},
+        },
+    })
+    first = client.subscribed_collections(page=1)
+    assert first["page"] == 1
+    assert first["total"] == 65
+    assert first["has_more"] is True
+    assert [item["id"] for item in first["items"]] == ["1"]
+
+    second = client.subscribed_collections(page=2)
+    assert second["page"] == 2
+    assert second["total"] == 65
+    assert second["has_more"] is True
+
+    calls = calls_to(session, "folder/collected/list")
+    assert [call["params"]["pn"] for call in calls] == [1, 2]
+    # 每页的条数也要跟着走，不能固定 20
+    assert calls[0]["params"]["ps"] == 20
+
+
+def test_subscribed_collections_stops_at_the_last_page():
+    client, _ = make_client({
+        "/x/web-interface/nav": NAV_PAYLOAD,
+        "/x/v3/fav/folder/collected/list": {
+            "code": 0,
+            "data": {"count": 2, "has_more": False, "list": [
+                {"id": 1, "type": 21, "title": "合集一", "media_count": 3,
+                 "upper": {"mid": 7, "name": "甲"}},
+            ]},
+        },
+    })
+    result = client.subscribed_collections()
+    assert result["has_more"] is False
+    assert result["total"] == 2
+
+
 def test_subscribed_collections_falls_back_to_the_space_collections():
     client, session = make_client({
         "/x/web-interface/nav": NAV_PAYLOAD,
         "/x/v3/fav/folder/collected/list": {"code": 0, "data": {"list": []}},
         "/x/polymer/web-space/seasons_series_list": SEASONS_PAYLOAD,
     })
-    items = client.subscribed_collections()
+    items = client.subscribed_collections()["items"]
 
     assert len(items) == 2
     first = items[0]
@@ -375,13 +422,16 @@ def test_subscribed_collections_returns_empty_list_when_both_routes_refuse():
         "/x/v3/fav/folder/collected/list": {"code": -400, "message": "请求错误"},
         "/x/polymer/web-space/seasons_series_list": {"code": -400, "message": "请求错误"},
     })
-    assert client.subscribed_collections() == []
+    result = client.subscribed_collections()
+    assert result["items"] == []
+    assert result["has_more"] is False
 
 
 def test_subscribed_collections_returns_empty_without_a_mid():
     client, session = make_client({})
     client.set_cookie("")
-    assert client.subscribed_collections() == []
+    result = client.subscribed_collections()
+    assert result["items"] == []
     assert calls_to(session, "seasons_series_list") == []
 
 
