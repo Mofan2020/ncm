@@ -450,6 +450,8 @@
     "updates": "更新",
     "update_on_start": "启动时检查新版本",
     "update_auto_install": "发现新版本后自动下载并安装（会问一句再重启）",
+    "update_prerelease": "允许从预发布版本升级",
+    "update_skip_ssl": "不检查 SSL 证书（用加速器代理时需要）",
     "update_check_btn": "检查更新",
     "update_download_btn": "下载更新",
     "update_install_btn": "安装并重启",

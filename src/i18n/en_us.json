@@ -450,6 +450,8 @@
     "updates": "Updates",
     "update_on_start": "Look for a new version at startup",
     "update_auto_install": "Download and install a new version automatically (asks before restarting)",
+    "update_prerelease": "Allow updates from pre-release versions",
+    "update_skip_ssl": "Skip the SSL certificate check (needed behind an accelerator proxy)",
     "update_check_btn": "Check for updates",
     "update_download_btn": "Download the update",
     "update_install_btn": "Install and restart",

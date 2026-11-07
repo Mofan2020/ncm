@@ -2171,9 +2171,15 @@ class GuiBridge:
         result["tracks"] = [self._bilibili_track_payload(item) for item in items]
         return result
 
-    def get_bili_subscribed_collections(self) -> dict[str, Any]:
-        """The collections the signed-in account follows."""
-        return self.bilibili.subscribed_collections()
+    def get_bili_subscribed_collections(self, page: int = 1,
+                                        page_size: int = 20) -> dict[str, Any]:
+        """The collections the signed-in account follows.
+
+        ``page`` walks the list: one page holds 20 and an account can have
+        dozens of them.
+        """
+        return self.bilibili.subscribed_collections(page=page,
+                                                    page_size=page_size)
 
     def get_bili_bangumi(self) -> dict[str, Any]:
         """The anime the signed-in account follows."""

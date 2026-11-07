@@ -853,6 +853,8 @@ function fillSettingsForm() {
     // updates
     setChecked('update-on-start-check', s.ui.check_updates_on_start === true);
     setChecked('update-auto-install-check', s.ui.auto_install_updates === true);
+    setChecked('update-prerelease-check', s.ui.update_include_prerelease === true);
+    setChecked('update-skip-ssl-check', s.ui.update_skip_ssl_verify === true);
 
     // desktop lyrics
     setValue('desktop-lyrics-font-size', s.ui.desktop_lyrics_font_size || 18);
@@ -1082,6 +1084,8 @@ async function saveSettings() {
             desktop_lyrics_text_style: document.getElementById('desktop-lyrics-text-style').value,
             check_updates_on_start: document.getElementById('update-on-start-check').checked,
             auto_install_updates: document.getElementById('update-auto-install-check').checked,
+            update_include_prerelease: document.getElementById('update-prerelease-check').checked,
+            update_skip_ssl_verify: document.getElementById('update-skip-ssl-check').checked,
         },
         auth: {
             remember_login: document.getElementById('remember-login-check').checked,
@@ -1161,6 +1165,8 @@ async function checkAppUpdate(options) {
     appUpdate.busy = true;
     renderAppUpdate(t('settings.update_checking'));
     try {
+        // 版本通道由设置里的开关决定（后端读 settings.ui），这里的参数
+        // 只是留着，前端不用自己判断。
         const result = await state.api.check_app_update(!!opts.includePrerelease);
         if (!result || !result.success) {
             renderAppUpdate(t('settings.update_check_failed', {
