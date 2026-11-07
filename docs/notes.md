@@ -3658,3 +3658,114 @@ WebVTT cue，都不引第三方库。时长解析用标准库读 mp4/mkv 的容�
 - **PGC 搜索只取第一页。** 聚合列表的翻页由网易云和 B站视频两半驱动，番剧
   这一路只在第一次搜索时问一页（最多 20 条）。搜索结果里的番剧够用来点进去
   看剧集，不够用来「翻着找」。
+
+---
+
+## 29. Bangumi（番组计划）支持（2026-10-27）
+
+### 概述
+
+给 SkycMedia 加了 Bangumi（番组计划）的完整支持。Bangumi 是 ACG 资料库，不托管视频——它给条目资料、评分、章节列表；下载要靠用户配的资源站模板给出的外部链接。
+
+### 核心能力
+
+| 能力 | 实现 | 实测结果 |
+|------|------|----------|
+| 搜索 | `POST /v0/search/subjects` + filter.type | 搜「葬送的芙莉莲」→ 3 条相关结果 |
+| 详情 | `GET /v0/subjects/{id}` | 含集数、评分、收藏统计、简介、标签 |
+| 选集 | `GET /v0/episodes?subject_id=` | 正片/OP/ED/SP 分组，正片在前，含 label（自动补集数/类型名） |
+| 镜像 | `bangumi.wiki/api/v1/mirrors` + 内置 | 1 个官方镜像 + 3 个官方域名，顺序可调、自定义可加 |
+| 收藏/历史 | 本地 `bangumi.json` | 纯本地，不登录、不带 cookie、不写云端 |
+| 资源链接 | 模板渲染 | 直链显示下载按钮、网页链接开新标签 |
+| 下载 | `BangumiDownloader.save_url()` | `.part` 原子改名、长度校验、取消、进度回调 |
+| 导出 txt | `export_subject_text()` | 条目+章节表，离线可用 |
+| ncmbk 备份 | `export_bangumi_data` / `apply_import` | 纯本地导入，无账号也能恢复 |
+
+### 关键实现细节
+
+**搜索用 POST，不是 GET**  
+`GET /v0/subjects?keyword=` 的 keyword 参数**无效**——搜「葬送的芙莉莲」给鲁路修、高达。正确端点：`POST /v0/search/subjects`，body `{"keyword":"...", "filter":{"type":[2]}}`。
+
+**选集按类型分组**  
+接口返回的章节按 `sort` 混在一起（正片、OP、ED、SP、OVA 交错），只按 `sort` 排会让空标题的插到正片中间。修法：先按 `type` 分组（0=正片最前），组内再按 `sort` / `ep`。
+
+**缓存按需建目录**  
+`metacache` 只在初始化建 `meta`/`lyric`/`playlist` 三目录，Bangumi 用的 `bangumi_search` 等 kind 目录不存在，写入全被 `OSError` 吞掉。修法：`set` 时按需 `mkdir(parents=True, exist_ok=True)`，**顺手修好了 B 站缓存从未真正落盘的既有 bug**。
+
+**空结果也缓存**  
+空列表包一层 `_EMPTY_MARK` 再存，读出来拆回去，防止重复搜不存在的词每次都打服务器。
+
+**设置单例与测试**  
+`Settings` 是单例，`__init__` 有 `_initialized` 守卫。测试用 `object.__new__(Settings)` 绕过单例，手动设 `_initialized=True`、`_config_path=tmp_path/"settings.yaml"` 后再 `load()`，给每个测试独立实例。
+
+**缓存单例与测试**  
+`BangumiCache` 用全局 `get_meta_cache()`，测试间会串。修法：`BangumiBridge` 接收可选 `cache` 参数，测试注入 `BangumiCache(cache=FakeCache())`。
+
+**BangumiBridge 方法名**  
+`record_history`、`history()`、`history()` 返回全量 dict，用 `items` 字段取列表。
+
+**下载器**  
+`BangumiDownloader.save_url()`：先写 `.part`，下完 `os.replace`；长度不符、取消、异常全删 `.part`；同名文件不覆盖，自动加 `(1)` `(2)`……；进度回调带 `{url, path, downloaded, total, progress}`。
+
+**设置面板**  
+Bangumi 标签页：镜像列表（增删改序、官方刷新/重置）、资源站模板（增删）、API 主机/网页主机/请求间隔/SSL 开关/下载目录（原生文件夹选择）。
+
+### 前端
+
+* 视图：搜索页、收藏页、历史页、详情页（选集 + 资源链接）
+* 详情页：封面、元数据、简介、标签、选集列表（正片在前）、资源链接（直链显示下载按钮、网页链接开新标签）
+* 收藏切换、记录历史、清空历史、导出 txt、取消下载、选择下载目录
+
+### 变异测试
+
+* 后端：7 项（空结果不缓存、merge 覆盖、搜索不缓存、收藏不记元数据、章节不排序、历史重复、空列表不入缓存）全抓住
+* 前端：下载/导出/渲染路径 8/8 抓住
+* 设置清洗：7 项（纯数字主机、无主机镜像、镜像去重、无地址资源站、少了 bangumi 段、间隔不夹紧、主机不清洗）全抓住
+* 下载器：2/3 抓住（剩下 pattern 空白差异 match 不上）
+
+### 测试数量
+
+* Python：`test_bangumi.py` (33)、`test_bangumi_backup.py` (10)、`test_bangumi_settings.py` (13)、`test_bangumi_download.py` (15)、`test_bangumi_bridge_more.py` (11) —— 共 82 项
+* 前端：`scripts/check-bangumi-js.mjs` (25 项契约 + 设置 4 项)
+* 全量回归：`1340 passed, 7 skipped`
+
+### 文件清单
+
+新增：
+```
+src/core/bangumi.py
+src/core/bangumi_store.py
+src/core/bangumi_download.py
+src/gui/bangumi_bridge.py
+tests/test_bangumi.py
+tests/test_bangumi_backup.py
+tests/test_bangumi_settings.py
+tests/test_bangumi_download.py
+tests/test_bangumi_bridge_more.py
+scripts/check-bangumi-js.mjs
+```
+
+修改：
+```
+src/config/settings.py
+src/core/backup.py
+src/core/metacache.py
+src/core/bili_cache.py
+src/gui/bridge.py
+src/gui/bilibili_bridge.py
+src/gui/assets/app.js
+src/gui/assets/index.html
+src/gui/assets/style.css
+src/i18n/zh_cn.json
+src/i18n/en_us.json
+tests/test_bilibili_bridge.py
+tests/test_settings.py
+```
+
+### 已知未完成
+
+1. 下载器无任务队列（单次 `save_url`），UI 里一次只能下一个
+2. 前端下载/导出的变异测试未写进 harness（只测了成功路径）
+3. 资源站模板的 `{ep}` `{title}` 占位符在详情页点集时才填，搜索页只填 `{keyword}` `{subject_id}` `{name}` `{name_cn}`
+4. `docs/notes.md` 只记了大框架，没细到每个模块的边界条件
+5. 缓存目录残留：调试期间在用户真实 `cache/meta/` 下建了 `subject`/`search`/`episodes`/`mirrors`，已手动删净，代码里没加清理逻辑

@@ -2571,6 +2571,92 @@ input[type="range"]::-webkit-slider-thumb {
 .vc-up.is-link:hover { color: var(--info); }
 .video-card .vc-plays { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 
+
+
+.bangumi-mirror-list, .bangumi-site-list {
+    display: flex; flex-direction: column; gap: 4px; margin: 10px 0;
+}
+.bangumi-setting-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 12px; border-radius: 9px;
+    background: var(--panel); border: 1px solid var(--line);
+}
+.bangumi-setting-name {
+    flex: 0 0 auto; font-size: 12.5px; font-weight: 600; color: var(--text);
+}
+.bangumi-setting-host {
+flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--text-3);
+overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#bangumi-download-dir {
+    flex: 1 1 auto; min-width: 0;
+}
+
+.bangumi-mirror-list input, .bangumi-site-list input {
+    flex: 1 1 180px; min-width: 0;
+}
+
+/* --- Bangumi: search, favourites, episodes --------------------- */
+.page-hint {
+    margin: 10px 0 14px; font-size: 12.5px; color: var(--text-3);
+    line-height: 1.5;
+}
+.bangumi-detail { padding: 24px 28px 40px; }
+.bangumi-detail .page-head { margin-bottom: 18px; }
+.bangumi-detail-body {
+    display: flex; gap: 20px; align-items: flex-start; margin-bottom: 16px;
+}
+.bangumi-detail-cover {
+    width: 168px; height: 236px; object-fit: cover;
+    border-radius: var(--cover-radius); background: var(--sunken);
+    flex: 0 0 auto;
+}
+.bangumi-detail-meta {
+    font-size: 12.5px; color: var(--text-3); line-height: 1.7;
+    padding-top: 4px;
+}
+.bangumi-detail-summary {
+    margin: 0 0 22px; font-size: 13px; line-height: 1.75; color: var(--text-2);
+    max-width: 74ch; white-space: pre-wrap;
+}
+.bangumi-detail .section-title {
+    margin: 20px 0 10px; font-size: 14px; font-weight: 650; color: var(--text);
+}
+.bangumi-episode-list { display: flex; flex-direction: column; gap: 2px; }
+.bangumi-episode {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 12px; border-radius: 9px;
+    background: var(--panel); border: 1px solid var(--line);
+}
+.bangumi-episode:hover { background: var(--panel-2); }
+.bangumi-episode-name {
+    flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bangumi-episode-type {
+    flex: 0 0 auto; font-size: 11px; color: var(--text-3);
+    padding: 1px 7px; border-radius: 999px; background: var(--sunken);
+}
+.bangumi-episode-duration,
+.bangumi-episode-date {
+    flex: 0 0 auto; font-size: 11.5px; color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+}
+.bangumi-episode-date { min-width: 84px; text-align: right; }
+.bangumi-resource-list { display: flex; flex-direction: column; gap: 6px; }
+.bangumi-resource {
+    display: flex; align-items: center; gap: 12px;
+    padding: 9px 12px; border-radius: 9px;
+    background: var(--panel); border: 1px solid var(--line);
+}
+.bangumi-resource-name {
+    flex: 0 0 auto; font-size: 12.5px; font-weight: 600; color: var(--text);
+}
+.bangumi-resource-link {
+    flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--info);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* --- bilibili: account, favourites and the player ---------------- */
 .bili-account {
     display: flex; align-items: center; gap: 10px;

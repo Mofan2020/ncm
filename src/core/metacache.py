@@ -139,6 +139,14 @@ class MetaCache:
             return
         if len(payload.encode("utf-8")) > MAX_ENTRY_BYTES:
             return
+        # The kind directory may not exist yet.  Callers use their own kind
+        # names (bili_search, bangumi_subject, ...), and a missing directory
+        # made every write fail silently -- the entry never landed on disk.
+        try:
+            (self.root / kind).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.debug("cannot create the cache directory %s: %s", kind, exc)
+            return
         path = self._path(kind, key)
         try:
             # Write to a temp file and rename: a crash mid-write must not

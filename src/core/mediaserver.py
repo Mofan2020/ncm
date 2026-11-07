@@ -169,6 +169,12 @@ class _Handler(BaseHTTPRequestHandler):
                 # backend, so the webview asks the loopback for the bytes.
                 # ``alt`` repeats: the other hosts the same file is on.
                 self._bili(query.get("u", [""])[0], query.get("alt", []), send_body)
+            elif route == "bgm":
+                # Bangumi picture proxy.  The covers live on ``lain.bangumi.lat``
+                # (or the matching host of another mirror).  They never change
+                # under the same url, so they go through the same cover cache
+                # the NetEase and Bilibili pictures use.
+                self._bgm(query.get("u", [""])[0], send_body)
             elif route == "bg":
                 self._background(send_body)
             else:
@@ -546,6 +552,50 @@ class _Handler(BaseHTTPRequestHandler):
         self.media.write_cover_cache(url, data, mime)
         self._send_cover_bytes(data, mime, send_body)
 
+    def _bgm(self, url: str, send_body: bool) -> None:
+        """Serve a Bangumi picture, from the disk cache when possible.
+
+        The covers live on the image host of whichever mirror is in use
+        (``lain.bangumi.lat`` for the mirror that ships as the default).
+        A cover never changes under the same url, so it is worth keeping:
+        a search shows dozens of them and re-downloading each one on every
+        visit is both slow and rude to the host.
+        """
+        url = str(url or "").strip()
+        if not url.startswith(("http://", "https://")):
+            self._error(400, "bad url")
+            return
+        ext = _bgm_image_ext(url)
+        cached = self.media.cached_cover(url, ext)
+        if cached is not None:
+            data, mime = cached
+            self._send_cover_bytes(data, mime, send_body)
+            return
+
+        try:
+            response = self.media.session.get(
+                url, headers=_BGM_HEADERS, timeout=(10, 20))
+        except (requests.exceptions.RequestException, OSError) as exc:
+            log.info("bangumi image unreachable (%s): %s", _host_of(url), exc)
+            self._error(502, "upstream error")
+            return
+        try:
+            if response.status_code != 200 or not response.content:
+                self._error(502, "upstream error")
+                return
+            data = response.content
+            mime = response.headers.get(
+                "content-type", f"image/{ext}").split(";")[0]
+        finally:
+            response.close()
+        if not data:
+            self._error(502, "upstream refused")
+            return
+        # Persist for next time.  A failure here must not break the answer
+        # we are about to send.
+        self.media.write_cover_cache(url, data, mime)
+        self._send_cover_bytes(data, mime, send_body)
+
     def _background(self, send_body: bool) -> None:
         """Serve the wallpaper, downscaled to what the UI can actually show.
 
@@ -706,6 +756,14 @@ _BILI_HEADERS = {
     "Accept": "*/*",
 }
 
+#: Bangumi's picture host does not need a Referer, but it does want a
+#: browser-ish User-Agent -- the default requests one gets a 403.
+_BGM_HEADERS = {
+    "User-Agent": _UA,
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Referer": "https://bangumi.lat/",
+}
+
 #: How long one CDN host gets: connect, then each read.  A host that cannot
 #: produce 256 kB in ten seconds is a host whose video would not play anyway,
 #: so the proxy moves on to the next one instead of waiting it out.
@@ -770,6 +828,23 @@ def _is_bili_url(url: str) -> bool:
 
 #: The picture suffixes B站 serves its covers and avatars with.
 _BILI_IMAGE_EXTS = ("jpg", "jpeg", "png", "webp", "gif", "bmp")
+
+#: Same set for the Bangumi picture host.
+_BGM_IMAGE_EXTS = ("jpg", "jpeg", "png", "webp", "gif", "bmp")
+
+
+def _bgm_image_ext(url: str) -> str:
+    """The picture suffix of a Bangumi url, ``jpg`` when it has none."""
+    try:
+        path = urlparse(str(url or "")).path
+    except ValueError:
+        return "jpg"
+    name = path.rsplit("/", 1)[-1].lower()
+    if "." in name:
+        candidate = name.rsplit(".", 1)[-1]
+        if candidate in _BGM_IMAGE_EXTS:
+            return "jpg" if candidate == "jpeg" else candidate
+    return "jpg"
 
 
 def _bili_image_ext(url: str) -> str:

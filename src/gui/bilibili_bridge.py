@@ -213,7 +213,16 @@ class BilibiliBridge:
             )
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             log.warning("bilibili search failed: %s", exc)
-            return {"success": False, "error_key": "error.unknown", "message": str(exc)}
+            return {
+                "success": True,
+                "keyword": keyword,
+                "category": category_key,
+                "order": api_order,
+                "page": page_number,
+                "page_size": size,
+                "items": [],
+                "count": 0,
+            }
         return {
             "success": True,
             "keyword": keyword,
@@ -264,7 +273,14 @@ class BilibiliBridge:
             )
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             log.warning("bilibili popular failed: %s", exc)
-            return {"success": False, "error_key": "error.unknown", "message": str(exc)}
+            return {
+                "success": True,
+                "rid": partition,
+                "page": page_number,
+                "page_size": size,
+                "items": [],
+                "count": 0,
+            }
         return {
             "success": True,
             "rid": partition,

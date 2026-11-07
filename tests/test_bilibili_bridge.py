@@ -8,8 +8,17 @@ from __future__ import annotations
 
 import pytest
 
+from src.core.bili_cache import BiliCache
 from src.core.bilibili import BiliClient
 from src.gui.bilibili_bridge import BilibiliBridge
+
+
+@pytest.fixture(autouse=True)
+def clear_bili_cache():
+    """Clear the BiliCache between tests to avoid test pollution."""
+    BiliCache().clear()
+    yield
+
 
 NAV_PAYLOAD = {
     "code": -101,

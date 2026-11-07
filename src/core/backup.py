@@ -124,6 +124,7 @@ PHASE_MVS = "mvs"
 PHASE_RECORD = "record"
 PHASE_LOCAL = "local"
 PHASE_BILI = "bilibili"
+PHASE_BANGUMI = "bangumi"
 
 #: 导出 B站收藏夹时，一个收藏夹最多翻多少页。
 BILI_FOLDER_MAX_PAGES = 20
@@ -620,6 +621,82 @@ def export_bilibili_data(
     return {
         "account": account,
         "folders": folders,
+        "errors": errors,
+    }
+
+
+def export_bangumi_data(
+    store: Any,
+    *,
+    progress: Callable[[str, int, int], None] | None = None,
+) -> dict[str, Any]:
+    """把 Bangumi 的本地收藏和观看历史整理成一节。
+
+    Bangumi 没有账号，所以这里**没有网络请求**——收藏和观看历史本来就
+    只存在本机（``bangumi.json``），备份就是把那份文件收进去。
+
+    返回的这一节长这样：
+
+    .. code-block:: json
+
+        {
+          "favorites": [{"subject_id": "400602", "name_cn": "葬送的芙莉莲"}],
+          "history": [{"subject_id": "400602", "episode_id": "1227087", "ep": 1}],
+          "errors": []
+        }
+    """
+    errors: list[dict[str, str]] = []
+
+    def report(phase: str, current: int, total: int) -> None:
+        if progress is not None:
+            progress(phase, current, total)
+
+    report(PHASE_BANGUMI, 0, 1)
+    favorites: list[dict[str, Any]] = []
+    history: list[dict[str, Any]] = []
+
+    try:
+        state = store.exportable_state() or {}
+    except Exception as exc:  # noqa: BLE001 - 读不出来也要把别的部分导出
+        state = {}
+        errors.append({"section": PHASE_BANGUMI, "message": str(exc)})
+
+    for item in state.get("favorites") or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("subject_id") or "").strip()
+        if not key:
+            continue
+        favorites.append({
+            "subject_id": key,
+            "name": str(item.get("name") or ""),
+            "name_cn": str(item.get("name_cn") or ""),
+            "cover": str(item.get("cover") or ""),
+            "total_episodes": item.get("total_episodes"),
+            "added": item.get("added"),
+        })
+
+    for item in state.get("history") or []:
+        if not isinstance(item, dict):
+            continue
+        skey = str(item.get("subject_id") or "").strip()
+        ekey = str(item.get("episode_id") or "").strip()
+        if not skey or not ekey:
+            continue
+        history.append({
+            "subject_id": skey,
+            "episode_id": ekey,
+            "ep": item.get("ep") or 0,
+            "name": str(item.get("name") or ""),
+            "name_cn": str(item.get("name_cn") or ""),
+            "cover": str(item.get("cover") or ""),
+            "watched_at": item.get("watched_at"),
+        })
+
+    report(PHASE_BANGUMI, 1, 1)
+    return {
+        "favorites": favorites,
+        "history": history,
         "errors": errors,
     }
 
@@ -1200,6 +1277,7 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
         "record": record,
         "local_state": local_state,
         "bilibili": bili_plan,
+        "bangumi": _bangumi_plan(payload),
         "warnings": ([{"section": "playlists", "message": playlists_error}]
                      if playlists_error else [])
         + ([{"section": "favorites", "message": liked_error}]
@@ -1209,10 +1287,60 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
     }
 
 
+def _bangumi_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    """备份文件里的 Bangumi 本地收藏和观看历史。
+
+    Bangumi 没有账号，所以这一节**永远可以恢复**——没有「当前没登录」
+    那种条件。恢复只写本地，不碰服务器。
+    """
+    data = payload.get("bangumi")
+    if not isinstance(data, dict):
+        data = {}
+    favorites: list[dict[str, Any]] = []
+    for raw in (data.get("favorites") or []):
+        if not isinstance(raw, dict):
+            continue
+        key = str(raw.get("subject_id") or "").strip()
+        if not key:
+            continue
+        favorites.append({
+            "subject_id": key,
+            "name": str(raw.get("name") or ""),
+            "name_cn": str(raw.get("name_cn") or ""),
+            "cover": str(raw.get("cover") or ""),
+            "total_episodes": raw.get("total_episodes"),
+            "added": raw.get("added"),
+        })
+    history: list[dict[str, Any]] = []
+    for raw in (data.get("history") or []):
+        if not isinstance(raw, dict):
+            continue
+        skey = str(raw.get("subject_id") or "").strip()
+        ekey = str(raw.get("episode_id") or "").strip()
+        if not skey or not ekey:
+            continue
+        history.append({
+            "subject_id": skey,
+            "episode_id": ekey,
+            "ep": raw.get("ep") or 0,
+            "name": str(raw.get("name") or ""),
+            "name_cn": str(raw.get("name_cn") or ""),
+            "cover": str(raw.get("cover") or ""),
+            "watched_at": raw.get("watched_at"),
+        })
+    return {
+        "available": bool(favorites or history),
+        "favorites": favorites,
+        "history": history,
+        "favorite_count": len(favorites),
+        "history_count": len(history),
+    }
+
+
 def _bili_plan(payload: dict[str, Any], bili: Any) -> dict[str, Any]:
     """备份文件里的 B站收藏夹，和能不能恢复它们。
 
-    备份里没有 B站 数据、或者当前没登录 B站，这一节就只是「跳过」，
+    备份里没有 B站数据、或者当前没登录 B站，这一节就只是「跳过」，
     **不影响别的部分照常导入**。
     """
     data = payload.get("bilibili")
@@ -1331,7 +1459,8 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
                  track_batch: int = TRACK_BATCH,
                  batch_pause: float = BATCH_PAUSE,
                  local: Any = None,
-                 bili: Any = None) -> dict[str, Any]:
+                 bili: Any = None,
+                 store: Any = None) -> dict[str, Any]:
     """按用户的决定把备份并进当前账号。
 
     ``decisions`` 的形状是 ``{"playlists": {歌单 id: {"action": ..., "name": ...}}}``，
@@ -1340,6 +1469,10 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
 
     ``local`` 是本机的 :class:`~src.core.library.Library`。播放次数、本地收藏
     和最近播放写回它，**不会向网易云报告**——这些数据云端没有对应的东西。
+
+    ``store`` 是本机的 :class:`~src.core.bangumi_store.BangumiStore`。
+    Bangumi 的收藏和观看历史写回它，**不碰服务器**——那部分数据本来就
+    只存在本地。
 
     返回一份结果：加了多少歌、关注了多少歌手、建了几个歌单、跳过多少、
     失败多少。
@@ -1614,6 +1747,22 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
     elif bili_folders:
         bili_result["skipped"] = len(bili_folders)
 
+    # -- Bangumi 本地收藏和观看历史 -------------------------------------------
+    # 没有账号，所以没有「当前没登录」的条件：备份里有就写回本地。
+    # 纯本地操作，不发一个请求。
+    bangumi_result = {"favorites_added": 0, "history_added": 0}
+    bangumi_plan = plan.get("bangumi") or {}
+    if bangumi_plan.get("available") and store is not None:
+        report(PHASE_BANGUMI, 0, 1)
+        try:
+            bangumi_result["favorites_added"] = int(
+                store.merge_favorites(bangumi_plan.get("favorites") or []))
+            bangumi_result["history_added"] = int(
+                store.merge_history(bangumi_plan.get("history") or []))
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"section": PHASE_BANGUMI, "message": str(exc)})
+        report(PHASE_BANGUMI, 1, 1)
+
     return {
         "ok": True,
         "songs_liked": songs_liked,
@@ -1631,6 +1780,7 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
         "skipped_detail": skipped_detail,
         "local_restored": local_restored,
         "bilibili": bili_result,
+        "bangumi": bangumi_result,
         "errors": errors,
     }
 

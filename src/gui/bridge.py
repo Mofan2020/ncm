@@ -44,6 +44,7 @@ from src.core.localmusic import (
 from src.core.lyrics import build_timed_lyrics
 from src.core.mediaserver import get_media_server
 from src.core.metacache import get_meta_cache
+from src.gui.bangumi_bridge import BangumiBridge
 from src.gui.bilibili_bridge import BilibiliBridge
 from src.gui.theme import effective_theme, normalize_theme, system_theme
 from src.i18n import get_i18n, t
@@ -174,6 +175,10 @@ class GuiBridge:
         #: layer knows how to talk to the frontend, the source knows how to
         #: talk to Bilibili.
         self.bilibili = BilibiliBridge(media=self.media)
+        # Bangumi（番组计划）只读条目资料。没有账号——收藏和观看历史
+        # 都存在本地。客户端跟着设置走，所以设置改了之后这里要重建。
+        self.bangumi = BangumiBridge()
+        self.bangumi.set_settings(self.settings)
         # The remembered Bilibili cookie has to reach the media server too:
         # the CDN refuses the video streams without it.
         bili_session = self.bilibili.session
@@ -356,6 +361,14 @@ class GuiBridge:
                     # 少了这几个，播放上报、续播的开关和两个关键词栏点保存就没反应。
                     "report_playback", "resume_playback",
                     "interest_tags", "blocked_tags"}))
+            elif category == "bangumi":
+                self.settings.update_bangumi(**self._clean(data, {
+                    "api_host", "web_host", "request_interval",
+                    "skip_ssl_verify", "download_dir",
+                    "mirrors", "resource_sites"}))
+                # 主机、间隔、目录都可能变了：把客户端和下载器扔掉重建，
+                # 否则改完设置还是按旧的来。
+                self.bangumi.reload()
             elif category == "ui":
                 self.settings.update_ui(**self._clean(data, {
                     "language", "theme", "remember_window_size", "background_image",
@@ -623,6 +636,17 @@ class GuiBridge:
                 self.logger.warning("bilibili backup export failed: %s", exc)
                 payload.setdefault("errors", []).append(
                     {"section": "bilibili", "message": str(exc)})
+        # Bangumi 没有账号，但本地收藏和观看历史要进备份。
+        # 这一节纯本地，不发请求。
+        try:
+            payload["bangumi"] = backup_core.export_bangumi_data(
+                self.bangumi.store,
+                progress=self._on_backup_progress,
+            )
+        except Exception as exc:
+            self.logger.warning("bangumi backup export failed: %s", exc)
+            payload.setdefault("errors", []).append(
+                {"section": "bangumi", "message": str(exc)})
         try:
             backup_core.write_backup_file(path, payload)
         except OSError as exc:
@@ -632,6 +656,7 @@ class GuiBridge:
         local_state = payload.get("local_state") or {}
         bili_section = payload.get("bilibili") or {}
         bili_folders = bili_section.get("folders") or []
+        bangumi_section = payload.get("bangumi") or {}
         return {
             "success": True,
             "path": str(path),
@@ -651,6 +676,8 @@ class GuiBridge:
             "bilibili_folders": len(bili_folders),
             "bilibili_videos": sum(len(item.get("videos") or [])
                                    for item in bili_folders),
+            "bangumi_favorites": len(bangumi_section.get("favorites") or []),
+            "bangumi_history": len(bangumi_section.get("history") or []),
             "netease": netease_signed_in,
             "bilibili": bili_signed_in,
             "errors": payload.get("errors", []),
@@ -678,7 +705,19 @@ class GuiBridge:
         user = self.login_manager.user_info
         netease_signed_in = bool(user and user.user_id)
         if not netease_signed_in and not self._bili_signed_in():
-            return {"success": False, "error_key": "backup.login_required"}
+            # 备份里只有 Bangumi 那一节的话，其实不需要登录任何账号——
+            # 那是纯本地的数据。先把文件读出来看一眼再决定。
+            try:
+                peek = backup_core.read_backup_file(file_path)
+            except (OSError, backup_core.BackupError) as exc:
+                return {"success": False, "error_key": "backup.read_failed",
+                        "message": str(exc)}
+            bangumi_only = bool(peek.get("bangumi")) and not any(
+                peek.get(key) for key in
+                ("account", "liked_song_ids", "playlists", "followed_artists",
+                 "bilibili"))
+            if not bangumi_only:
+                return {"success": False, "error_key": "backup.login_required"}
         try:
             payload = backup_core.read_backup_file(file_path)
         except backup_core.BackupFormatError as exc:
@@ -703,6 +742,7 @@ class GuiBridge:
             "summary": plan.get("summary", {}),
             "conflicts": plan.get("conflicts", []),
             "bilibili": plan.get("bilibili", {}),
+            "bangumi": plan.get("bangumi", {}),
             "skipped": [{"id": item.get("id"), "name": item.get("name"),
                          "reason": item.get("reason")}
                         for item in plan.get("playlists", [])
@@ -726,6 +766,7 @@ class GuiBridge:
                 progress=self._on_backup_progress,
                 local=self.library,
                 bili=self.bilibili.client if self._bili_signed_in() else None,
+                store=self.bangumi.store,
             )
         except Exception as exc:
             self.logger.warning("account backup import failed: %s", exc)
@@ -753,6 +794,7 @@ class GuiBridge:
             "skipped_detail": result.get("skipped_detail", []),
             "local_restored": result.get("local_restored", {}),
             "bilibili": result.get("bilibili", {}),
+            "bangumi": result.get("bangumi", {}),
             "errors": result.get("errors", []),
         }
 
@@ -2195,6 +2237,82 @@ class GuiBridge:
     def get_bili_dynamics(self, mid: str = "", page: int = 1) -> dict[str, Any]:
         """The posts of one account."""
         return self.bilibili.dynamics(mid=mid, page=page)
+
+    # ------------------------------------------------------------ Bangumi
+    def search_bangumi(self, keyword: str, limit: int = 20,
+                       subject_type: int = 2) -> dict[str, Any]:
+        """Search the Bangumi subject catalogue."""
+        return self.bangumi.search(keyword, limit=limit,
+                                   subject_type=subject_type)
+
+    def get_bangumi_subject(self, subject_id: int | str,
+                            refresh: bool = False) -> dict[str, Any]:
+        """One subject's details, with its local favourite state."""
+        return self.bangumi.subject(subject_id, refresh=refresh)
+
+    def get_bangumi_episodes(self, subject_id: int | str,
+                             episode_type: int | None = None,
+                             refresh: bool = False) -> dict[str, Any]:
+        """The episode list of one subject."""
+        return self.bangumi.episodes(subject_id, episode_type=episode_type,
+                                     refresh=refresh)
+
+    def get_bangumi_resource_links(self, subject_id: int | str,
+                                   episode_id: int | str | None = None
+                                   ) -> dict[str, Any]:
+        """Download links rendered from the user's resource-site templates."""
+        return self.bangumi.resource_links(subject_id, episode_id=episode_id)
+
+    def get_bangumi_favorites(self) -> dict[str, Any]:
+        """The local favourites.  Local only -- nothing was ever uploaded."""
+        return self.bangumi.favorites()
+
+    def set_bangumi_favorite(self, subject_id: int | str,
+                             favorite: bool = True) -> dict[str, Any]:
+        """Add or drop a local favourite."""
+        return self.bangumi.set_favorite(subject_id, favorite)
+
+    def toggle_bangumi_favorite(self, subject_id: int | str) -> dict[str, Any]:
+        """Flip the local favourite state."""
+        return self.bangumi.toggle_favorite(subject_id)
+
+    def get_bangumi_history(self) -> dict[str, Any]:
+        """The local watch history."""
+        return self.bangumi.history()
+
+    def record_bangumi_history(self, subject_id: int | str,
+                               episode_id: int | str) -> dict[str, Any]:
+        """Note that one episode was watched.  Local only."""
+        return self.bangumi.record_history(subject_id, episode_id)
+
+    def clear_bangumi_history(self) -> dict[str, Any]:
+        """Wipe the local watch history.  The favourites stay."""
+        return self.bangumi.clear_history()
+
+    def get_bangumi_mirrors(self, refresh: bool = False) -> dict[str, Any]:
+        """The mirror list, in the order the user put them."""
+        return self.bangumi.mirrors(refresh=refresh)
+
+    def get_bangumi_built_in_mirrors(self) -> dict[str, Any]:
+        """The mirrors that ship with the app."""
+        return self.bangumi.built_in_mirrors()
+
+    def get_bangumi_download_dir(self) -> dict[str, Any]:
+        """Where a Bangumi download would land."""
+        return self.bangumi.download_dir()
+
+    def download_bangumi_url(self, url: str, filename: str = "") -> dict[str, Any]:
+        """Save one resource link to disk."""
+        return self.bangumi.download_url(url, filename)
+
+    def cancel_bangumi_download(self) -> dict[str, Any]:
+        """Cancel the download that is running."""
+        return self.bangumi.cancel_download()
+
+    def export_bangumi_subject(self, subject_id: int | str,
+                               filename: str = "") -> dict[str, Any]:
+        """Write the subject and its episodes to a txt file."""
+        return self.bangumi.export_subject_text(subject_id, filename)
 
     # ------------------------------------------------------ 本地视频（实验性）
     def add_local_video_folder(self) -> dict[str, Any]:

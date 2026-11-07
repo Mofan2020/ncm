@@ -54,6 +54,8 @@
                     data-i18n="bili.tab_space"></button>
             <button class="top-tab" type="button" data-view="bili-messages" data-sections="bili"
                     data-i18n="bili.tab_messages"></button>
+            <button class="top-tab" type="button" data-view="bangumi" data-sections="bangumi"
+                    data-i18n="bangumi.title"></button>
         </nav>
 
         <div class="header-actions">
@@ -95,6 +97,12 @@
                         <span class="home-card-title" data-i18n="home.entry_bili"></span>
                         <span class="home-card-desc" data-i18n="home.entry_bili_desc"></span>
                         <span class="home-card-count" id="home-count-bili"></span>
+                    </button>
+                    <button class="home-card" type="button" data-entry="bangumi" id="home-entry-bangumi">
+                        <span class="home-card-icon" data-entry="bangumi" data-icon="list" aria-hidden="true"></span>
+                        <span class="home-card-title" data-i18n="bangumi.title"></span>
+                        <span class="home-card-desc" data-i18n="home.entry_bangumi_desc"></span>
+                        <span class="home-card-count" id="home-count-bangumi"></span>
                     </button>
                     <button class="home-card" type="button" data-entry="search" id="home-entry-search">
                         <span class="home-card-icon" data-entry="search" data-icon="list" aria-hidden="true"></span>
@@ -430,6 +438,88 @@
                             data-i18n="bili.load_more"></button>
                     <div class="result-end" id="bili-history-end" hidden></div>
                 </div>
+            </div>
+        </section>
+
+        <!-- ======================== Bangumi 视图 ======================== -->
+        <section class="view" id="view-bangumi">
+            <div class="bili-page">
+                <div class="page-head">
+                    <button class="btn btn-icon" id="btn-bangumi-back" type="button"
+                            data-icon="back" data-i18n-title="home.back_home" aria-label="back"></button>
+                    <h1 class="page-title" id="bangumi-title" tabindex="-1" data-i18n="bangumi.title"></h1>
+                    <div class="page-actions">
+                        <button class="btn btn-icon" id="btn-bangumi-refresh" type="button"
+                                data-icon="refresh" data-i18n-title="bili.refresh" aria-label="refresh"></button>
+                    </div>
+                </div>
+
+                <div class="top-tabs filter-seg" id="bangumi-tabs" role="tablist">
+                    <button class="top-tab is-compact is-active" type="button" role="tab"
+                            data-bangumi-tab="search" data-i18n="bangumi.tab_search"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
+                            data-bangumi-tab="favorites" data-i18n="bangumi.tab_favorites"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
+                            data-bangumi-tab="history" data-i18n="bangumi.tab_history"></button>
+                </div>
+
+                <!-- 搜索 -->
+                <div id="bangumi-seg-search">
+                    <div class="source-search inline-form">
+                        <div class="search-wrapper">
+                            <input type="search" id="bangumi-search-input"
+                                   autocomplete="off" spellcheck="false"
+                                   data-i18n-placeholder="bangumi.search_placeholder">
+                        </div>
+                        <button id="btn-bangumi-search" class="btn btn-primary" type="button"
+                                data-i18n="bangumi.tab_search"></button>
+                    </div>
+                    <p class="page-hint" id="bangumi-search-hint" data-i18n="bangumi.search_hint"></p>
+                    <div class="bili-grid" id="bangumi-results"></div>
+                    <div id="bangumi-state"></div>
+                </div>
+
+                <!-- 本地收藏 -->
+                <div id="bangumi-seg-favorites" hidden>
+                    <p class="page-hint" data-i18n="bangumi.history_local_only"></p>
+                    <div class="bili-grid" id="bangumi-favorites"></div>
+                    <div id="bangumi-favorites-state"></div>
+                </div>
+
+                <!-- 本地观看历史 -->
+                <div id="bangumi-seg-history" hidden>
+                    <p class="page-hint" data-i18n="bangumi.history_local_only"></p>
+                    <div class="bili-grid" id="bangumi-history"></div>
+                    <div id="bangumi-history-state"></div>
+                    <button class="btn btn-sm btn-ghost" id="btn-bangumi-clear-history" type="button"
+                            hidden data-i18n="bangumi.history_clear"></button>
+                </div>
+            </div>
+
+            <!-- 条目详情：选集、简介、资源链接 -->
+            <div class="bangumi-detail" id="bangumi-detail" hidden>
+                <div class="page-head">
+                    <button class="btn btn-icon" id="btn-bangumi-detail-back" type="button"
+                            data-icon="back" aria-label="back"></button>
+                    <h1 class="page-title" id="bangumi-detail-title" tabindex="-1"></h1>
+                    <div class="page-actions">
+                        <button class="btn btn-ghost" id="btn-bangumi-export" type="button"
+                                data-i18n="bangumi.export_txt"></button>
+                        <button class="btn btn-secondary" id="btn-bangumi-favorite" type="button"
+                                data-i18n="bangumi.fav_add"></button>
+                    </div>
+                </div>
+                <div class="bangumi-detail-body">
+                    <img class="bangumi-detail-cover" id="bangumi-detail-cover" alt="" hidden>
+                    <div class="bangumi-detail-meta" id="bangumi-detail-meta"></div>
+                </div>
+                <p class="bangumi-detail-summary" id="bangumi-detail-summary"></p>
+                <h2 class="section-title" data-i18n="bangumi.detail_episodes"></h2>
+                <div class="bangumi-episode-list" id="bangumi-episodes"></div>
+                <div id="bangumi-episodes-state"></div>
+                <h2 class="section-title" data-i18n="bangumi.resource_links"></h2>
+                <div class="bangumi-resource-list" id="bangumi-resources"></div>
+                <div id="bangumi-resources-state"></div>
             </div>
         </section>
 
@@ -1038,6 +1128,7 @@
                 <button class="tab" type="button" data-tab="playback" data-i18n="settings.playback"></button>
                 <button class="tab" type="button" data-tab="download" data-i18n="settings.download"></button>
                 <button class="tab" type="button" data-tab="bili" data-i18n="bili.settings_bili"></button>
+                <button class="tab" type="button" data-tab="bangumi" data-i18n="bangumi.title"></button>
                 <button class="tab" type="button" data-tab="account" data-i18n="backup.tab"></button>
                 <button class="tab" type="button" data-tab="advanced"
                         data-i18n="settings.advanced"></button>
@@ -1381,6 +1472,74 @@
                            spellcheck="false" autocomplete="off">
                 </label>
                 <p class="muted" data-i18n="bili.settings_tags_hint"></p>
+            </div>
+
+            <div class="tab-panel" data-panel="bangumi">
+                <div class="group">
+                    <h3 class="group-title" data-i18n="bangumi.mirrors"></h3>
+                    <p class="muted" data-i18n="bangumi.mirrors_hint"></p>
+                    <div class="bangumi-mirror-list" id="bangumi-mirror-list"></div>
+                    <div class="inline-form">
+                        <input type="text" id="bangumi-mirror-id" class="text-input"
+                               placeholder="id" autocomplete="off" spellcheck="false">
+                        <input type="text" id="bangumi-mirror-host" class="text-input"
+                               placeholder="api.bangumi.lat" autocomplete="off" spellcheck="false">
+                        <button id="btn-bangumi-mirror-add" class="btn btn-secondary" type="button"
+                                data-i18n="bangumi.mirrors_add"></button>
+                    </div>
+                    <div class="inline-form">
+                        <button id="btn-bangumi-mirror-refresh" class="btn btn-ghost" type="button"
+                                data-i18n="bangumi.mirrors_refresh"></button>
+                        <button id="btn-bangumi-mirror-reset" class="btn btn-ghost" type="button"
+                                data-i18n="bangumi.mirrors_reset"></button>
+                    </div>
+                </div>
+
+                <div class="group">
+                    <h3 class="group-title" data-i18n="bangumi.resource_links"></h3>
+                    <p class="muted" data-i18n="bangumi.resource_hint"></p>
+                    <div class="bangumi-site-list" id="bangumi-site-list"></div>
+                    <div class="inline-form">
+                        <input type="text" id="bangumi-site-name" class="text-input"
+                               placeholder="name" autocomplete="off" spellcheck="false">
+                        <input type="text" id="bangumi-site-url" class="text-input"
+                               placeholder="https://…/{keyword}" autocomplete="off" spellcheck="false">
+                        <button id="btn-bangumi-site-add" class="btn btn-secondary" type="button"
+                                data-i18n="bangumi.mirrors_add"></button>
+                    </div>
+                </div>
+
+                <div class="group">
+                    <h3 class="group-title" data-i18n="bangumi.title"></h3>
+                    <label class="option">
+                        <span data-i18n="bangumi.api_host"></span>
+                        <input type="text" id="bangumi-api-host" class="text-input"
+                               autocomplete="off" spellcheck="false">
+                    </label>
+                    <label class="option">
+                        <span data-i18n="bangumi.web_host"></span>
+                        <input type="text" id="bangumi-web-host" class="text-input"
+                               autocomplete="off" spellcheck="false">
+                    </label>
+                    <label class="option">
+                        <span data-i18n="bangumi.request_interval"></span>
+                        <input type="number" id="bangumi-request-interval" class="text-input"
+                               min="0" max="10" step="0.5">
+                    </label>
+                    <label class="option">
+                        <span data-i18n="bangumi.skip_ssl_verify"></span>
+                        <input type="checkbox" id="bangumi-skip-ssl">
+                    </label>
+                    <label class="option">
+                        <span data-i18n="bangumi.download_dir"></span>
+                        <div class="inline-form">
+                            <input type="text" id="bangumi-download-dir" class="text-input"
+                                   readonly autocomplete="off">
+                            <button id="btn-bangumi-choose-dir" class="btn btn-secondary" type="button"
+                                    data-i18n="settings.choose_background"></button>
+                        </div>
+                    </label>
+                </div>
             </div>
 
             <div class="tab-panel" data-panel="account">

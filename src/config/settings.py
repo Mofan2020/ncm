@@ -156,6 +156,29 @@ class BiliSettings:
 
 
 @dataclass
+class BangumiSettings:
+    """Bangumi（番组计划）的设置。
+
+    收藏和观看历史只存在本地，这里不放它们——那部分在
+    ``bangumi.json`` 里。
+    """
+    #: API 主机。国内用 ``api.bangumi.lat``，境外可以用 ``api.bgm.tv``。
+    api_host: str = "api.bangumi.lat"
+    #: 网页主机（条目页、资源区）。国内默认走镜像。
+    web_host: str = "bangumi.lat"
+    #: 镜像清单，顺序即默认顺序。第一个会拿来当默认。
+    mirrors: list[dict[str, Any]] = field(default_factory=list)
+    #: 资源站模板。用户自己填，程序按模板生成搜索/下载链接。
+    resource_sites: list[dict[str, Any]] = field(default_factory=list)
+    #: 两次请求之间的最小间隔（秒）。别调到太小，别人服务器会限流。
+    request_interval: float = 1.0
+    #: 跳过 SSL 校验。给用加速器代理的用户用。
+    skip_ssl_verify: bool = False
+    #: 下载落盘的位置。空字符串表示用默认的「下载/Bangumi」。
+    download_dir: str = ""
+
+
+@dataclass
 class UISettings:
     """UI-related settings."""
 
@@ -243,6 +266,7 @@ class AppSettings:
     auth: AuthSettings = field(default_factory=AuthSettings)
     local_playlists: LocalPlaylistSettings = field(default_factory=LocalPlaylistSettings)
     bili: BiliSettings = field(default_factory=BiliSettings)
+    bangumi: BangumiSettings = field(default_factory=BangumiSettings)
     debug: bool = False
 
 
@@ -257,6 +281,109 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return bool(value)
+
+
+def _clean_host(value: Any) -> str:
+    """Pull a bare host out of whatever the user typed.
+
+    Accepts ``bangumi.lat``, ``https://bangumi.lat/``, ``api.bgm.tv/v0``
+    and gives back ``bangumi.lat`` / ``api.bgm.tv``.  A host is only a host
+    name -- a path in there is a mistake worth silently dropping.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    text = text.split("/", 1)[0]
+    text = text.split("?", 1)[0].strip()
+    if "@" in text:
+        text = text.rsplit("@", 1)[1]
+    # A port is not part of the host name.
+    if ":" in text:
+        text = text.split(":", 1)[0]
+    # Only a host name is allowed here -- no spaces, no slashes.
+    if not text or any(ch.isspace() for ch in text):
+        return ""
+    if not all(ch.isalnum() or ch in ".-" for ch in text):
+        return ""
+    # A bare number is a YAML accident (``api_host: 123``), not a host name:
+    # a host has at least one dot or a letter in it.
+    if not any(ch.isalpha() for ch in text):
+        return ""
+    return text.lower()
+
+
+def _clean_mirrors(value: Any) -> list[dict[str, Any]]:
+    """Keep the mirror list well-formed.
+
+    Each entry needs an id and at least one host; everything else is
+    optional.  Broken entries are dropped rather than repaired -- a mirror
+    with no host is useless.
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        mid = str(raw.get("id") or "").strip()
+        api_hosts = [_clean_host(h) for h in (raw.get("api_hosts") or [])
+                     if isinstance(h, str)]
+        api_hosts = [h for h in api_hosts if h]
+        main_hosts = [_clean_host(h) for h in (raw.get("main_hosts") or [])
+                      if isinstance(h, str)]
+        main_hosts = [h for h in main_hosts if h]
+        if not mid:
+            mid = (api_hosts or main_hosts or ["mirror"])[0]
+        if not (api_hosts or main_hosts):
+            continue
+        if mid in seen:
+            continue
+        seen.add(mid)
+        out.append({
+            "id": mid,
+            "name": str(raw.get("name") or mid),
+            "url": str(raw.get("url") or ""),
+            "api_hosts": api_hosts,
+            "main_hosts": main_hosts,
+            "recommended": bool(raw.get("recommended")),
+            "note": str(raw.get("note") or ""),
+        })
+    return out
+
+
+def _clean_resource_sites(value: Any) -> list[dict[str, Any]]:
+    """Keep the resource-site templates well-formed.
+
+    A site without a ``detail_url`` or a ``search_url`` is useless, so it
+    is dropped.  The URLs are not validated any further -- the user may
+    legitimately use a template with a placeholder in it.
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        detail = str(raw.get("detail_url") or "").strip()
+        search = str(raw.get("search_url") or "").strip()
+        if not detail and not search:
+            continue
+        sid = str(raw.get("id") or "").strip()
+        if not sid:
+            sid = detail or search
+        out.append({
+            "id": sid,
+            "name": str(raw.get("name") or sid),
+            "kind": str(raw.get("kind") or ""),
+            "enabled": _as_bool(raw.get("enabled", True)),
+            "detail_url": detail,
+            "search_url": search,
+            "note": str(raw.get("note") or ""),
+        })
+    return out
 
 
 class Settings:
@@ -364,6 +491,7 @@ class Settings:
                 auth=AuthSettings(**_filtered(AuthSettings, raw.get("auth"))),
                 local_playlists=LocalPlaylistSettings(**_filtered(LocalPlaylistSettings, raw.get("local_playlists"))),
                 bili=BiliSettings(**_filtered(BiliSettings, raw.get("bili"))),
+                bangumi=BangumiSettings(**_filtered(BangumiSettings, raw.get("bangumi"))),
                 debug=bool(raw.get("debug", False)),
             )
             self._normalize()
@@ -439,6 +567,16 @@ class Settings:
                 value = []
             setattr(bili, name, [str(item).strip() for item in value if str(item or "").strip()])
 
+        bangumi = self._data.bangumi
+        bangumi.api_host = _clean_host(bangumi.api_host) or "api.bangumi.lat"
+        bangumi.web_host = _clean_host(bangumi.web_host) or "bangumi.lat"
+        bangumi.request_interval = self._clamp_float(
+            bangumi.request_interval, 0.0, 10.0, 1.0)
+        bangumi.skip_ssl_verify = _as_bool(bangumi.skip_ssl_verify)
+        bangumi.download_dir = str(bangumi.download_dir or "")
+        bangumi.mirrors = _clean_mirrors(bangumi.mirrors)
+        bangumi.resource_sites = _clean_resource_sites(bangumi.resource_sites)
+
     @staticmethod
     def _clamp_range(value: Any, low: int, high: int, fallback: int) -> int:
         try:
@@ -463,6 +601,8 @@ class Settings:
                 "local_playlists": asdict(self._data.local_playlists),
                 # 少了这一段，B站设置页保存时写得进内存、重启就回默认值。
                 "bili": asdict(self._data.bili),
+                # Bangumi 的镜像和资源站模板同理。
+                "bangumi": asdict(self._data.bangumi),
                 "debug": self._data.debug,
             }
             try:
@@ -547,6 +687,14 @@ class Settings:
         for key, value in kwargs.items():
             if hasattr(self._data.bili, key):
                 setattr(self._data.bili, key, value)
+        self._normalize()
+        self.save()
+
+    def update_bangumi(self, **kwargs: Any) -> None:
+        """Store the Bangumi settings and write them out."""
+        for key, value in kwargs.items():
+            if hasattr(self._data.bangumi, key):
+                setattr(self._data.bangumi, key, value)
         self._normalize()
         self.save()
 

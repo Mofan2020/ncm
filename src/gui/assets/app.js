@@ -802,6 +802,7 @@ async function loadSettings() {
 function fillSettingsForm() {
     const s = state.settings;
     if (!s) return;
+    fillBangumiSettings(s.bangumi);
     setValue('quality-select', s.download.quality);
     setValue('concurrent-select', String(s.download.max_concurrent));
     setChecked('overwrite-check', s.download.overwrite);
@@ -1104,10 +1105,20 @@ async function saveSettings() {
             interest_tags: splitTagWords(document.getElementById('bili-interest-tags').value),
             blocked_tags: splitTagWords(document.getElementById('bili-blocked-tags').value),
         },
+        bangumi: {
+            api_host: (document.getElementById('bangumi-api-host') || {}).value || '',
+            web_host: (document.getElementById('bangumi-web-host') || {}).value || '',
+            request_interval: parseFloat(
+                (document.getElementById('bangumi-request-interval') || {}).value) || 1,
+            skip_ssl_verify: !!(
+                (document.getElementById('bangumi-skip-ssl') || {}).checked),
+            mirrors: bangumiSettingsState.mirrors,
+            resource_sites: bangumiSettingsState.sites,
+        },
         debug: document.getElementById('debug-check').checked,
     };
 
-    for (const category of ['download', 'playback', 'ui', 'auth', 'bili']) {
+    for (const category of ['download', 'playback', 'ui', 'auth', 'bili', 'bangumi']) {
         const result = await state.api.update_settings(category, payload[category]);
         if (result && result.success) state.settings = result.settings;
     }
@@ -2615,6 +2626,12 @@ function showView(name) {
     if (name === 'bili-download') {
         renderBiliDownloadQueue();
     }
+    // The Bangumi page re-reads whichever tab it is on: the local favourites
+    // and the history may have changed in another view.
+    if (name === 'bangumi') {
+        if (bangumiState.tab === 'favorites') loadBangumiFavorites(true);
+        else if (bangumiState.tab === 'history') loadBangumiHistory(true);
+    }
 }
 
 /**
@@ -2626,6 +2643,7 @@ function showView(name) {
  */
 function currentSection(name) {
     if (name === 'bili' || name === 'bili-download') return 'bili';
+    if (name === 'bangumi') return 'bangumi';
     if (name === 'home' || name === 'search') return name === 'search' ? 'search' : 'home';
     return 'netease';
 }
@@ -8187,6 +8205,7 @@ function showHome() {
 async function updateHomeCounts() {
     const neteaseLine = document.getElementById('home-count-netease');
     const biliLine = document.getElementById('home-count-bili');
+    const bangumiLine = document.getElementById('home-count-bangumi');
     const foot = document.getElementById('home-foot');
     if (neteaseLine) {
         neteaseLine.textContent = '--';
@@ -8195,6 +8214,10 @@ async function updateHomeCounts() {
     if (biliLine) {
         biliLine.textContent = '--';
         biliLine.classList.remove('is-empty');
+    }
+    if (bangumiLine) {
+        bangumiLine.textContent = '--';
+        bangumiLine.classList.remove('is-empty');
     }
     if (foot) foot.hidden = true;
     let failed = false;
@@ -8237,6 +8260,26 @@ async function updateHomeCounts() {
         if (biliLine) biliLine.classList.add('is-empty');
     }
 
+    // Bangumi: the number of locally saved favourites.  No request to a
+    // server -- the list is a file on this machine.
+    if (bangumiLine) {
+        if (!bridgeHas('get_bangumi_favorites')) {
+            bangumiLine.classList.add('is-empty');
+        } else {
+            try {
+                const result = await state.api.get_bangumi_favorites();
+                if (result && result.success) {
+                    const count = (result.items || []).length;
+                    bangumiLine.textContent = t('bangumi.tab_favorites') + ' ' + count;
+                } else {
+                    bangumiLine.classList.add('is-empty');
+                }
+            } catch (err) {
+                bangumiLine.classList.add('is-empty');
+            }
+        }
+    }
+
     if (failed && foot) foot.hidden = false;
 }
 
@@ -8276,6 +8319,16 @@ function openHomeEntry(entry, byKeyboard) {
         // session may have ended in the meantime.
         loadBiliAccount();
         focusPageTitle('bili-title');
+        return;
+    }
+    if (entry === 'bangumi') {
+        showSection('bangumi');
+        // The Bangumi page has no account, so there is nothing to load up
+        // front: the search box is where the user starts.
+        setBangumiTab(bangumiState.tab || 'search');
+        const input = document.getElementById('bangumi-search-input');
+        if (byKeyboard && input) input.focus();
+        else focusPageTitle('bangumi-title');
         return;
     }
     if (entry === 'search') {
@@ -13309,8 +13362,749 @@ function bindNewBiliFeatures() {
     }
 }
 
+
+/* ================================================================ Bangumi
+ *
+ * 番组计划的资料库。跟 B站那一半不一样：这里**没有账号**，收藏和观看
+ * 历史只存在本机（bridge 写到 bangumi.json），不跟任何服务器同步。
+ *
+ * 三块：搜索、收藏、观看历史。点一个条目开详情，里面有选集和资源链接。
+ */
+
+const bangumiState = {
+    tab: 'search',
+    keyword: '',
+    results: [],
+    loading: false,
+    error: '',
+    favorites: [],
+    history: [],
+    subject: null,
+    episodes: [],
+    resources: [],
+    detailLoading: false
+};
+
+/** 封面走本地代理：图床在 lain.bangumi.lat，网页不能直接连。 */
+function bangumiImageSrc(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw;
+    const base = state.mediaBaseUrl;
+    if (!base) return '';
+    return base + '/bgm?u=' + encodeURIComponent(raw);
+}
+
+/** 一个番剧条目渲染成卡片。 */
+function bangumiTileElement(item, options) {
+    const opts = options || {};
+    const card = document.createElement('button');
+    card.className = 'video-card is-tile';
+    card.type = 'button';
+    const title = item.name_cn || item.name || '';
+    card.setAttribute('aria-label', title);
+    const thumb = document.createElement('div');
+    thumb.className = 'vc-thumb';
+    const cover = item.cover || (item.images && item.images.common);
+    if (cover) {
+        const image = document.createElement('img');
+        image.src = bangumiImageSrc(cover);
+        image.alt = '';
+        image.loading = 'lazy';
+        image.addEventListener('error', () => { image.remove(); });
+        thumb.appendChild(image);
+    }
+    if (opts.badge) {
+        const badge = document.createElement('span');
+        badge.className = 'vc-dur';
+        badge.textContent = opts.badge;
+        thumb.appendChild(badge);
+    }
+    card.appendChild(thumb);
+    const label = document.createElement('span');
+    label.className = 'vc-title';
+    label.textContent = title;
+    card.appendChild(label);
+    if (opts.sub) {
+        const sub = document.createElement('span');
+        sub.className = 'vc-sub';
+        sub.textContent = opts.sub;
+        card.appendChild(sub);
+    }
+    card.addEventListener('click', () => opts.onClick && opts.onClick(item));
+    return card;
+}
+
+/** 切标签页。 */
+function setBangumiTab(tab) {
+    const known = ['search', 'favorites', 'history'];
+    bangumiState.tab = known.indexOf(tab) >= 0 ? tab : 'search';
+    document.querySelectorAll('#bangumi-tabs .top-tab').forEach((button) =>
+        button.classList.toggle('is-active', button.dataset.bangumiTab === bangumiState.tab));
+    ['search', 'favorites', 'history'].forEach((key) => {
+        const box = document.getElementById('bangumi-seg-' + key);
+        if (box) box.hidden = key !== bangumiState.tab;
+    });
+    if (bangumiState.tab === 'favorites') loadBangumiFavorites(false);
+    if (bangumiState.tab === 'history') loadBangumiHistory(false);
+}
+
+/** 搜番剧。 */
+async function searchBangumi(force) {
+    const keyword = String(bangumiState.keyword || '').trim();
+    const grid = document.getElementById('bangumi-results');
+    const stateEl = document.getElementById('bangumi-state');
+    if (!grid) return;
+    if (!keyword) {
+        bangumiState.results = [];
+        renderBangumiResults();
+        return;
+    }
+    if (bangumiState.results.length && !force) {
+        renderBangumiResults();
+        return;
+    }
+    bangumiState.loading = true;
+    bangumiState.error = '';
+    renderBangumiResults();
+    try {
+        const result = await state.api.search_bangumi(keyword, 24, 2);
+        if (result && result.success) {
+            bangumiState.results = result.items || [];
+        } else {
+            bangumiState.results = [];
+            bangumiState.error = (result && result.error_key)
+                ? t(result.error_key) : t('bangumi.search_failed');
+        }
+    } catch (err) {
+        bangumiState.results = [];
+        bangumiState.error = t('bangumi.error.network');
+    }
+    bangumiState.loading = false;
+    renderBangumiResults();
+}
+
+function renderBangumiResults() {
+    const grid = document.getElementById('bangumi-results');
+    const stateEl = document.getElementById('bangumi-state');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (stateEl) {
+        stateEl.textContent = bangumiState.loading ? t('common.loading')
+            : (bangumiState.error || '');
+    }
+    if (!bangumiState.loading && bangumiState.error) return;
+    if (!bangumiState.loading && !bangumiState.results.length) {
+        if (stateEl) stateEl.textContent = t('bangumi.search_empty');
+        return;
+    }
+    bangumiState.results.forEach((item) => {
+        const count = Number(item.total_episodes) || 0;
+        const score = item.rating_score;
+        grid.appendChild(bangumiTileElement(item, {
+            badge: count ? t('bangumi.detail_total_episodes', { count: count }) : '',
+            sub: score ? t('bangumi.detail_rating') + ' ' + score : '',
+            onClick: (entry) => openBangumiSubject(entry.id)
+        }));
+    });
+}
+
+/** 本地收藏。 */
+async function loadBangumiFavorites(force) {
+    const grid = document.getElementById('bangumi-favorites');
+    const stateEl = document.getElementById('bangumi-favorites-state');
+    if (!grid) return;
+    if (bangumiState.favorites.length && !force) {
+        renderBangumiFavorites();
+        return;
+    }
+    try {
+        const result = await state.api.get_bangumi_favorites();
+        bangumiState.favorites = (result && result.items) || [];
+    } catch (err) {
+        bangumiState.favorites = [];
+    }
+    renderBangumiFavorites();
+}
+
+function renderBangumiFavorites() {
+    const grid = document.getElementById('bangumi-favorites');
+    const stateEl = document.getElementById('bangumi-favorites-state');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (!bangumiState.favorites.length) {
+        if (stateEl) stateEl.textContent = t('bangumi.fav_empty');
+        return;
+    }
+    if (stateEl) stateEl.textContent = '';
+    bangumiState.favorites.forEach((item) => {
+        grid.appendChild(bangumiTileElement(item, {
+            onClick: (entry) => openBangumiSubject(entry.subject_id)
+        }));
+    });
+}
+
+/** 本地观看历史。 */
+async function loadBangumiHistory(force) {
+    const grid = document.getElementById('bangumi-history');
+    const stateEl = document.getElementById('bangumi-history-state');
+    const clear = document.getElementById('btn-bangumi-clear-history');
+    if (!grid) return;
+    if (bangumiState.history.length && !force) {
+        renderBangumiHistory();
+        return;
+    }
+    try {
+        const result = await state.api.get_bangumi_history();
+        bangumiState.history = (result && result.items) || [];
+    } catch (err) {
+        bangumiState.history = [];
+    }
+    renderBangumiHistory();
+}
+
+function renderBangumiHistory() {
+    const grid = document.getElementById('bangumi-history');
+    const stateEl = document.getElementById('bangumi-history-state');
+    const clear = document.getElementById('btn-bangumi-clear-history');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (clear) clear.hidden = !bangumiState.history.length;
+    if (!bangumiState.history.length) {
+        if (stateEl) stateEl.textContent = t('bangumi.history_empty');
+        return;
+    }
+    if (stateEl) stateEl.textContent = '';
+    bangumiState.history.forEach((item) => {
+        const count = Number(item.ep) || 0;
+        grid.appendChild(bangumiTileElement(item, {
+            badge: count ? t('bangumi.history_watched', { ep: count }) : '',
+            sub: item.name_cn || item.name || '',
+            onClick: (entry) => openBangumiSubject(entry.subject_id)
+        }));
+    });
+}
+
+/** 开一个条目的详情：资料 + 选集 + 资源链接。 */
+async function openBangumiSubject(subjectId) {
+    const detail = document.getElementById('bangumi-detail');
+    if (!detail) return;
+    detail.hidden = false;
+    document.getElementById('bangumi-seg-search').hidden = true;
+    document.getElementById('bangumi-seg-favorites').hidden = true;
+    document.getElementById('bangumi-seg-history').hidden = true;
+    bangumiState.detailLoading = true;
+    bangumiState.subject = null;
+    bangumiState.episodes = [];
+    bangumiState.resources = [];
+    renderBangumiDetail();
+    try {
+        const result = await state.api.get_bangumi_subject(subjectId);
+        if (result && result.success) {
+            bangumiState.subject = result.subject;
+        }
+        const eps = await state.api.get_bangumi_episodes(subjectId);
+        if (eps && eps.success) bangumiState.episodes = eps.episodes || [];
+        const res = await state.api.get_bangumi_resource_links(subjectId);
+        if (res && res.success) bangumiState.resources = res.links || [];
+    } catch (err) {
+        /* 详情拿不到就显示空的，不该把整个界面弄崩 */
+    }
+    bangumiState.detailLoading = false;
+    renderBangumiDetail();
+}
+
+/** 关掉详情，回到列表。 */
+function closeBangumiSubject() {
+    const detail = document.getElementById('bangumi-detail');
+    if (detail) detail.hidden = true;
+    setBangumiTab(bangumiState.tab);
+}
+
+function renderBangumiDetail() {
+    const subject = bangumiState.subject;
+    const titleEl = document.getElementById('bangumi-detail-title');
+    const coverEl = document.getElementById('bangumi-detail-cover');
+    const metaEl = document.getElementById('bangumi-detail-meta');
+    const summaryEl = document.getElementById('bangumi-detail-summary');
+    const favButton = document.getElementById('btn-bangumi-favorite');
+    const episodesEl = document.getElementById('bangumi-episodes');
+    const episodesState = document.getElementById('bangumi-episodes-state');
+    const resourcesEl = document.getElementById('bangumi-resources');
+    const resourcesState = document.getElementById('bangumi-resources-state');
+    if (!titleEl) return;
+
+    if (!subject) {
+        titleEl.textContent = bangumiState.detailLoading ? t('common.loading') : '';
+        if (episodesEl) episodesEl.innerHTML = '';
+        if (episodesState) episodesState.textContent = '';
+        if (resourcesEl) resourcesEl.innerHTML = '';
+        if (resourcesState) resourcesState.textContent = '';
+        return;
+    }
+
+    titleEl.textContent = subject.name_cn || subject.name || '';
+    const images = subject.images || {};
+    const cover = images.large || images.common || images.medium || '';
+    if (coverEl) {
+        if (cover) {
+            coverEl.src = bangumiImageSrc(cover);
+            coverEl.hidden = false;
+        } else {
+            coverEl.hidden = true;
+        }
+    }
+
+    const meta = [];
+    const count = Number(subject.total_episodes) || 0;
+    if (count) meta.push(t('bangumi.detail_total_episodes', { count: count }));
+    if (subject.rating_score) meta.push(t('bangumi.detail_rating') + ' ' + subject.rating_score);
+    const collected = (subject.collection && subject.collection.collect) || 0;
+    if (collected) meta.push(t('bangumi.detail_collected', { count: collected }));
+    if (subject.platform) meta.push(subject.platform);
+    if (subject.date) meta.push(subject.date);
+    if (metaEl) metaEl.textContent = meta.join(' · ');
+    if (summaryEl) summaryEl.textContent = subject.summary || '';
+
+    if (favButton) {
+        favButton.textContent = subject.favorite
+            ? t('bangumi.fav_remove') : t('bangumi.fav_add');
+        favButton.classList.toggle('is-primary', !!subject.favorite);
+    }
+
+    if (episodesEl) {
+        episodesEl.innerHTML = '';
+        bangumiState.episodes.forEach((ep) => {
+            const row = document.createElement('div');
+            row.className = 'bangumi-episode';
+            const name = document.createElement('span');
+            name.className = 'bangumi-episode-name';
+            name.textContent = ep.label || ep.name_cn || ep.name || '';
+            row.appendChild(name);
+            if (ep.type_name && ep.type !== 0) {
+                const tag = document.createElement('span');
+                tag.className = 'bangumi-episode-type';
+                tag.textContent = ep.type_name;
+                row.appendChild(tag);
+            }
+            if (ep.duration) {
+                const dur = document.createElement('span');
+                dur.className = 'bangumi-episode-duration';
+                dur.textContent = ep.duration;
+                row.appendChild(dur);
+            }
+            if (ep.airdate) {
+                const date = document.createElement('span');
+                date.className = 'bangumi-episode-date';
+                date.textContent = ep.airdate;
+                row.appendChild(date);
+            }
+            const action = document.createElement('button');
+            action.className = 'btn btn-sm btn-secondary';
+            action.type = 'button';
+            action.textContent = t('bangumi.resource_links');
+            action.addEventListener('click', () => {
+                showBangumiEpisodeLinks(ep);
+            });
+            row.appendChild(action);
+            episodesEl.appendChild(row);
+        });
+    }
+    if (episodesState) {
+        episodesState.textContent = bangumiState.detailLoading ? t('bangumi.episodes_loading')
+            : (bangumiState.episodes.length ? '' : t('bangumi.episodes_empty'));
+    }
+
+    renderBangumiResources();
+}
+
+function renderBangumiResources() {
+    const list = document.getElementById('bangumi-resources');
+    const stateEl = document.getElementById('bangumi-resources-state');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!bangumiState.resources.length) {
+        if (stateEl) stateEl.textContent = t('bangumi.resource_empty');
+        return;
+    }
+    if (stateEl) stateEl.textContent = '';
+    bangumiState.resources.forEach((link) => {
+        const row = document.createElement('div');
+        row.className = 'bangumi-resource';
+        const name = document.createElement('span');
+        name.className = 'bangumi-resource-name';
+        name.textContent = link.name || link.id || '';
+        row.appendChild(name);
+        const url = link.search_url || link.detail_url;
+        if (url) {
+            const anchor = document.createElement('a');
+            anchor.className = 'bangumi-resource-link';
+            anchor.href = url;
+            anchor.target = '_blank';
+            anchor.rel = 'noreferrer noopener';
+            anchor.textContent = url;
+            row.appendChild(anchor);
+
+            // 直链才值得下载；给的是网页的话下回来是一页 HTML。
+            if (/\.(mp4|mkv|avi|webm|flv|m4v|mp3|flac|m4a|zip|7z|rar|txt|ass|srt)(\?|$)/i.test(url)) {
+                const save = document.createElement('button');
+                save.className = 'btn btn-sm btn-secondary';
+                save.type = 'button';
+                save.textContent = t('bangumi.download');
+                save.addEventListener('click', () => downloadBangumiUrl(url, save));
+                row.appendChild(save);
+            }
+        }
+        list.appendChild(row);
+    });
+}
+
+/** 某一集的下载链接。 */
+async function showBangumiEpisodeLinks(episode) {
+    const subject = bangumiState.subject;
+    if (!subject) return;
+    try {
+        const result = await state.api.get_bangumi_resource_links(
+            subject.id, episode.id);
+        if (result && result.success) {
+            bangumiState.resources = result.links || [];
+            renderBangumiResources();
+        }
+    } catch (err) {
+        /* 拿不到就留着原来的 */
+    }
+}
+
+/** 把一条资源链接存成文件。 */
+async function downloadBangumiUrl(url, button) {
+    if (!url) return;
+    const label = button ? button.textContent : '';
+    if (button) {
+        button.disabled = true;
+        button.textContent = t('common.loading');
+    }
+    try {
+        const result = await state.api.download_bangumi_url(url);
+        if (result && result.success) {
+            showToast('success', t('bangumi.download_done'));
+        } else {
+            showToast('error', t('bangumi.download_failed'));
+        }
+    } catch (err) {
+        showToast('error', t('bangumi.download_failed'));
+    }
+    if (button) {
+        button.disabled = false;
+        button.textContent = label;
+    }
+}
+
+/** 把条目资料和章节表导出成 txt。 */
+async function exportBangumiSubject() {
+    const subject = bangumiState.subject;
+    if (!subject) return;
+    try {
+        const result = await state.api.export_bangumi_subject(subject.id);
+        if (result && result.success) {
+            showToast('success', t('bangumi.export_done'));
+        } else {
+            showToast('error', t('bangumi.download_failed'));
+        }
+    } catch (err) {
+        showToast('error', t('bangumi.download_failed'));
+    }
+}
+
+/** 收藏 / 取消收藏。 */
+async function toggleBangumiFavorite() {
+    const subject = bangumiState.subject;
+    if (!subject) return;
+    try {
+        const result = await state.api.toggle_bangumi_favorite(subject.id);
+        if (result && result.success) {
+            subject.favorite = !!result.favorite;
+            renderBangumiDetail();
+            // 收藏列表变了，回去的时候要重新读。
+            bangumiState.favorites = [];
+        }
+    } catch (err) {
+        /* 忽略 */
+    }
+}
+
+/** 清空观看历史。 */
+async function clearBangumiHistory() {
+    try {
+        await state.api.clear_bangumi_history();
+        bangumiState.history = [];
+        renderBangumiHistory();
+    } catch (err) {
+        /* 忽略 */
+    }
+}
+
+
+/* ------------------------------------------- Bangumi: the settings page */
+
+/** The mirrors and the resource sites, as the user arranged them. */
+const bangumiSettingsState = {
+    mirrors: [],
+    sites: []
+};
+
+/** Put the saved Bangumi settings into the form. */
+function fillBangumiSettings(cfg) {
+    const data = cfg || {};
+    bangumiSettingsState.mirrors = Array.isArray(data.mirrors)
+        ? data.mirrors.map((item) => Object.assign({}, item)) : [];
+    bangumiSettingsState.sites = Array.isArray(data.resource_sites)
+        ? data.resource_sites.map((item) => Object.assign({}, item)) : [];
+    const host = document.getElementById('bangumi-api-host');
+    if (host) host.value = data.api_host || '';
+    const web = document.getElementById('bangumi-web-host');
+    if (web) web.value = data.web_host || '';
+    const interval = document.getElementById('bangumi-request-interval');
+    if (interval) interval.value = String(data.request_interval || 1);
+    const skip = document.getElementById('bangumi-skip-ssl');
+    if (skip) skip.checked = !!data.skip_ssl_verify;
+    renderBangumiMirrors();
+    renderBangumiSites();
+}
+
+/** One row per mirror, with the buttons that move it up and down. */
+function renderBangumiMirrors() {
+    const list = document.getElementById('bangumi-mirror-list');
+    if (!list) return;
+    list.innerHTML = '';
+    bangumiSettingsState.mirrors.forEach((mirror, index) => {
+        const row = document.createElement('div');
+        row.className = 'bangumi-setting-row';
+        const name = document.createElement('span');
+        name.className = 'bangumi-setting-name';
+        name.textContent = mirror.name || mirror.id || '';
+        row.appendChild(name);
+        const host = document.createElement('span');
+        host.className = 'bangumi-setting-host';
+        host.textContent = (mirror.api_hosts || []).join(', ');
+        row.appendChild(host);
+
+        const up = document.createElement('button');
+        up.className = 'btn btn-sm btn-ghost';
+        up.type = 'button';
+        up.textContent = '↑';
+        up.title = t('bangumi.mirrors_up');
+        up.addEventListener('click', () => moveBangumiMirror(index, -1));
+        row.appendChild(up);
+
+        const down = document.createElement('button');
+        down.className = 'btn btn-sm btn-ghost';
+        down.type = 'button';
+        down.textContent = '↓';
+        down.title = t('bangumi.mirrors_down');
+        down.addEventListener('click', () => moveBangumiMirror(index, 1));
+        row.appendChild(down);
+
+        const remove = document.createElement('button');
+        remove.className = 'btn btn-sm btn-ghost';
+        remove.type = 'button';
+        remove.textContent = '✕';
+        remove.title = t('bangumi.mirrors_remove');
+        remove.addEventListener('click', () => {
+            bangumiSettingsState.mirrors.splice(index, 1);
+            renderBangumiMirrors();
+        });
+        row.appendChild(remove);
+        list.appendChild(row);
+    });
+}
+
+function moveBangumiMirror(index, step) {
+    const target = index + step;
+    if (target < 0 || target >= bangumiSettingsState.mirrors.length) return;
+    const item = bangumiSettingsState.mirrors.splice(index, 1)[0];
+    bangumiSettingsState.mirrors.splice(target, 0, item);
+    renderBangumiMirrors();
+}
+
+/** One row per resource site. */
+function renderBangumiSites() {
+    const list = document.getElementById('bangumi-site-list');
+    if (!list) return;
+    list.innerHTML = '';
+    bangumiSettingsState.sites.forEach((site, index) => {
+        const row = document.createElement('div');
+        row.className = 'bangumi-setting-row';
+        const name = document.createElement('span');
+        name.className = 'bangumi-setting-name';
+        name.textContent = site.name || site.id || '';
+        row.appendChild(name);
+        const url = document.createElement('span');
+        url.className = 'bangumi-setting-host';
+        url.textContent = site.detail_url || site.search_url || '';
+        row.appendChild(url);
+
+        const remove = document.createElement('button');
+        remove.className = 'btn btn-sm btn-ghost';
+        remove.type = 'button';
+        remove.textContent = '✕';
+        remove.title = t('bangumi.mirrors_remove');
+        remove.addEventListener('click', () => {
+            bangumiSettingsState.sites.splice(index, 1);
+            renderBangumiSites();
+        });
+        row.appendChild(remove);
+        list.appendChild(row);
+    });
+}
+
+async function chooseBangumiDownloadDir() {
+    try {
+        const result = await state.api.choose_directory();
+        if (result && result.success && result.path) {
+            const input = document.getElementById('bangumi-download-dir');
+            if (input) input.value = result.path;
+        }
+    } catch (err) {
+        /* 忽略：没有桌面对话框的环境里会失败 */
+    }
+}
+
+/** Add a mirror the user typed in. */
+function addBangumiMirror() {
+    const idInput = document.getElementById('bangumi-mirror-id');
+    const hostInput = document.getElementById('bangumi-mirror-host');
+    const id = idInput ? idInput.value.trim() : '';
+    const host = hostInput ? hostInput.value.trim() : '';
+    if (!host) return;
+    const mirrorId = id || host;
+    if (bangumiSettingsState.mirrors.some((item) => item.id === mirrorId)) return;
+    bangumiSettingsState.mirrors.push({
+        id: mirrorId,
+        name: mirrorId,
+        api_hosts: [host],
+        main_hosts: [],
+        recommended: false,
+    });
+    if (idInput) idInput.value = '';
+    if (hostInput) hostInput.value = '';
+    renderBangumiMirrors();
+}
+
+/** Add a resource site the user typed in. */
+function addBangumiSite() {
+    const nameInput = document.getElementById('bangumi-site-name');
+    const urlInput = document.getElementById('bangumi-site-url');
+    const name = nameInput ? nameInput.value.trim() : '';
+    const url = urlInput ? urlInput.value.trim() : '';
+    if (!url) return;
+    bangumiSettingsState.sites.push({
+        id: name || url,
+        name: name || url,
+        kind: 'custom',
+        enabled: true,
+        detail_url: url,
+        search_url: '',
+        note: '',
+    });
+    if (nameInput) nameInput.value = '';
+    if (urlInput) urlInput.value = '';
+    renderBangumiSites();
+}
+
+/** Pull the official mirror list. */
+async function refreshBangumiMirrors() {
+    try {
+        const result = await state.api.get_bangumi_mirrors(true);
+        const mirrors = (result && result.mirrors) || [];
+        if (!mirrors.length) return;
+        // The official list replaces the built-in ones but keeps the user's
+        // own additions at the end.
+        const own = bangumiSettingsState.mirrors.filter((item) => !item.recommended);
+        bangumiSettingsState.mirrors = mirrors.concat(own);
+        renderBangumiMirrors();
+    } catch (err) {
+        /* 拉不到就留着现在的 */
+    }
+}
+
+/** Back to the mirrors that ship with the app. */
+async function resetBangumiMirrors() {
+    try {
+        const result = await state.api.get_bangumi_built_in_mirrors();
+        const mirrors = (result && result.mirrors) || [];
+        if (mirrors.length) {
+            bangumiSettingsState.mirrors = mirrors;
+            renderBangumiMirrors();
+        }
+    } catch (err) {
+        /* 忽略 */
+    }
+}
+
+function bindBangumiSettings() {
+    const add = document.getElementById('btn-bangumi-mirror-add');
+    if (add) add.addEventListener('click', addBangumiMirror);
+    const refresh = document.getElementById('btn-bangumi-mirror-refresh');
+    if (refresh) refresh.addEventListener('click', refreshBangumiMirrors);
+    const reset = document.getElementById('btn-bangumi-mirror-reset');
+    if (reset) reset.addEventListener('click', resetBangumiMirrors);
+    const addSite = document.getElementById('btn-bangumi-site-add');
+    if (addSite) addSite.addEventListener('click', addBangumiSite);
+    const chooseDir = document.getElementById('btn-bangumi-choose-dir');
+    if (chooseDir) chooseDir.addEventListener('click', () => chooseBangumiDownloadDir());
+}
+
+/** 绑定 Bangumi 的按钮。 */
+function bindBangumiFeatures() {
+    const tabs = document.getElementById('bangumi-tabs');
+    if (tabs) {
+        tabs.addEventListener('click', (event) => {
+            const button = event.target.closest('.top-tab');
+            if (!button) return;
+            setBangumiTab(button.dataset.bangumiTab);
+        });
+    }
+    const searchButton = document.getElementById('btn-bangumi-search');
+    if (searchButton) {
+        searchButton.addEventListener('click', () => {
+            const input = document.getElementById('bangumi-search-input');
+            bangumiState.keyword = input ? input.value : '';
+            searchBangumi(true);
+        });
+    }
+    const input = document.getElementById('bangumi-search-input');
+    if (input) {
+        input.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            bangumiState.keyword = input.value || '';
+            searchBangumi(true);
+        });
+    }
+    const refresh = document.getElementById('btn-bangumi-refresh');
+    if (refresh) {
+        refresh.addEventListener('click', () => {
+            if (bangumiState.tab === 'favorites') loadBangumiFavorites(true);
+            else if (bangumiState.tab === 'history') loadBangumiHistory(true);
+            else searchBangumi(true);
+        });
+    }
+    const back = document.getElementById('btn-bangumi-back');
+    if (back) back.addEventListener('click', () => showView('home'));
+    const detailBack = document.getElementById('btn-bangumi-detail-back');
+    if (detailBack) detailBack.addEventListener('click', closeBangumiSubject);
+    const favButton = document.getElementById('btn-bangumi-favorite');
+    if (favButton) favButton.addEventListener('click', toggleBangumiFavorite);
+    const exportButton = document.getElementById('btn-bangumi-export');
+    if (exportButton) exportButton.addEventListener('click', exportBangumiSubject);
+    const clearButton = document.getElementById('btn-bangumi-clear-history');
+    if (clearButton) clearButton.addEventListener('click', clearBangumiHistory);
+    bindBangumiSettings();
+}
+
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', bindNewBiliFeatures);
+    document.addEventListener('DOMContentLoaded', bindBangumiFeatures);
 } else {
     bindNewBiliFeatures();
+    bindBangumiFeatures();
 }
