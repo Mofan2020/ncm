@@ -312,6 +312,10 @@ class GuiBridge:
                 # 设置面板读回来永远是默认值。
                 "check_updates_on_start": self.settings.ui.check_updates_on_start,
                 "auto_install_updates": self.settings.ui.auto_install_updates,
+                # 版本通道和 SSL 校验开关：少了这两个，前端读回来
+                # 永远是默认值，用户勾了像没勾。
+                "update_include_prerelease": self.settings.ui.update_include_prerelease,
+                "update_skip_ssl_verify": self.settings.ui.update_skip_ssl_verify,
                 "skipped_update_versions": list(self.settings.ui.skipped_update_versions or []),
             },
             "auth": {
@@ -365,6 +369,7 @@ class GuiBridge:
                     "desktop_lyrics_background", "desktop_lyrics_text_style",
                     # 自动更新：同样要在白名单里，否则开关点了也存不下。
                     "check_updates_on_start", "auto_install_updates",
+                    "update_include_prerelease", "update_skip_ssl_verify",
                     "skipped_update_versions"}))
                 if "language" in data:
                     self.i18n.set_language(str(data["language"]))
@@ -1210,12 +1215,23 @@ class GuiBridge:
         The user can skip a version; a skipped tag is reported back as
         ``skipped: true`` so the UI can stay quiet about it instead of
         asking the same question on every start.
+
+        The channel comes from the settings: "允许从预发布版本升级" decides
+        whether a pre-release may be offered at all, and the argument is
+        only kept so the frontend call does not break.  The certificate
+        check is skipped when the user turned it off -- an accelerator
+        proxy rewrites the certificate and the request would fail
+        otherwise.
         """
         from src.core.updater import check_for_update
         from src.version import __version__
 
         try:
-            result = check_for_update(__version__, include_prerelease=include_prerelease)
+            result = check_for_update(
+                __version__,
+                include_prerelease=bool(self.settings.ui.update_include_prerelease),
+                verify=not self.settings.ui.update_skip_ssl_verify,
+            )
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             self.logger.warning("update check failed: %s", exc)
             return {"success": False, "message": str(exc), "skipped": False}
@@ -1267,7 +1283,10 @@ class GuiBridge:
         name = Path(name).name
         dest = Path(tempfile.gettempdir()) / "skycmedia-update" / name
         try:
-            result = download_asset(target_url, str(dest))
+            result = download_asset(
+                target_url, str(dest),
+                verify=not self.settings.ui.update_skip_ssl_verify,
+            )
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             self.logger.warning("update download failed: %s", exc)
             return {"success": False, "message": str(exc), "path": ""}
@@ -3618,12 +3637,19 @@ class GuiBridge:
         calls :meth:`check_app_update`, which returns the same facts plus
         the files to download.  Both go through ``src/core/updater`` so the
         two places can never disagree about what the newest version is.
+
+        The channel and the certificate check come from the same settings
+        as the settings page, so both places answer alike.
         """
         from src.core.updater import check_for_update as _check
         from src.version import __version__
 
         try:
-            result = _check(__version__)
+            result = _check(
+                __version__,
+                include_prerelease=bool(self.settings.ui.update_include_prerelease),
+                verify=not self.settings.ui.update_skip_ssl_verify,
+            )
         except Exception as exc:  # pragma: no cover - defensive
             self.logger.info("update check failed: %s", exc)
             return {"success": False, "available": False, "current": __version__}

@@ -209,7 +209,7 @@ def _asset_list(release: dict[str, Any]) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------
 # talking to GitHub
 # --------------------------------------------------------------------------
-def _ssl_context() -> ssl.SSLContext | None:
+def _ssl_context(verify: bool = True) -> ssl.SSLContext | None:
     """A TLS context that actually trusts somebody.
 
     ``urllib`` builds its context from the OpenSSL paths that were compiled
@@ -219,9 +219,16 @@ def _ssl_context() -> ssl.SSLContext | None:
     failed".  ``certifi`` ships with the app (it comes with ``requests``) and
     carries a CA bundle that does exist, so fall back to it.
 
+    ``verify=False`` turns the certificate check off completely.  Some users
+    reach GitHub through an accelerator that re-signs the TLS connection on
+    the way, and their certificate cannot be verified by anybody.  That is
+    insecure on purpose and only the user can ask for it.
+
     Returns ``None`` when no usable context can be built, in which case the
     stock behaviour is kept.
     """
+    if not verify:
+        return _unverified_context()
     try:
         context = ssl.create_default_context()
         if context.get_ca_certs():
@@ -241,7 +248,20 @@ def _ssl_context() -> ssl.SSLContext | None:
         return None
 
 
-def _get_json(url: str, timeout: float) -> Any:
+def _unverified_context() -> ssl.SSLContext:
+    """A TLS context that accepts every certificate.
+
+    Python refuses to set ``CERT_NONE`` while ``check_hostname`` is on, so
+    the hostname check has to go first -- otherwise the assignment raises
+    ``ValueError`` on 3.12 and newer.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def _get_json(url: str, timeout: float, verify: bool = True) -> Any:
     """GET a GitHub API endpoint and decode the JSON body.
 
     Raises ``_NoReleases`` for 404, ``_RateLimited`` for 403/429 and lets
@@ -256,7 +276,8 @@ def _get_json(url: str, timeout: float) -> Any:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout, context=_ssl_context()) as response:
+        context = _ssl_context(verify)
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -270,12 +291,20 @@ def _get_json(url: str, timeout: float) -> Any:
         raise ValueError("GitHub API 返回的不是合法的 JSON") from exc
 
 
-def _pick_latest(releases: list[Any]) -> dict[str, Any] | None:
-    """The newest non-draft entry of a release list."""
+def _pick_latest(releases: list[Any], allow_prerelease: bool = True) -> dict[str, Any] | None:
+    """The newest entry of a release list.
+
+    Drafts are never offered -- they are invisible on the release page.
+    A pre-release is only offered when the caller allows it: the user who
+    picked the "latest" channel must never be handed a beta, even when
+    the beta carries the higher version number.
+    """
     best: dict[str, Any] | None = None
     best_version: tuple[int, ...] = ()
     for release in releases:
         if not isinstance(release, dict) or release.get("draft"):
+            continue
+        if not allow_prerelease and release.get("prerelease"):
             continue
         version = parse_version(release.get("tag_name") or "")
         if best is None or version > best_version:
@@ -288,8 +317,19 @@ def check_for_update(
     repo: str = DEFAULT_REPO,
     timeout: float = 10.0,
     include_prerelease: bool = False,
+    allow_prerelease: bool | None = None,
+    verify: bool = True,
 ) -> dict[str, Any]:
     """Ask GitHub whether a newer release exists.
+
+    ``include_prerelease`` says whether the user allowed pre-releases, and
+    decides which endpoint is asked: the release list knows about them,
+    ``/releases/latest`` does not.  ``allow_prerelease`` says whether such
+    a release may actually be picked out of the list and defaults to
+    following ``include_prerelease``.
+
+    A pre-release is only ever offered when both flags allow it -- the user
+    who picked the "latest" channel never gets handed a beta.
 
     Returns a dict with ``success``, ``current``, ``latest``, ``version``,
     ``url``, ``notes``, ``assets`` and ``message``.  ``latest`` is the raw
@@ -298,6 +338,10 @@ def check_for_update(
     Never raises: a missing release, a rate limit and a dead network all end
     up as ``success: False`` with a message that says what happened.
     """
+    if allow_prerelease is None:
+        allow_prerelease = include_prerelease
+    offer_prerelease = bool(include_prerelease) and bool(allow_prerelease)
+
     result: dict[str, Any] = {
         "success": False,
         "current": current_version,
@@ -309,13 +353,15 @@ def check_for_update(
         "message": "",
     }
 
+    # The release list is the only endpoint that knows about pre-releases,
+    # so it is the one to ask when the user allowed them.
     if include_prerelease:
         url = f"{API_ROOT}/{repo}/releases"
     else:
         url = f"{API_ROOT}/{repo}/releases/latest"
 
     try:
-        payload = _get_json(url, timeout)
+        payload = _get_json(url, timeout, verify=verify)
     except _NoReleases:
         result["message"] = "该仓库还没有发布任何版本"
         return result
@@ -328,19 +374,32 @@ def check_for_update(
         return result
 
     release: dict[str, Any] | None
-    if include_prerelease:
+    if offer_prerelease:
         if not isinstance(payload, list):
             result["message"] = "GitHub 接口返回的数据格式不对"
             return result
-        release = _pick_latest(payload)
+        release = _pick_latest(payload, allow_prerelease=True)
         if release is None:
             result["message"] = "该仓库还没有发布任何版本"
             return result
     else:
-        if not isinstance(payload, dict):
+        # The stable channel never offers a pre-release, whatever the
+        # endpoint answers: a list is searched for the newest official
+        # release, a single release is only taken when GitHub says it is
+        # not a pre-release.
+        if isinstance(payload, list):
+            release = _pick_latest(payload, allow_prerelease=False)
+            if release is None:
+                result["message"] = "没有找到可升级的正式版本"
+                return result
+        elif isinstance(payload, dict):
+            release = payload
+            if release.get("prerelease"):
+                result["message"] = "没有找到可升级的正式版本"
+                return result
+        else:
             result["message"] = "GitHub 接口返回的数据格式不对"
             return result
-        release = payload
 
     tag = str(release.get("tag_name") or "")
     version = _strip_v(tag)
@@ -365,6 +424,7 @@ def download_asset(
     dest_path: str,
     timeout: float = 60.0,
     progress: Callable[[int, int], None] | None = None,
+    verify: bool = True,
 ) -> dict[str, Any]:
     """Download a release artefact to ``dest_path``.
 
@@ -372,6 +432,8 @@ def download_asset(
     end, so a broken download never leaves a half file behind.  ``progress``
     is called with ``(downloaded_bytes, total_bytes)`` while the file grows;
     ``total_bytes`` is ``0`` when the server does not send a length.
+
+    ``verify=False`` skips the certificate check -- see ``_ssl_context``.
 
     Returns a dict with ``success``, ``path``, ``bytes`` and ``message``.
     """
@@ -386,7 +448,7 @@ def download_asset(
         # The asset URL redirects to a CDN, so the opener has to follow it --
         # and it has to do so with the same TLS context.
         opener = urllib.request.build_opener(
-            urllib.request.HTTPSHandler(context=_ssl_context())
+            urllib.request.HTTPSHandler(context=_ssl_context(verify))
         )
         with opener.open(request, timeout=timeout) as response:
             headers = getattr(response, "headers", None)

@@ -236,6 +236,134 @@ def test_prereleases_come_from_the_release_list(fake_get):
     assert calls[0].full_url == "https://api.github.com/repos/Mofan2020/ncm/releases"
 
 
+# --------------------------------------------------------------------------
+# the version channel
+# --------------------------------------------------------------------------
+def test_a_prerelease_is_skipped_when_it_is_not_wanted():
+    """The user picked the "latest" channel: a beta must not be offered,
+    even when its version number is the higher one."""
+    releases = [
+        {"tag_name": "v2.0.0", "draft": False, "prerelease": True},
+        {"tag_name": "v1.5.0", "draft": False, "prerelease": False},
+        {"tag_name": "v1.6.0", "draft": True, "prerelease": False},
+    ]
+
+    picked = updater._pick_latest(releases, allow_prerelease=False)
+
+    assert picked is not None
+    assert picked["tag_name"] == "v1.5.0"
+
+
+def test_a_prerelease_is_picked_when_it_is_wanted():
+    releases = [
+        {"tag_name": "v2.0.0", "draft": False, "prerelease": True},
+        {"tag_name": "v1.5.0", "draft": False, "prerelease": False},
+        {"tag_name": "v1.6.0", "draft": True, "prerelease": False},
+    ]
+
+    picked = updater._pick_latest(releases, allow_prerelease=True)
+
+    assert picked is not None
+    assert picked["tag_name"] == "v2.0.0"
+
+
+def test_the_latest_channel_never_answers_a_prerelease(monkeypatch):
+    """``include_prerelease=False`` must not hand out a beta, whatever the
+    endpoint says."""
+    payload = [
+        {"tag_name": "v2.0.0", "draft": False, "prerelease": True, "body": "beta"},
+        {"tag_name": "v1.5.0", "draft": False, "prerelease": False, "body": "stable"},
+    ]
+    monkeypatch.setattr(updater, "_get_json", lambda url, timeout, verify=True: payload)
+
+    result = updater.check_for_update("1.1.0", include_prerelease=False,
+                                      allow_prerelease=False)
+
+    assert result["success"] is True
+    assert result["version"] == "1.5.0"
+    assert "beta" not in result["notes"]
+
+
+def test_a_single_prerelease_answer_is_refused(monkeypatch):
+    """The stable endpoint must not answer with a pre-release either."""
+    payload = release_payload(tag_name="v2.0.0", prerelease=True)
+    monkeypatch.setattr(updater, "_get_json", lambda url, timeout, verify=True: payload)
+
+    result = updater.check_for_update("1.1.0", include_prerelease=False,
+                                      allow_prerelease=False)
+
+    assert result["success"] is False
+    assert result["version"] == ""
+    assert "正式版本" in result["message"]
+
+
+def test_the_prerelease_channel_reaches_the_release_list(monkeypatch):
+    seen: list[str] = []
+
+    def fake_get_json(url, timeout, verify=True):
+        seen.append(url)
+        return [{"tag_name": "v1.5.0", "draft": False, "prerelease": True}]
+
+    monkeypatch.setattr(updater, "_get_json", fake_get_json)
+
+    result = updater.check_for_update("1.1.0", include_prerelease=True)
+
+    assert seen == ["https://api.github.com/repos/Mofan2020/ncm/releases"]
+    assert result["version"] == "1.5.0"
+
+
+def test_the_latest_channel_reaches_the_latest_endpoint(monkeypatch):
+    seen: list[str] = []
+
+    def fake_get_json(url, timeout, verify=True):
+        seen.append(url)
+        return release_payload()
+
+    monkeypatch.setattr(updater, "_get_json", fake_get_json)
+
+    updater.check_for_update("1.1.0", include_prerelease=False)
+
+    assert seen == ["https://api.github.com/repos/Mofan2020/ncm/releases/latest"]
+
+
+def test_the_verification_switch_reaches_the_request(monkeypatch):
+    seen: list[bool] = []
+
+    def fake_get_json(url, timeout, verify=True):
+        seen.append(verify)
+        return release_payload()
+
+    monkeypatch.setattr(updater, "_get_json", fake_get_json)
+
+    updater.check_for_update("1.1.0", verify=False)
+    updater.check_for_update("1.1.0", verify=True)
+
+    assert seen == [False, True]
+
+
+def test_the_download_carries_the_verification_switch(monkeypatch, tmp_path):
+    """The download has to use the same TLS setting as the check."""
+    seen: list[bool] = []
+
+    class FakeOpener:
+        def open(self, request, timeout=None):
+            return FakeResponse(b"payload")
+
+    monkeypatch.setattr(updater.urllib.request, "build_opener",
+                        lambda *a, **k: FakeOpener())
+
+    def fake_ssl_context(verify: bool = True):
+        seen.append(verify)
+        return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+    monkeypatch.setattr(updater, "_ssl_context", fake_ssl_context)
+
+    updater.download_asset("https://example.invalid/app.exe",
+                           str(tmp_path / "app.exe"), verify=False)
+
+    assert seen == [False]
+
+
 def test_another_repository_can_be_asked(fake_get):
     calls = fake_get(lambda request: FakeResponse(json.dumps(release_payload()).encode()))
     updater.check_for_update("1.1.0", repo="someone/else")
@@ -271,6 +399,54 @@ def test_a_usable_default_context_is_kept(monkeypatch):
 
     monkeypatch.setattr(updater.ssl, "create_default_context", lambda *a, **k: Usable())
     assert isinstance(updater._ssl_context(), Usable)
+
+
+def test_the_certificate_check_can_be_turned_off():
+    """A proxy that re-signs the TLS connection breaks the check; the user
+    can turn it off."""
+    context = updater._ssl_context(verify=False)
+
+    assert context is not None
+    assert context.verify_mode == ssl.CERT_NONE
+    assert context.check_hostname is False
+
+
+def test_the_certificate_is_checked_by_default():
+    context = updater._ssl_context()
+    assert context is not None
+    assert context.verify_mode != ssl.CERT_NONE
+
+
+def test_the_context_is_built_without_a_verification():
+    """``ssl.CERT_NONE`` and a hostname check cannot live together -- the
+    hostname check has to be off before the mode is set, otherwise Python
+    raises ``ValueError``."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    with pytest.raises(ValueError):
+        context.verify_mode = ssl.CERT_NONE
+
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
+    assert context.check_hostname is False
+    assert context.verify_mode == ssl.CERT_NONE
+
+
+def test_the_check_reaches_the_transport(monkeypatch):
+    """The context handed to urllib has to be the unverified one."""
+    seen: list[ssl.SSLContext | None] = []
+
+    def fake_urlopen(request, timeout=None, context=None):
+        seen.append(context)
+        return FakeResponse(json.dumps(release_payload()).encode())
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", fake_urlopen)
+
+    updater.check_for_update("1.1.0", verify=False)
+
+    assert seen
+    assert seen[0] is not None
+    assert seen[0].verify_mode == ssl.CERT_NONE
 
 
 # --------------------------------------------------------------------------
@@ -457,3 +633,87 @@ def test_the_windows_zip_is_unpacked_and_installed(tmp_path, monkeypatch):
     assert result["success"] is True
     assert target.read_text() == "new"
     assert (tmp_path / "SkycMedia.exe.old").read_text() == "old"
+
+
+# --------------------------------------------------------------------------
+# the bridge wiring
+# --------------------------------------------------------------------------
+def test_the_bridge_reports_the_update_switches(bridge):
+    """The settings panel reads the switches back; without them in the
+    payload the panel always shows the defaults."""
+    ui = bridge.get_settings()["ui"]
+    assert ui["update_include_prerelease"] is False
+    assert ui["update_skip_ssl_verify"] is False
+
+
+def test_the_bridge_stores_the_update_switches(bridge):
+    result = bridge.update_settings("ui", {
+        "update_include_prerelease": True,
+        "update_skip_ssl_verify": True,
+    })
+
+    assert result["success"] is True
+    assert result["settings"]["ui"]["update_include_prerelease"] is True
+    assert result["settings"]["ui"]["update_skip_ssl_verify"] is True
+    assert bridge.settings.ui.update_include_prerelease is True
+    assert bridge.settings.ui.update_skip_ssl_verify is True
+
+
+def test_the_bridge_uses_the_channel_from_the_settings(bridge, monkeypatch):
+    """The channel comes from the settings, not from the caller."""
+    seen: list[bool] = []
+
+    def fake_check(current_version, **kwargs):
+        seen.append(bool(kwargs.get("include_prerelease")))
+        return {"success": True, "version": "1.2.0", "latest": "v1.2.0",
+                "assets": [], "notes": "", "message": "发现新版本 1.2.0"}
+
+    import src.core.updater as updater_module
+
+    monkeypatch.setattr(updater_module, "check_for_update", fake_check)
+
+    bridge.check_app_update()
+    assert seen == [False]
+
+    bridge.settings.update_ui(update_include_prerelease=True)
+    bridge.check_app_update()
+    assert seen == [False, True]
+
+
+def test_the_bridge_passes_the_verification_setting(bridge, monkeypatch):
+    seen: list[bool] = []
+
+    def fake_check(current_version, **kwargs):
+        seen.append(bool(kwargs.get("verify")))
+        return {"success": True, "version": "1.2.0", "latest": "v1.2.0",
+                "assets": [], "notes": "", "message": "发现新版本 1.2.0"}
+
+    import src.core.updater as updater_module
+
+    monkeypatch.setattr(updater_module, "check_for_update", fake_check)
+
+    bridge.check_app_update()
+    assert seen == [True]
+
+    bridge.settings.update_ui(update_skip_ssl_verify=True)
+    bridge.check_app_update()
+    assert seen == [True, False]
+
+
+def test_the_bridge_download_uses_the_verification_setting(bridge, monkeypatch):
+    seen: list[bool] = []
+
+    def fake_download(url, dest_path, **kwargs):
+        seen.append(bool(kwargs.get("verify")))
+        return {"success": True, "path": dest_path, "bytes": 1, "message": ""}
+
+    import src.core.updater as updater_module
+
+    monkeypatch.setattr(updater_module, "download_asset", fake_download)
+
+    bridge.download_app_update("https://example.invalid/app.exe", "app.exe")
+    assert seen == [True]
+
+    bridge.settings.update_ui(update_skip_ssl_verify=True)
+    bridge.download_app_update("https://example.invalid/app.exe", "app.exe")
+    assert seen == [True, False]

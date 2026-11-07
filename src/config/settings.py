@@ -199,6 +199,12 @@ class UISettings:
     #: 发现新版本后自动下载并替换，还是先问一句。默认先问：
     #: 自动替换会在用户没看着的时候换掉他正在用的程序。
     auto_install_updates: bool = False
+    #: 允许从预发布版本升级。默认关：选了 latest 通道的用户
+    #: 不该被塞一个 beta 进去。
+    update_include_prerelease: bool = False
+    #: 关闭 SSL 证书校验（给用加速器代理的用户）。默认关：
+    #: 代理会改写证书，不关校验就报 CERTIFICATE_VERIFY_FAILED。
+    update_skip_ssl_verify: bool = False
     #: Tags of the releases the user said "skip this one" to, newest last.
     skipped_update_versions: list[str] = field(default_factory=list)
 
@@ -377,7 +383,8 @@ class Settings:
         ui.background_blur = self._clamp_range(ui.background_blur, 0, 40, 24)
         ui.background_dim = self._clamp_range(ui.background_dim, 0, 80, 30)
         for flag in ("remember_window_size", "glass", "accent_from_background",
-                     "check_updates_on_start", "auto_install_updates"):
+                     "check_updates_on_start", "auto_install_updates",
+                     "update_include_prerelease", "update_skip_ssl_verify"):
             setattr(ui, flag, _as_bool(getattr(ui, flag)))
         if not isinstance(ui.skipped_update_versions, list):
             ui.skipped_update_versions = []

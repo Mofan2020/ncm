@@ -190,3 +190,32 @@ def test_the_lyrics_scroll_delay_survives_a_restart(isolated_home):
     settings_module.Settings._instance = None
     reloaded = get_settings()
     assert reloaded.playback.lyrics_scroll_idle_seconds == 9
+
+
+# ------------------------------------------------------- update switches
+def test_the_update_switches_are_off_by_default(isolated_home):
+    """A pre-release must not be offered and the certificate must be
+    checked until the user says otherwise."""
+    settings = get_settings()
+    assert settings.ui.update_include_prerelease is False
+    assert settings.ui.update_skip_ssl_verify is False
+
+
+def test_the_update_switches_survive_a_restart(isolated_home):
+    from src.config import settings as settings_module
+
+    settings = get_settings()
+    settings.update_ui(update_include_prerelease=True, update_skip_ssl_verify=True)
+
+    settings_module.Settings._instance = None
+    reloaded = get_settings()
+    assert reloaded.ui.update_include_prerelease is True
+    assert reloaded.ui.update_skip_ssl_verify is True
+
+
+def test_the_update_switches_are_read_as_booleans(isolated_home):
+    """The UI sends JSON, so a switch may arrive as the string "true"."""
+    settings = get_settings()
+    settings.update_ui(update_include_prerelease="true", update_skip_ssl_verify="false")
+    assert settings.ui.update_include_prerelease is True
+    assert settings.ui.update_skip_ssl_verify is False
