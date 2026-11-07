@@ -1124,6 +1124,9 @@
     "queue_status_running": "下载中",
     "queue_status_done": "已完成",
     "queue_status_failed": "失败",
-    "queue_status_cancelled": "已取消"
+    "queue_status_cancelled": "已取消",
+    "play": "播放",
+    "play_failed": "播放不了，检查一下资源链接",
+    "player_close": "关闭播放器"
   }
 }

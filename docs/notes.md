@@ -3806,6 +3806,98 @@ tests/test_settings.py
 渲染后子节点累积，断言读到的是上一次的节点（空态 div 没有子节点，直接
 TypeError）。改成赋值 `innerHTML` 就把 children 清空，跟真实 DOM 一致。
 
+### Issue #1 —— 扫码登录报 8821（2026-11-07）
+
+**现象**（用户贴的 `login-debug.log`）：
+
+```
+poll api:  code=801 msg='等待扫码'
+poll api:  code=802 msg='授权中'
+poll eapi: code=8821 msg='请切换其他登录方式或升级新版本再试'
+```
+
+3.3.0 用同样的端点拿到的是 `code=803`（授权成功）。
+
+**定位**：不是身份 cookie 的问题，也不是轮询循环的问题（循环遇到未知码会
+继续轮询）。是**登录端点的形态变了**，而我们还在用旧形态：
+
+| | 旧（3.3.0 能用） | 新（3.14.0 被拒） |
+|---|---|---|
+| 票据类型 | `type=1` | `type=3` |
+| 主机 | `interface.music.163.com` | `interfacepc.music.163.com` |
+| eapi 身份 | body 里只有 `key`/`type` | body 带 `os`/`verifyId`/`deviceId`/`header` |
+| 身份 | cookie `os=pc appver=8.9.70 channel=netease` | header `os=osx appver=3.1.9 buildver=3364` |
+
+`39746c2` 把 eapi 身份换成了从 IDA 逆向出来的 macOS 桌面端身份
+（`os=osx/appver=3.1.9`），`206804d` 又把 session 里的身份 cookie 删了。
+对普通端点这两处都是对的（喜欢接口会因为身份 cookie 报 524），但**登录
+端点不吃这一套**：它要的是电脑客户端的身份。
+
+**证据**：2026-11-07 实测。同一套代码，用 `os=osx/appver=3.1.9` 轮询，
+等待扫码和等待授权都正常（801/802），**手机确认的那一刻**才被拒（8821）；
+换成 PC 身份（`os=pc/appver=3.1.17.204416`）+ `type=3` + interfacepc，
+unikey 和轮询都正常（实测 801）。
+
+同行的两个实现独立得出了同一个结论（2026-10 的记录）：
+`NeteaseCloudMusicApiEnhanced` 的 `login_qr_key`/`login_qr_check` 用
+`type: 3`，`GuitaristRin/Ncrust` 的 `spec/tools/qr-login.mjs` 写得更直白：
+「weapi type=1 的 unikey 会被回 -462（风控校验），改走 eapi + PC 客户端身份
++ type=3，打 interfacepc」。
+
+**修法**（`src/core/crypto.py` + `src/auth/login.py`）：
+
+* 新增 **PC 身份**，与 macOS 身份完全分开：`build_pc_header()` 出
+  `os=pc / appver=3.1.17.204416 / osver=Microsoft-Windows-10-... /
+  versioncode=140 / channel=netease / resolution / buildver / requestId`，
+  UA 是 `NeteaseMusicDesktop/3.1.29.205117`，deviceId 是 26 字节随机 hex。
+* unikey 与轮询都走 **eapi + PC 身份 + type=3**，打 `interfacepc.music.163.com`。
+* body 是 `{...data, e_r: false, header}`，**不加** macOS 那套
+  `os=OSX/verifyId/deviceId`——登录端点不吃它们。
+* 同一个 header 也放进请求的 `Cookie` 头，两边必须一致。
+* cookie 除了 body，还从 **响应头的 Set-Cookie** 取（参考实现是这么拿的）。
+* 登录用的 PC 身份 cookie **不进 session jar**：`_post_eapi_pc` 每次都把
+  `os/appver/channel` 从 jar 里剔掉，否则「喜欢」接口又会 524。
+* 备用通道（plain GET）保留，也改成 `type=3`，实测两个主机都认。
+
+**没验的部分**：手机扫码确认那一步本地做不了（需要真人）。代码路径、
+请求形态、unikey 与轮询都实测过，803 那一跳要用户自己扫一次。
+
+### Issue #2 —— 大歌单查询崩（2026-11-07）
+
+**现象**（用户贴的栈）：
+
+```
+File "src\gui\bridge.py", line 1045, in _track_payload
+TypeError: sequence item 0: expected str instance, NoneType found
+```
+
+**根因**：`a.get("name", "Unknown")` 只在**键不存在**时给默认值。网易云在
+大歌单里给某些 artist 一个**键存在但值为 null** 的 name，于是 join 收到
+None，抛 TypeError。整个歌单（917 首）一条都读不出来。
+
+**修法**：`str(a.get("name") or "Unknown")`——`or` 让默认值赢过 null。
+
+**测试**：`tests/test_playlist_null_artists.py`，6 项，含一个 917 首的整单。
+变异测试：退回原写法被抓、空列表不兜底被抓。
+
+### Bangumi 的三个界面问题（2026-11-07）
+
+**点下载链接没反应**：资源链接渲染成 `<a target="_blank">`，而 pywebview
+默认不开第二个窗口，那个链接点了什么都不会发生。改成拦截 click，调
+`state.api.open_external(url)` 交给系统浏览器。
+
+**不能在线播放**：Bangumi 不托管视频，但用户配的资源站给的是**直链**。
+在 `mediaserver` 加了 `/bgm-media?u=` 代理：转发 `Range`（播放器先要开头
+一段再要剩下的），`Referer` 设成**资源站自己的地址**（不少资源站只把
+文件发给带着自己 Referer 的请求，而网页里的 `<video>` 设不了 Referer）。
+前端加一个内联 `<video>`，直链多一个「播放」按钮。
+
+**详情不能滚**：`.bangumi-detail` 是 `.bili-page` 的**兄弟节点**，不是它的
+子节点，所以没有继承那个滚动容器（`overflow-y: auto`），内容超出窗口就
+够不着。给 `.bangumi-detail` 补上 `min-height: 0; overflow-y: auto;
+overscroll-behavior: contain`。实测：clientHeight 590 / scrollHeight 3236，
+scrollTop 从 0 移到 500。
+
 ### 已知未完成
 
 1. 资源站模板的 `{ep}` `{title}` 占位符在详情页点集时才填，搜索页只填

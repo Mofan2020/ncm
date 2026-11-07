@@ -175,6 +175,14 @@ class _Handler(BaseHTTPRequestHandler):
                 # under the same url, so they go through the same cover cache
                 # the NetEase and Bilibili pictures use.
                 self._bgm(query.get("u", [""])[0], send_body)
+            elif route == "bgm-media":
+                # Bangumi resource stream.  The resource sites the user
+                # configures hand out direct links; some of them only serve
+                # the file to a request that carries the site's own Referer,
+                # and the webview cannot set one.  The loopback does it.
+                # Range is forwarded -- the player asks for the first chunk
+                # and then for the rest.
+                self._bgm_media(query.get("u", [""])[0], send_body)
             elif route == "bg":
                 self._background(send_body)
             else:
@@ -595,6 +603,78 @@ class _Handler(BaseHTTPRequestHandler):
         # we are about to send.
         self.media.write_cover_cache(url, data, mime)
         self._send_cover_bytes(data, mime, send_body)
+
+    def _bgm_media(self, url: str, send_body: bool) -> None:
+        """Stream a file from a Bangumi resource site.
+
+        The resource sites are the user's own configuration, so there is no
+        host list to check the url against.  Two things are still needed:
+
+        * the **Referer** of the site itself -- a fair number of them answer
+          403 to a request that does not come from their own pages, and the
+          webview cannot set a Referer for a cross-origin media element;
+        * the **Range** header, because the player asks for the beginning of
+          the file and then for the rest.
+
+        The stream is not cached: it is hundreds of megabytes and the urls
+        are signed.
+        """
+        url = str(url or "").strip()
+        if not url.startswith(("http://", "https://")):
+            self._error(400, "bad url")
+            return
+        try:
+            parsed = urlparse(url)
+            referer = f"{parsed.scheme}://{parsed.netloc}/"
+        except ValueError:
+            referer = ""
+        headers = {
+            "User-Agent": _UA,
+            "Accept": "*/*",
+        }
+        if referer:
+            headers["Referer"] = referer
+        range_header = self.headers.get("Range")
+        if range_header:
+            headers["Range"] = range_header
+
+        try:
+            response = self.media.session.get(url, headers=headers, stream=True,
+                                              timeout=BILI_TIMEOUT)
+        except (requests.exceptions.RequestException, OSError) as exc:
+            log.info("bangumi resource unreachable (%s): %s", _host_of(url), exc)
+            self._error(502, "upstream error")
+            return
+        try:
+            if response.status_code not in (200, 206):
+                self._error(502, f"upstream said {response.status_code}")
+                return
+            total = response.headers.get("content-length")
+            content_type = response.headers.get(
+                "content-type", "application/octet-stream").split(";")[0]
+            extra = {
+                "Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
+                "Cache-Control": "no-store",
+            }
+            content_range = response.headers.get("content-range")
+            if content_range:
+                extra["Content-Range"] = content_range
+            if total:
+                extra["Content-Length"] = total
+            self.send_response(response.status_code)
+            self.send_header("Content-Type", content_type)
+            for name, value in extra.items():
+                self.send_header(name, value)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            if not send_body:
+                return
+            for chunk in response.iter_content(CHUNK):
+                if not chunk:
+                    continue
+                self.wfile.write(chunk)
+        finally:
+            response.close()
 
     def _background(self, send_body: bool) -> None:
         """Serve the wallpaper, downscaled to what the UI can actually show.

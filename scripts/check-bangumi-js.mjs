@@ -38,7 +38,14 @@ function makeElement() {
             toggle(name, on) { if (on) classes.add(name); else classes.delete(name); },
             contains: (name) => classes.has(name),
         },
-        addEventListener() {}, append() {},
+        // The listeners are recorded so a check can fire one: a link that
+        // has no click handler does nothing, and that is exactly the bug
+        // this file guards against.
+        listeners: {},
+        addEventListener(type, fn) {
+            (store.listeners[type] = store.listeners[type] || []).push(fn);
+        },
+        append() {},
         appendChild(c) { this.children.push(c); return c; },
         removeChild() {},
         removeAttribute(name) { delete store.attributes[name]; },
@@ -61,6 +68,8 @@ function makeElement() {
         textContent: '', innerHTML: '', hidden: false, disabled: false,
         children: [], tagName: 'SPAN', value: '', href: '',
         attributes: {},
+        // A media element: the player code calls these.
+        pause() {}, load() {}, play() { return Promise.resolve(); },
     };
     return new Proxy(store, {
         get: (target, prop) => (prop in target ? target[prop] : undefined),
@@ -169,6 +178,8 @@ const harness = `
              duration: '00:26:00', airdate: '2023-09-29'},
         ];
 
+        state.mediaBaseUrl = 'http://127.0.0.1:9199';
+
         state.api = {
             search_bangumi: (keyword, limit, type) => {
                 results.calls.push('search:' + keyword);
@@ -245,6 +256,11 @@ const harness = `
             clear_bangumi_download_queue: () => {
                 results.calls.push('queue-clear');
                 return Promise.resolve({success: true, removed: 0});
+            },
+            open_external: (url) => {
+                results.opened = (results.opened || []).concat([url]);
+                results.calls.push('open:' + url);
+                return Promise.resolve(true);
             },
         };
 
@@ -413,6 +429,56 @@ const harness = `
         await cancelBangumiQueue();
         results.cancelCalled = results.calls.includes('queue-cancel');
 
+        // ---- 22: a resource link opens in the system browser -------------
+        // The webview does not open a second window, so a plain
+        // target="_blank" link does nothing.  The click has to go through
+        // the bridge.
+        results.opened = [];
+        bangumiState.resources = [
+            {id: 's1', name: '网页站',
+             search_url: 'https://x.test/search?q=1'},
+        ];
+        renderBangumiResources();
+        const linkRow = document.getElementById('bangumi-resources');
+        const linkAnchors = linkRow.querySelectorAll
+            ? linkRow.querySelectorAll('.bangumi-resource-link') : [];
+        results.linkCount = linkAnchors.length;
+        if (linkAnchors.length) {
+            const handlers = (linkAnchors[0].listeners || {}).click || [];
+            results.linkHandlerCount = handlers.length;
+            if (handlers.length) {
+                let prevented = false;
+                handlers[0]({preventDefault: () => { prevented = true; }});
+                results.linkPrevented = prevented;
+            }
+        }
+        results.openedAfterClick = (results.opened || []).slice();
+
+        // ---- 23: a direct link gets a play button ------------------------
+        bangumiState.resources = [
+            {id: 's1', name: '直链站',
+             search_url: 'https://x.test/a.mp4'},
+        ];
+        renderBangumiResources();
+        const playRow = document.getElementById('bangumi-resources');
+        const playButtons = playRow.children.length
+            ? playRow.children[0].children : [];
+        results.playButtonTexts = playButtons
+            .filter((child) => child.tagName === 'BUTTON')
+            .map((child) => child.textContent);
+
+        // ---- 24: the player takes the proxied url ------------------------
+        playBangumiUrl('https://x.test/a.mp4', '直链站');
+        const video = document.getElementById('bangumi-player-video');
+        const playerBox = document.getElementById('bangumi-player');
+        results.playerVisible = playerBox ? !playerBox.hidden : false;
+        results.playerSrc = video ? video.src : '';
+        results.playerName = (document.getElementById('bangumi-player-name') || {}).textContent || '';
+
+        // ---- 25: closing the player clears it ----------------------------
+        closeBangumiPlayer();
+        results.playerClosed = playerBox ? !!playerBox.hidden : false;
+
         // A busy queue keeps a polling timer alive; node will not exit while
         // one is pending, so the harness stops it before it returns.
         if (bangumiQueueState.timer) {
@@ -491,6 +557,24 @@ check('队列画出来了', results.queueRows === 2, String(results.queueRows));
 check('队列带任务名', results.queueFirstLabel === '第一集', results.queueFirstLabel);
 check('取消队列走到了 bridge', results.cancelCalled === true,
       String(results.cancelCalled));
+
+// --- the resource link, the play button and the inline player ---
+check('资源链接有点击处理', results.linkHandlerCount >= 1,
+      String(results.linkHandlerCount));
+check('点链接不会被默认行为吞掉', results.linkPrevented === true,
+      String(results.linkPrevented));
+check('点链接开了系统浏览器', (results.openedAfterClick || []).length === 1
+      && results.openedAfterClick[0] === 'https://x.test/search?q=1',
+      (results.openedAfterClick || []).join(','));
+check('直链有播放按钮', (results.playButtonTexts || []).length === 2,
+      (results.playButtonTexts || []).join(','));
+check('播放器露出来了', results.playerVisible === true, String(results.playerVisible));
+check('播放器走的是本地代理',
+      String(results.playerSrc || '').indexOf('/bgm-media?u=') > 0,
+      String(results.playerSrc || ''));
+check('播放器带上了名字', results.playerName === '直链站', results.playerName);
+check('关掉播放器就收起来了', results.playerClosed === true,
+      String(results.playerClosed));
 
 if (failures.length) {
     console.error(`\n${failures.length} check(s) failed.`);

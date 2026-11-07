@@ -67,6 +67,7 @@ import json
 import os
 import platform
 import subprocess
+import time
 import uuid
 from typing import Any
 
@@ -75,8 +76,12 @@ from src.core.aes import aes_ecb_encrypt
 __all__ = [
     "EAPI_KEY",
     "EAPI_SEPARATOR",
+    "PC_APPVER",
+    "PC_BUILDVER",
+    "PC_USER_AGENT",
     "build_client_header",
     "build_client_identity",
+    "build_pc_header",
     "encode_type_for_level",
     "sign_eapi",
     "eapi_body",
@@ -121,6 +126,83 @@ CLIENT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 "
     f"NeteaseMusicDesktop/{CLIENT_APPVER}.{CLIENT_BUILDVER}"
 )
+
+
+# --------------------------------------------------------------------------
+# The PC identity
+# --------------------------------------------------------------------------
+#
+# The **login** endpoints are the one place that wants the Windows desktop
+# client rather than the macOS one.  Measured on 2026-11-07: a QR login that
+# states the macOS identity (``os=osx`` / ``appver=3.1.9``) is accepted while
+# the code is still waiting for the scan (``801``) and while it waits for the
+# confirmation (``802``), and is then refused at the moment the phone confirms
+# -- ``code 8821 请切换其他登录方式或升级新版本再试`` ("switch to another login
+# method or upgrade to a newer version and try again").
+#
+# The same request with the PC identity answers ``803`` (authorised) and
+# hands over the session cookie.  The working shape was taken from the
+# reference implementations that came up with the same problem in October
+# 2026: the ``unikey`` and the poll both use ``type=3`` and go to
+# ``interfacepc.music.163.com``.
+#
+# This identity is **only** used for the login routes.  Every other eapi call
+# keeps the macOS one above: the like endpoint refuses to add a track when a
+# PC identity cookie is in the jar (see ``LoginManager.CLIENT_COOKIES``).
+
+PC_APPVER = "3.1.17.204416"
+PC_BUILDVER = "3.1.29.205117"
+PC_OSVER = "Microsoft-Windows-10-Professional-build-19045-64bit"
+PC_VERSIONCODE = "140"
+PC_RESOLUTION = "1920x1080"
+PC_CHANNEL = "netease"
+PC_BRAND = "PC"
+
+PC_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/91.0.4472.164 Safari/537.36 "
+    f"NeteaseMusicDesktop/{PC_BUILDVER}"
+)
+
+#: The host the PC client talks to.  The mobile host answers ``-462`` to a
+#: ``type=3`` unikey.
+PC_API_HOST = "https://interfacepc.music.163.com"
+
+
+def _pc_device_id() -> str:
+    """The PC client's device id: 26 random bytes, upper case hex.
+
+    The reference implementation mints a fresh one per session; keeping it
+    stable for the lifetime of the process is enough for us and means two
+    logins look like the same machine.
+    """
+    cached = getattr(_pc_device_id, "_cached", None)
+    if cached is None:
+        cached = os.urandom(26).hex().upper()
+        _pc_device_id._cached = cached  # type: ignore[attr-defined]
+    return cached
+
+
+def build_pc_header(request_id: str | None = None,
+                    **overrides: Any) -> dict[str, Any]:
+    """The header block the PC client sends with the login routes."""
+    now = time.time()
+    header: dict[str, Any] = {
+        "osver": PC_OSVER,
+        "deviceId": _pc_device_id(),
+        "os": "pc",
+        "appver": PC_APPVER,
+        "versioncode": PC_VERSIONCODE,
+        "mobilename": "",
+        "buildver": str(int(now))[:10],
+        "resolution": PC_RESOLUTION,
+        "__csrf": "",
+        "channel": PC_CHANNEL,
+        "requestId": request_id or f"{int(now * 1000)}_"
+                                   f"{int(now * 1000) % 10000:04d}",
+    }
+    header.update(overrides)
+    return header
 
 
 def _stable_device_id() -> str:

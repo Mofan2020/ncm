@@ -1089,8 +1089,13 @@ class GuiBridge:
             "key": track_key("online", song_id),
             "source": "online",
             "name": song.get("name") or "Unknown",
-            "artists": ", ".join(a.get("name", "Unknown") for a in artists if isinstance(a, dict))
-            or "Unknown",
+            # ``a.get("name", "Unknown")`` is not enough: when the key is
+            # there but the value is null (NetEase does that in the big
+            # playlists) it hands back None and the join below raises
+            # TypeError.  The "or" makes the default win over a null.
+            "artists": ", ".join(
+                str(a.get("name") or "Unknown")
+                for a in artists if isinstance(a, dict)) or "Unknown",
             # The ids as well as the names: the now-playing panel turns each
             # name into a link to that artist's page, which needs an id.
             "artist_list": [

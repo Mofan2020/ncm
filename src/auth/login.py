@@ -113,6 +113,29 @@ class LoginManager:
     BASE_URL = "https://music.163.com"
     QRCODE_KEY_URL = f"{BASE_URL}/api/login/qrcode/unikey"
     QRCODE_CHECK_URL = f"{BASE_URL}/api/login/qrcode/client/login"
+
+    #: The QR login has to be the **PC** client, and it has to say so in a
+    #: specific way.
+    #:
+    #: Measured on 2026-11-07 with the macOS identity this project uses for
+    #: every other endpoint (``os=osx`` / ``appver=3.1.9``): the login is
+    #: accepted while it waits for the scan (``801``) and while it waits for
+    #: the confirmation on the phone (``802``), and is then refused at the
+    #: moment the phone confirms --
+    #:
+    #:     code 8821 msg='请切换其他登录方式或升级新版本再试'
+    #:
+    #: That is the "upgrade to a newer version" branch: the stated client
+    #: version is too old for the login routes.  The same request with the PC
+    #: identity answers ``803`` and hands over the session cookie.
+    #:
+    #: Two more things go with it, both measured on the same day:
+    #:
+    #: * ``type=3`` -- the unikey and the poll have to agree on it.  The
+    #:   mobile host answers ``-462`` to a ``type=1`` unikey nowadays.
+    #: * ``interfacepc.music.163.com`` -- the host the PC client talks to.
+    QR_TYPE = 3
+    QR_HOST = "https://interfacepc.music.163.com"
     SMS_CODE_URL = f"{BASE_URL}/api/sms/captcha/sent"
     PHONE_LOGIN_URL = f"{BASE_URL}/api/w/login/cellphone"
     LOGOUT_URL = f"{BASE_URL}/api/logout"
@@ -529,14 +552,12 @@ class LoginManager:
         self._stop_polling.clear()
         self._set_status(LoginStatus.PENDING)
 
-        try:
-            resp = self._session.get(self.QRCODE_KEY_URL,
-                                     params={"type": 1, "timestamp": int(time.time() * 1000)},
-                                     timeout=(5, 15))
-            data = resp.json()
-        except Exception as exc:
-            self._debug_log(f"qrcode: unikey request failed: {exc}")
-            self._fail(f"QR key request failed: {exc}")
+        # The unikey is minted with the PC identity and type=3 -- see
+        # ``QR_TYPE`` for why.
+        data = self._post_eapi_pc("/api/login/qrcode/unikey",
+                                  {"type": self.QR_TYPE})
+        if data is None:
+            self._fail("QR key request failed")
             return False
 
         if data.get("code") != 200 or not data.get("unikey"):
@@ -607,6 +628,86 @@ class LoginManager:
             if self._stop_polling.wait(self.QR_POLL_INTERVAL):
                 return
 
+    def _post_eapi_pc(self, path: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        """A signed request with the **PC** identity, to the PC host.
+
+        The body carries the PC header, and the same header is repeated in
+        the ``Cookie`` header -- the official client says the same thing in
+        both places, and a request whose two halves disagree looks forged.
+        """
+        try:
+            from src.core.crypto import (
+                PC_USER_AGENT,
+                build_pc_header,
+                sign_eapi,
+            )
+
+            header = build_pc_header()
+            payload = dict(data)
+            payload["e_r"] = False
+            payload["header"] = header
+            body = {"params": sign_eapi(path, payload)}
+            headers = {
+                "User-Agent": PC_USER_AGENT,
+                "Referer": "https://music.163.com/",
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Cookie": "; ".join(f"{k}={v}" for k, v in header.items()
+                                    if v is not None),
+            }
+            resp = self._session.post(f"{self.QR_HOST}/eapi{path}", data=body,
+                                      headers=headers, timeout=(5, 15))
+        except Exception as exc:  # noqa: BLE001 - the UI must never see it
+            self.logger.warning("QR eapi request failed on %s: %s", path, exc)
+            self._debug_log(f"qrcode eapi {path}: error {exc}")
+            return None
+        if resp.status_code != 200 or not (resp.text or "").strip():
+            self._debug_log(f"qrcode eapi {path}: HTTP {resp.status_code} empty")
+            return None
+        try:
+            payload = resp.json()
+        except ValueError:
+            self._debug_log(f"qrcode eapi {path}: not json")
+            return None
+        if not isinstance(payload, dict):
+            return None
+        # The session cookie is handed over in the ``Set-Cookie`` header as
+        # often as in the body.  Put it where the body would have carried it.
+        if not self._qr_cookie_of(payload):
+            from_header = self._cookie_from_headers(resp)
+            if from_header:
+                payload["cookie"] = from_header
+        # The PC identity travels in the request's Cookie header, not in the
+        # jar.  If the server sent one back, drop it: a session that claims
+        # to be the PC client is refused by the like endpoint (code 524).
+        jar = getattr(self._session, "cookies", None)
+        if jar is not None:
+            for name in ("os", "appver", "channel"):
+                try:
+                    jar.pop(name, None)
+                except (KeyError, TypeError):
+                    continue
+        return payload
+
+    @staticmethod
+    def _cookie_from_headers(resp: Any) -> str:
+        """The session cookies from the response headers."""
+        jar: dict[str, str] = {}
+        try:
+            raw = resp.headers.get_all("Set-Cookie") or []
+        except AttributeError:
+            raw = []
+        for line in raw:
+            pair = str(line).split(";")[0].strip()
+            equals = pair.find("=")
+            if equals <= 0:
+                continue
+            name = pair[:equals].strip()
+            value = pair[equals + 1:].strip()
+            if value:
+                jar[name] = value
+        return "; ".join(f"{name}={value}" for name, value in jar.items())
+
     def _poll_once(self, channel: str) -> dict[str, Any] | None:
         """Poll the QR state on the plain (``api``) or signed (``eapi``) route."""
         try:
@@ -614,19 +715,16 @@ class LoginManager:
                 # Imported here on purpose: ``src.core`` imports ``src.auth``, so a
                 # module-level import would create a cycle and break every entry
                 # point that imports this module first (see tests/test_imports.py).
-                from src.core.crypto import EAPI_PREFIX, eapi_body
-
-                body = eapi_body("/api/login/qrcode/client/login",
-                                 {"key": self._qrcode_key, "type": 1})
-                url = f"{self.BASE_URL}{EAPI_PREFIX}/api/login/qrcode/client/login"
-                resp = self._session.post(url, data=body, timeout=(5, 15))
-            else:
-                resp = self._session.get(
-                    self.QRCODE_CHECK_URL,
-                    params={"key": self._qrcode_key, "type": 1,
-                            "timestamp": int(time.time() * 1000)},
-                    timeout=(5, 15),
-                )
+                payload = self._post_eapi_pc("/api/login/qrcode/client/login",
+                                             {"key": self._qrcode_key,
+                                              "type": self.QR_TYPE})
+                return payload
+            resp = self._session.get(
+                f"{self.QR_HOST}/api/login/qrcode/client/login",
+                params={"key": self._qrcode_key, "type": self.QR_TYPE,
+                        "timestamp": int(time.time() * 1000)},
+                timeout=(5, 15),
+            )
             if resp.status_code != 200 or not (resp.text or "").strip():
                 self._debug_log(f"poll {channel}: HTTP {resp.status_code} empty response")
                 return None
@@ -635,7 +733,13 @@ class LoginManager:
             self.logger.warning("QR poll error on %s: %s", channel, exc)
             self._debug_log(f"poll {channel}: error {exc}")
             return None
-        return payload if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        if not self._qr_cookie_of(payload):
+            from_header = self._cookie_from_headers(resp)
+            if from_header:
+                payload["cookie"] = from_header
+        return payload
 
     @staticmethod
     def _qr_code_of(data: dict[str, Any]) -> int | None:

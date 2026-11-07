@@ -1124,6 +1124,9 @@
     "queue_status_running": "Downloading",
     "queue_status_done": "Done",
     "queue_status_failed": "Failed",
-    "queue_status_cancelled": "Cancelled"
+    "queue_status_cancelled": "Cancelled",
+    "play": "Play",
+    "play_failed": "Cannot play this link",
+    "player_close": "Close the player"
   }
 }

@@ -80,9 +80,11 @@ def test_poll_once_uses_the_right_request_per_channel(manager):
     assert manager._poll_once("api") == {"code": 801}
     method, url, kwargs = session.calls[0]
     assert method == "GET"
-    assert url == LoginManager.QRCODE_CHECK_URL
+    assert url.startswith(LoginManager.QR_HOST)
     assert kwargs["params"]["key"] == "KEY"
-    assert kwargs["params"]["type"] == 1
+    # type=3: the unikey and the poll have to agree, and the mobile host
+    # answers -462 to a type=1 unikey nowadays.
+    assert kwargs["params"]["type"] == 3
     assert "timestamp" in kwargs["params"], "the plain route needs a cache buster"
 
     assert manager._poll_once("eapi") == {"code": 801}
@@ -90,6 +92,55 @@ def test_poll_once_uses_the_right_request_per_channel(manager):
     assert method == "POST"
     assert url.endswith("/eapi/api/login/qrcode/client/login")
     assert "params" in kwargs["data"], "the eapi route must be signed"
+
+
+def test_the_login_routes_use_the_pc_identity(manager):
+    """The login has to claim to be the PC client.
+
+    With the macOS identity the server accepts the poll while it waits for
+    the scan and for the confirmation, and refuses it at the moment the
+    phone confirms: ``code 8821 请切换其他登录方式或升级新版本再试``.
+    """
+    from src.core.crypto import PC_APPVER, PC_USER_AGENT
+
+    manager._qrcode_key = "KEY"
+    session = FakeSession([FakeResponse({"code": 801})])
+    manager._session = session
+    manager._poll_once("eapi")
+
+    _method, _url, kwargs = session.calls[0]
+    headers = kwargs["headers"]
+    assert headers["User-Agent"] == PC_USER_AGENT
+    assert "appver=" + PC_APPVER in headers["Cookie"]
+    assert "os=pc" in headers["Cookie"]
+
+
+def test_the_pc_header_carries_what_the_pc_client_carries():
+    from src.core.crypto import PC_APPVER, build_pc_header
+
+    header = build_pc_header()
+    assert header["os"] == "pc"
+    assert header["appver"] == PC_APPVER
+    assert header["channel"] == "netease"
+    assert header["versioncode"] == "140"
+    assert header["requestId"]
+
+
+def test_the_login_uses_type_three(manager):
+    """type=3 for the unikey as well -- it has to match the poll."""
+    manager._qrcode_key = ""
+    session = FakeSession([FakeResponse({"code": 200, "unikey": "KEY-1"})])
+    manager._session = session
+    assert manager.login_qrcode() is True
+    assert manager._qrcode_key == "KEY-1"
+
+    method, url, kwargs = session.calls[0]
+    assert method == "POST"
+    assert url.startswith(LoginManager.QR_HOST)
+    assert "params" in kwargs["data"]
+    # The type travels inside the signed body, so it has to be read back out
+    # of the encrypted blob -- the header is what states it to the server.
+    assert "appver=" in kwargs["headers"]["Cookie"]
 
 
 def test_poll_once_survives_an_empty_or_broken_answer(manager):
@@ -202,7 +253,8 @@ def test_a_new_unikey_is_only_requested_when_needed(manager, monkeypatch):
     # reopening the panel must NOT invalidate the displayed code
     manager.login_qrcode()
     assert manager._qrcode_key == "KEY-1"
-    unikey_calls = [call for call in session.calls if call[1] == LoginManager.QRCODE_KEY_URL]
+    unikey_calls = [call for call in session.calls
+                    if call[1].endswith("/eapi/api/login/qrcode/unikey")]
     assert len(unikey_calls) == 1, "a displayed QR code must be reused, not replaced"
 
     # an explicit refresh does mint a new one

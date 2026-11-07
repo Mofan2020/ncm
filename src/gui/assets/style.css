@@ -2601,7 +2601,13 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     margin: 10px 0 14px; font-size: 12.5px; color: var(--text-3);
     line-height: 1.5;
 }
-.bangumi-detail { padding: 24px 28px 40px; }
+.bangumi-detail {
+    padding: 24px 28px 40px;
+    /* The detail is a **sibling** of .bili-page, not a child of it, so it
+       does not inherit the scroll container.  Without these it grows past
+       the window and the lower half cannot be reached. */
+    min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+}
 .bangumi-detail .page-head { margin-bottom: 18px; }
 .bangumi-detail-body {
     display: flex; gap: 20px; align-items: flex-start; margin-bottom: 16px;
@@ -2681,6 +2687,25 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 .bangumi-queue-status.is-running { background: var(--info-soft, var(--sunken)); color: var(--info); }
 .bangumi-queue-status.is-done { background: var(--ok-soft, var(--sunken)); color: var(--ok); }
 .bangumi-queue-status.is-failed { background: var(--danger-soft, var(--sunken)); color: var(--danger); }
+
+/* --- Bangumi: the inline player --------------------------------- */
+.bangumi-player {
+    display: flex; flex-direction: column; gap: 8px;
+    margin: 10px 0 4px;
+}
+.bangumi-player video {
+    width: 100%; max-height: 46vh; border-radius: 10px;
+    background: #000; display: block;
+}
+.bangumi-player[hidden] { display: none; }
+.bangumi-player-bar {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--text-3);
+}
+.bangumi-player-bar .bangumi-player-name {
+    flex: 1 1 auto; min-width: 0; color: var(--text-2);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* --- bilibili: account, favourites and the player ---------------- */
 .bili-account {

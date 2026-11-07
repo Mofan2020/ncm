@@ -2629,6 +2629,8 @@ function showView(name) {
     // The Bangumi page re-reads whichever tab it is on: the local favourites
     // and the history may have changed in another view.
     if (name === 'bangumi') {
+        // 播放器在详情面板里，切走就停掉。
+        closeBangumiPlayer();
         if (bangumiState.tab === 'favorites') loadBangumiFavorites(true);
         else if (bangumiState.tab === 'history') loadBangumiHistory(true);
     }
@@ -13741,13 +13743,25 @@ function renderBangumiResources() {
             const anchor = document.createElement('a');
             anchor.className = 'bangumi-resource-link';
             anchor.href = url;
-            anchor.target = '_blank';
-            anchor.rel = 'noreferrer noopener';
             anchor.textContent = url;
+            // The webview does not open a second window, so a plain link with
+            // target="_blank" does nothing at all.  The click goes to the
+            // system browser instead.
+            anchor.addEventListener('click', (event) => {
+                if (event && event.preventDefault) event.preventDefault();
+                openBangumiLink(url);
+            });
             row.appendChild(anchor);
 
-            // 直链才值得下载；给的是网页的话下回来是一页 HTML。
+            // 直链才值得下载和播放；给的是网页的话下回来是一页 HTML。
             if (isBangumiDirectLink(url)) {
+                const play = document.createElement('button');
+                play.className = 'btn btn-sm btn-secondary';
+                play.type = 'button';
+                play.textContent = t('bangumi.play');
+                play.addEventListener('click', () => playBangumiUrl(url, link.name || link.id || ''));
+                row.appendChild(play);
+
                 const save = document.createElement('button');
                 save.className = 'btn btn-sm btn-secondary';
                 save.type = 'button';
@@ -13758,6 +13772,60 @@ function renderBangumiResources() {
         }
         list.appendChild(row);
     });
+}
+
+/** 用系统浏览器打开一个链接。 */
+function openBangumiLink(url) {
+    if (!url) return;
+    if (state.api && typeof state.api.open_external === 'function') {
+        state.api.open_external(url);
+        return;
+    }
+    window.open(url, '_blank');
+}
+
+/** 在页面里直接播一个直链。
+
+ * 资源站大多只把文件发给带着自己 Referer 的请求，网页里的 video 元素
+ * 没法设 Referer，所以走本地媒体代理转发。
+ */
+function playBangumiUrl(url, label) {
+    if (!url) return;
+    const box = document.getElementById('bangumi-player');
+    const video = document.getElementById('bangumi-player-video');
+    const name = document.getElementById('bangumi-player-name');
+    if (!box || !video) return;
+    const base = state.mediaBaseUrl;
+    if (!base) {
+        showToast('error', t('bangumi.play_failed'));
+        return;
+    }
+    video.src = base + '/bgm-media?u=' + encodeURIComponent(url);
+    if (name) name.textContent = label || url;
+    box.hidden = false;
+    try {
+        const started = video.play();
+        if (started && typeof started.catch === 'function') {
+            started.catch(() => {
+                // 自动播放被拦了：控件还在，用户点一下就能播。
+                showToast('error', t('bangumi.play_failed'));
+            });
+        }
+    } catch (err) {
+        showToast('error', t('bangumi.play_failed'));
+    }
+}
+
+/** 关掉内联播放器。 */
+function closeBangumiPlayer() {
+    const box = document.getElementById('bangumi-player');
+    const video = document.getElementById('bangumi-player-video');
+    if (video) {
+        try { video.pause(); } catch (err) { /* 忽略 */ }
+        video.removeAttribute('src');
+        video.load();
+    }
+    if (box) box.hidden = true;
 }
 
 /** 某一集的下载链接。 */
@@ -14221,6 +14289,8 @@ function bindBangumiFeatures() {
     if (queueCancel) queueCancel.addEventListener('click', cancelBangumiQueue);
     const queueClear = document.getElementById('btn-bangumi-queue-clear');
     if (queueClear) queueClear.addEventListener('click', clearBangumiQueue);
+    const playerClose = document.getElementById('btn-bangumi-player-close');
+    if (playerClose) playerClose.addEventListener('click', closeBangumiPlayer);
     const clearButton = document.getElementById('btn-bangumi-clear-history');
     if (clearButton) clearButton.addEventListener('click', clearBangumiHistory);
     bindBangumiSettings();
