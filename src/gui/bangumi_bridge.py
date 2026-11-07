@@ -26,7 +26,7 @@ from src.core.bangumi import (
     BangumiClient,
     render_resource_links,
 )
-from src.core.bangumi_download import BangumiDownloader
+from src.core.bangumi_download import BangumiDownloader, BangumiDownloadQueue
 from src.core.bangumi_store import BangumiCache, BangumiStore
 
 __all__ = ["BangumiBridge"]
@@ -47,6 +47,7 @@ class BangumiBridge:
         self._store = store
         self._cache = cache
         self._downloader: BangumiDownloader | None = None
+        self._queue: BangumiDownloadQueue | None = None
         self._settings: Any = None
 
     # ------------------------------------------------------------- wiring
@@ -63,6 +64,7 @@ class BangumiBridge:
         """
         self._client = None
         self._downloader = None
+        self._queue = None
 
     def _cfg(self) -> Any:
         if self._settings is not None:
@@ -105,6 +107,13 @@ class BangumiBridge:
             directory = str(getattr(cfg, "download_dir", "") or "").strip()
             self._downloader = BangumiDownloader(directory or None)
         return self._downloader
+
+    @property
+    def queue(self) -> BangumiDownloadQueue:
+        """下载队列。跟着下载器走——换了目录，队列也换。"""
+        if self._queue is None:
+            self._queue = BangumiDownloadQueue(self.downloader)
+        return self._queue
 
     def _resource_sites(self) -> list[dict[str, Any]]:
         cfg = self._cfg()
@@ -367,3 +376,39 @@ class BangumiBridge:
                     "size": result.get("size", 0)}
         return {"success": False, "reason": result.get("error", ""),
                 "error_key": "bangumi.error.download_failed"}
+
+    # ------------------------------------------------------------ 批量下载
+    def enqueue_download(self, urls: list[dict[str, Any]],
+                         *, start: bool = True) -> dict[str, Any]:
+        """把一批资源链接放进下载队列。
+
+        每个元素是 ``{"url": ..., "filename": ..., "label": ...}``。
+        队列一次只下一个——资源站是第三方站点，不能轰炸。
+        """
+        items = urls if isinstance(urls, list) else []
+        added = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            result = self.queue.enqueue(
+                str(item.get("url") or ""),
+                str(item.get("filename") or ""),
+                str(item.get("label") or ""))
+            if result.get("success"):
+                added += 1
+        if start and added:
+            self.queue.start()
+        return {"success": True, "added": added, "skipped": len(items) - added}
+
+    def download_queue_status(self) -> dict[str, Any]:
+        """队列的状态。"""
+        return self.queue.status()
+
+    def clear_download_queue(self) -> dict[str, Any]:
+        """清掉已经结束的任务。"""
+        return {"success": True, "removed": self.queue.clear()}
+
+    def cancel_download_queue(self) -> dict[str, Any]:
+        """停掉整个队列：不再取新任务，当前那个也取消。"""
+        return {"success": True, "cancelled": self.queue.cancel()}
+

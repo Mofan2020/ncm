@@ -34,7 +34,8 @@ import requests
 
 from src.core.bangumi import BANGUMI_UA
 
-__all__ = ["BangumiDownloader", "sanitize_filename", "build_episode_filename"]
+__all__ = ["BangumiDownloader", "BangumiDownloadQueue", "sanitize_filename",
+           "build_episode_filename"]
 
 log = logging.getLogger(__name__)
 
@@ -250,6 +251,174 @@ class BangumiDownloader:
 
 class _Cancelled(Exception):
     """内部用：取消信号。"""
+
+
+class BangumiDownloadQueue:
+    """一串下载任务，一次只下一个。
+
+    为什么是串行的：资源站是用户自己配的第三方站点，本来就不该被轰炸。
+    一次一个、两个之间隔开，比并发猛冲稳得多——被封了之后用户自己都没得下。
+
+    用法::
+
+        queue = BangumiDownloadQueue(downloader)
+        queue.set_progress_callback(print)
+        queue.enqueue("https://x.test/a.mp4", "a.mp4")
+        queue.start()
+        ...
+        queue.status()   # {"pending": 1, "done": 0, ...}
+        queue.cancel()
+
+    每个任务的状态是 ``pending`` / ``running`` / ``done`` / ``failed`` /
+    ``cancelled``。失败的记 ``error``。
+    """
+
+    def __init__(self, downloader: BangumiDownloader) -> None:
+        self._downloader = downloader
+        self._tasks: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._progress: Callable[[dict[str, Any]], None] | None = None
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    # -------------------------------------------------------------- 队列
+    def enqueue(self, url: str, filename: str = "",
+                label: str = "") -> dict[str, Any]:
+        """加一个任务。返回任务的描述（含 ``id``）。"""
+        url = str(url or "").strip()
+        if not url.startswith(("http://", "https://")):
+            return {"success": False, "error": "bad_url", "url": url}
+        with self._lock:
+            index = len(self._tasks)
+            task = {
+                "id": index,
+                "url": url,
+                "filename": filename,
+                "label": label or filename or url,
+                "status": "pending",
+                "error": "",
+                "path": "",
+                "size": 0,
+                "progress": 0.0,
+            }
+            self._tasks.append(task)
+        return {"success": True, "task": dict(task), "id": index}
+
+    def clear(self) -> int:
+        """清掉已经结束的任务。正在下的不动。"""
+        with self._lock:
+            before = len(self._tasks)
+            self._tasks = [task for task in self._tasks
+                           if task["status"] in ("pending", "running")]
+            return before - len(self._tasks)
+
+    def status(self) -> dict[str, Any]:
+        """队列的整体状态和每个任务的状态。"""
+        with self._lock:
+            tasks = [dict(task) for task in self._tasks]
+        counts = {"pending": 0, "running": 0, "done": 0, "failed": 0,
+                  "cancelled": 0}
+        for task in tasks:
+            counts[task["status"]] = counts.get(task["status"], 0) + 1
+        return {
+            "success": True,
+            "tasks": tasks,
+            "total": len(tasks),
+            "pending": counts["pending"],
+            "running": counts["running"],
+            "done": counts["done"],
+            "failed": counts["failed"],
+            "cancelled": counts["cancelled"],
+            "finished": counts["done"] + counts["failed"] + counts["cancelled"],
+        }
+
+    # -------------------------------------------------------------- 运行
+    def set_progress_callback(
+        self, callback: Callable[[dict[str, Any]], None] | None) -> None:
+        self._progress = callback
+
+    def _notify(self, payload: dict[str, Any]) -> None:
+        if self._progress is None:
+            return
+        try:
+            self._progress(payload)
+        except Exception as exc:  # noqa: BLE001 - 回调坏了不该打断下载
+            log.warning("bangumi 下载队列回调失败: %s", exc)
+
+    def start(self) -> bool:
+        """开一个后台线程跑队列。已经在跑就返回 False。"""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._stop.clear()
+            # 上一次取消过的信号留着的话，第一个任务直接被判 cancelled。
+            self._downloader.reset()
+            self._thread = threading.Thread(
+                target=self._run, name="bangumi-dl", daemon=True)
+            self._thread.start()
+        return True
+
+    def _next_task(self) -> dict[str, Any] | None:
+        with self._lock:
+            for task in self._tasks:
+                if task["status"] == "pending":
+                    task["status"] = "running"
+                    return dict(task)
+        return None
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            task = self._next_task()
+            if task is None:
+                return
+            result = self._downloader.save_url(task["url"], task["filename"])
+            with self._lock:
+                for entry in self._tasks:
+                    if entry["id"] != task["id"]:
+                        continue
+                    if result.get("success"):
+                        entry["status"] = "done"
+                        entry["path"] = result.get("path", "")
+                        entry["size"] = result.get("size", 0)
+                        entry["progress"] = 100.0
+                    elif result.get("error") == "cancelled":
+                        entry["status"] = "cancelled"
+                    else:
+                        entry["status"] = "failed"
+                        entry["error"] = str(result.get("error", ""))
+                    break
+            final = "done" if result.get("success") else "failed"
+            self._notify({
+                "id": task["id"],
+                "url": task["url"],
+                "label": task["label"],
+                "status": final,
+                "path": result.get("path", ""),
+                "error": str(result.get("error", "")),
+            })
+
+    def cancel(self) -> int:
+        """停掉队列：不再取新任务，当前那个也取消。"""
+        self._stop.set()
+        self._downloader.cancel()
+        with self._lock:
+            waiting = [task for task in self._tasks if task["status"] == "pending"]
+            for task in waiting:
+                task["status"] = "cancelled"
+            return len(waiting)
+
+    def reset(self) -> None:
+        """取消信号清掉——下一个任务能继续下。"""
+        self._stop.clear()
+        self._downloader.reset()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """等队列跑完。返回 True 表示跑完了。"""
+        thread = self._thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
 
 
 def _filename_from_url(url: str) -> str:

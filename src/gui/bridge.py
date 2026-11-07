@@ -2314,6 +2314,23 @@ class GuiBridge:
         """Write the subject and its episodes to a txt file."""
         return self.bangumi.export_subject_text(subject_id, filename)
 
+    def enqueue_bangumi_downloads(self, urls: list[dict[str, Any]],
+                                  start: bool = True) -> dict[str, Any]:
+        """Put a batch of resource links into the download queue."""
+        return self.bangumi.enqueue_download(urls, start=start)
+
+    def get_bangumi_download_queue(self) -> dict[str, Any]:
+        """The state of the download queue."""
+        return self.bangumi.download_queue_status()
+
+    def clear_bangumi_download_queue(self) -> dict[str, Any]:
+        """Drop the finished tasks from the queue."""
+        return self.bangumi.clear_download_queue()
+
+    def cancel_bangumi_download_queue(self) -> dict[str, Any]:
+        """Stop the whole queue, including the download in flight."""
+        return self.bangumi.cancel_download_queue()
+
     # ------------------------------------------------------ 本地视频（实验性）
     def add_local_video_folder(self) -> dict[str, Any]:
         """Ask for a video folder and remember it."""

@@ -263,7 +263,13 @@ def _js_code(source: str | None = None) -> str:
                     end += 1
                 word = JS_source[index:end]
                 out.append(word)
-                previous = word if word not in _JS_KEYWORDS else " "
+                # `return /re/` only reads as a regex if the keyword itself
+                # survives as the precedent; blanking every keyword to " "
+                # made the regex body leak out as identifiers.
+                if word in _JS_REGEX_PRECEDERS:
+                    previous = word
+                else:
+                    previous = word if word not in _JS_KEYWORDS else " "
                 index = end
                 continue
             previous = char

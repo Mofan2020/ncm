@@ -13716,6 +13716,7 @@ function renderBangumiDetail() {
     }
 
     renderBangumiResources();
+    renderBangumiQueue();
 }
 
 function renderBangumiResources() {
@@ -13746,7 +13747,7 @@ function renderBangumiResources() {
             row.appendChild(anchor);
 
             // 直链才值得下载；给的是网页的话下回来是一页 HTML。
-            if (/\.(mp4|mkv|avi|webm|flv|m4v|mp3|flac|m4a|zip|7z|rar|txt|ass|srt)(\?|$)/i.test(url)) {
+            if (isBangumiDirectLink(url)) {
                 const save = document.createElement('button');
                 save.className = 'btn btn-sm btn-secondary';
                 save.type = 'button';
@@ -13796,6 +13797,124 @@ async function downloadBangumiUrl(url, button) {
     if (button) {
         button.disabled = false;
         button.textContent = label;
+    }
+}
+
+/** 下载队列的状态。 */
+const bangumiQueueState = {
+    tasks: [],
+    running: false,
+    timer: null
+};
+
+/** 直链才值得下载；网页链接下回来是一页 HTML。 */
+function isBangumiDirectLink(url) {
+    return /\.(mp4|mkv|avi|webm|flv|m4v|mp3|flac|m4a|zip|7z|rar|txt|ass|srt)(\?|$)/i
+        .test(String(url || ''));
+}
+
+/** 把当前资源的直链全放进队列。 */
+async function downloadAllBangumiResources() {
+    const links = (bangumiState.resources || []).filter((link) => {
+        const url = link.search_url || link.detail_url;
+        return url && isBangumiDirectLink(url);
+    });
+    if (!links.length) {
+        showToast('error', t('bangumi.queue_no_links'));
+        return;
+    }
+    const subject = bangumiState.subject;
+    const items = links.map((link) => {
+        const url = link.search_url || link.detail_url;
+        let filename = '';
+        if (subject) {
+            const name = subject.name_cn || subject.name || '';
+            filename = name + ' - ' + (link.label || link.name || '');
+        }
+        return {url: url, filename: filename, label: link.name || link.id || url};
+    });
+    try {
+        const result = await state.api.enqueue_bangumi_downloads(items);
+        if (result && result.success) {
+            showToast('success', t('bangumi.queue_added').replace('{n}', result.added));
+            await refreshBangumiQueue();
+        } else {
+            showToast('error', t('bangumi.download_failed'));
+        }
+    } catch (err) {
+        showToast('error', t('bangumi.download_failed'));
+    }
+}
+
+/** 读一次队列状态并画出来。 */
+async function refreshBangumiQueue() {
+    if (!bridgeHas('get_bangumi_download_queue')) return;
+    try {
+        const result = await state.api.get_bangumi_download_queue();
+        if (!result || !result.success) return;
+        bangumiQueueState.tasks = result.tasks || [];
+        renderBangumiQueue();
+        // 还有活着的就继续轮询。
+        const busy = result.pending > 0 || result.running > 0;
+        if (busy && !bangumiQueueState.timer) {
+            bangumiQueueState.timer = setInterval(refreshBangumiQueue, 1000);
+        } else if (!busy && bangumiQueueState.timer) {
+            clearInterval(bangumiQueueState.timer);
+            bangumiQueueState.timer = null;
+        }
+    } catch (err) {
+        /* 读不到就留着原来的 */
+    }
+}
+
+/** 队列里的每一行。 */
+function renderBangumiQueue() {
+    const list = document.getElementById('bangumi-queue-list');
+    if (!list) return;
+    list.innerHTML = '';
+    const tasks = bangumiQueueState.tasks || [];
+    if (!tasks.length) {
+        const empty = document.createElement('div');
+        empty.className = 'bangumi-queue-empty';
+        empty.textContent = t('bangumi.queue_empty');
+        list.appendChild(empty);
+        return;
+    }
+    tasks.forEach((task) => {
+        const row = document.createElement('div');
+        row.className = 'bangumi-queue-row';
+        const label = document.createElement('span');
+        label.className = 'bangumi-queue-label';
+        label.textContent = task.label || task.url || '';
+        row.appendChild(label);
+        const status = document.createElement('span');
+        status.className = 'bangumi-queue-status is-' + (task.status || 'pending');
+        status.textContent = t('bangumi.queue_status_' + (task.status || 'pending'));
+        row.appendChild(status);
+        list.appendChild(row);
+    });
+}
+
+/** 停掉整个队列。 */
+async function cancelBangumiQueue() {
+    if (!bridgeHas('cancel_bangumi_download_queue')) return;
+    try {
+        await state.api.cancel_bangumi_download_queue();
+        showToast('success', t('bangumi.queue_cancelled'));
+        await refreshBangumiQueue();
+    } catch (err) {
+        showToast('error', t('bangumi.download_failed'));
+    }
+}
+
+/** 清掉已经结束的任务。 */
+async function clearBangumiQueue() {
+    if (!bridgeHas('clear_bangumi_download_queue')) return;
+    try {
+        await state.api.clear_bangumi_download_queue();
+        await refreshBangumiQueue();
+    } catch (err) {
+        /* 忽略 */
     }
 }
 
@@ -14096,6 +14215,12 @@ function bindBangumiFeatures() {
     if (favButton) favButton.addEventListener('click', toggleBangumiFavorite);
     const exportButton = document.getElementById('btn-bangumi-export');
     if (exportButton) exportButton.addEventListener('click', exportBangumiSubject);
+    const queueAll = document.getElementById('btn-bangumi-queue-download-all');
+    if (queueAll) queueAll.addEventListener('click', downloadAllBangumiResources);
+    const queueCancel = document.getElementById('btn-bangumi-queue-cancel');
+    if (queueCancel) queueCancel.addEventListener('click', cancelBangumiQueue);
+    const queueClear = document.getElementById('btn-bangumi-queue-clear');
+    if (queueClear) queueClear.addEventListener('click', clearBangumiQueue);
     const clearButton = document.getElementById('btn-bangumi-clear-history');
     if (clearButton) clearButton.addEventListener('click', clearBangumiHistory);
     bindBangumiSettings();

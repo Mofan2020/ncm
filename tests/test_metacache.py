@@ -146,6 +146,7 @@ def test_stats_report_the_occupancy(cache):
     assert stats["meta"]["bytes"] > 0
 
 
+@pytest.mark.real_cache
 def test_the_cache_lives_next_to_the_config(cache):
     assert cache.root.name == "meta"
     assert cache.root.parent.name == "cache"

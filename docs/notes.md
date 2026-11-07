@@ -3725,9 +3725,11 @@ Bangumi 标签页：镜像列表（增删改序、官方刷新/重置）、资�
 
 ### 测试数量
 
-* Python：`test_bangumi.py` (33)、`test_bangumi_backup.py` (10)、`test_bangumi_settings.py` (13)、`test_bangumi_download.py` (15)、`test_bangumi_bridge_more.py` (11) —— 共 82 项
+* Python：`test_bangumi.py` (33)、`test_bangumi_backup.py` (10)、
+  `test_bangumi_settings.py` (13)、`test_bangumi_download.py` (15)、
+  `test_bangumi_bridge_more.py` (11)、`test_bangumi_queue.py` (10)，共 92 项
 * 前端：`scripts/check-bangumi-js.mjs` (25 项契约 + 设置 4 项)
-* 全量回归：`1340 passed, 7 skipped`
+* 全量回归：`1352 passed, 7 skipped`
 
 ### 文件清单
 
@@ -3762,10 +3764,53 @@ tests/test_bilibili_bridge.py
 tests/test_settings.py
 ```
 
+### 下载队列（`BangumiDownloadQueue`）
+
+一个条目几十集，一次只能下一个太弱。队列**串行**——资源站是用户自己配的第三方
+站点，并发猛冲会被封，封了用户自己都没得下。
+
+* `enqueue(url, filename, label)` → 任务 id；`start()` 起一个 daemon 线程。
+* 状态 `pending` / `running` / `done` / `failed` / `cancelled`，失败记 `error`。
+* 一个失败不拖累后面的；`cancel()` 停整个队列并把等待中的标成 cancelled。
+* `start()` 会调 `downloader.reset()`——不重置的话上一次取消的信号还在，
+  第一个任务直接被判 cancelled。这个是变异测试逼出来的。
+* `wait(timeout)` 给测试用。
+* 前端「全部下载」只把**直链**放进队列（`isBangumiDirectLink`），网页链接下回来
+  是一页 HTML，没有意义。入队后每秒轮询一次队列状态，空闲时自动停掉轮询
+  （不停的话 node/浏览器会一直挂着定时器）。
+
+### 测试隔离（踩过的坑）
+
+缓存根目录来自 `get_settings().config_path.parent`，而大多数测试从不移动配置
+目录——于是测试写的缓存条目落进了开发者真实的 `cache/meta`，`subject`、
+`episodes` 两个空目录就是这么来的。
+
+修法不是运行时清理，是 `tests/conftest.py` 里一个 autouse fixture 把
+`MetaCache.root` 钉到 `tmp_path/meta-cache`。只钉缓存根，不动 Settings——
+那一千多个测试都读 Settings，动它风险大。唯一需要真实解析路径的
+`test_the_cache_lives_next_to_the_config` 打 `real_cache` 标记豁免
+（`addopts` 带 `--strict-markers`，所以标记必须先在 pyproject 里注册）。
+
+验收：跑完 96 个 Bangumi 测试后，真实缓存目录一个字没动。
+
+### 前台检查器的 bug（`tests/test_frontend_assets.py`）
+
+`_JS_REGEX_PRECEDERS` 里有 `return`，但扫描器把**所有**关键字一律降级成空格，
+于是 `return /\.(mp4|mkv)/i` 的正则体被当成标识符，`mp4`、`mkv`、`lastIndex`
+之类全跑进「未定义标识符」列表。改成：关键字若在 preceders 里就保留原样。
+负向验过——加一个 `definitelyNotDefined(1)` 调用，检查器照样会红。
+
+### 假 DOM 的 `innerHTML` 语义
+
+`check-bangumi-js.mjs` 的假元素原来设 `innerHTML = ''` 不清 `children`，导致多次
+渲染后子节点累积，断言读到的是上一次的节点（空态 div 没有子节点，直接
+TypeError）。改成赋值 `innerHTML` 就把 children 清空，跟真实 DOM 一致。
+
 ### 已知未完成
 
-1. 下载器无任务队列（单次 `save_url`），UI 里一次只能下一个
-2. 前端下载/导出的变异测试未写进 harness（只测了成功路径）
-3. 资源站模板的 `{ep}` `{title}` 占位符在详情页点集时才填，搜索页只填 `{keyword}` `{subject_id}` `{name}` `{name_cn}`
-4. `docs/notes.md` 只记了大框架，没细到每个模块的边界条件
-5. 缓存目录残留：调试期间在用户真实 `cache/meta/` 下建了 `subject`/`search`/`episodes`/`mirrors`，已手动删净，代码里没加清理逻辑
+1. 资源站模板的 `{ep}` `{title}` 占位符在详情页点集时才填，搜索页只填
+   `{keyword}` `{subject_id}` `{name}` `{name_cn}`
+2. 队列没有断点续传，也没有并发数配置（刻意的：串行是安全选择）
+3. 没有真正的多镜像自动切换——主机不通时会报错让用户自己换，不静默重试
+4. 真实网络验收脚本在 `~/.hermes/cache/scratch/bgm_live_verify.py` 与
+   `bgm_download_verify.py`，不在仓库里

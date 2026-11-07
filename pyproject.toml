@@ -7,6 +7,7 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers"
 markers = [
     "network: talks to the real NetEase API (opt in with NCM_LIVE=1)",
+    "real_cache: uses the real metadata cache root instead of a per-test one",
 ]
 
 [tool.ruff]

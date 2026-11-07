@@ -9,11 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from src.core.bangumi import BangumiClient, render_resource_links
-from src.core.bangumi_store import BangumiStore
-from src.core.bangumi_store import BangumiCache
+from src.core.bangumi_store import BangumiCache, BangumiStore
 from src.gui.bangumi_bridge import BangumiBridge
 
 

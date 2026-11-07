@@ -71,6 +71,12 @@ function makeElement() {
                 String(value || '').split(/\s+/).filter(Boolean)
                     .forEach((n) => classes.add(n));
             }
+            // The real DOM throws the children away when innerHTML is
+            // assigned.  Without this the rows pile up across renders and a
+            // check reads a stale node instead of the one just drawn.
+            if (prop === 'innerHTML') {
+                target.children = [];
+            }
             return true;
         },
     });
@@ -211,6 +217,35 @@ const harness = `
                 results.calls.push('clear-history');
                 return Promise.resolve({success: true, removed: 1});
             },
+            download_bangumi_url: (url) => {
+                results.calls.push('download:' + url);
+                return Promise.resolve(results.downloadResult
+                    || {success: true, path: '/tmp/a.mp4'});
+            },
+            export_bangumi_subject: (id) => {
+                results.calls.push('export:' + id);
+                return Promise.resolve(results.exportResult
+                    || {success: true, path: '/tmp/a.txt'});
+            },
+            enqueue_bangumi_downloads: (items) => {
+                results.queued = items;
+                results.calls.push('enqueue');
+                return Promise.resolve({success: true, added: items.length});
+            },
+            get_bangumi_download_queue: () => {
+                results.calls.push('queue-status');
+                return Promise.resolve(results.queueStatus
+                    || {success: true, tasks: [], pending: 0, running: 0,
+                        done: 0, failed: 0, cancelled: 0, total: 0});
+            },
+            cancel_bangumi_download_queue: () => {
+                results.calls.push('queue-cancel');
+                return Promise.resolve({success: true});
+            },
+            clear_bangumi_download_queue: () => {
+                results.calls.push('queue-clear');
+                return Promise.resolve({success: true, removed: 0});
+            },
         };
 
         // ---- 1: search ---------------------------------------------------
@@ -307,6 +342,84 @@ const harness = `
         results.afterSiteAdd = bangumiSettingsState.sites.length;
         results.siteUrl = bangumiSettingsState.sites[bangumiSettingsState.sites.length - 1].detail_url;
 
+        // ---- 13: toasts are recorded, so failures can be seen ------------
+        const toasts = [];
+        globalThis.showToast = (kind, message) => { toasts.push(kind + ':' + message); };
+        results.toasts = toasts;
+
+        // ---- 14: a download goes to the bridge ---------------------------
+        results.downloadResult = {success: true, path: '/tmp/a.mp4'};
+        await downloadBangumiUrl('https://x.test/a.mp4', null);
+        results.downloadCall = results.calls.filter((n) => n.indexOf('download:') === 0);
+
+        // ---- 15: a failed download says so -------------------------------
+        results.downloadResult = {success: false, error_key: 'x'};
+        toasts.length = 0;
+        await downloadBangumiUrl('https://x.test/b.mp4', null);
+        results.downloadFailedToast = toasts.slice();
+
+        // ---- 16: export goes to the bridge -------------------------------
+        bangumiState.subject = {id: 400602, name_cn: '葬送的芙莉莲'};
+        results.exportResult = {success: true, path: '/tmp/a.txt'};
+        toasts.length = 0;
+        await exportBangumiSubject();
+        results.exportCalls = results.calls.filter((n) => n.indexOf('export:') === 0);
+
+        // ---- 17: export failure says so ----------------------------------
+        results.exportResult = {success: false, error_key: 'x'};
+        toasts.length = 0;
+        await exportBangumiSubject();
+        results.exportFailedToast = toasts.slice();
+
+        // ---- 18: only direct links reach the queue -----------------------
+        bangumiState.resources = [
+            {id: 's1', name: '直链站',
+             search_url: 'https://x.test/a.mp4'},
+            {id: 's2', name: '网页站',
+             search_url: 'https://x.test/search?q=1'},
+        ];
+        results.queued = [];
+        await downloadAllBangumiResources();
+        results.queuedUrls = (results.queued || []).map((item) => item.url);
+
+        // ---- 19: a queue with no direct links is refused ------------------
+        bangumiState.resources = [
+            {id: 's2', name: '网页站',
+             search_url: 'https://x.test/search?q=1'},
+        ];
+        results.queued = [];
+        toasts.length = 0;
+        await downloadAllBangumiResources();
+        results.noLinkQueued = (results.queued || []).length;
+        results.noLinkToast = toasts.slice();
+
+        // ---- 20: the queue is drawn --------------------------------------
+        results.queueStatus = {
+            success: true,
+            tasks: [
+                {id: 0, label: '第一集', status: 'done', url: 'https://x.test/a.mp4'},
+                {id: 1, label: '第二集', status: 'running', url: 'https://x.test/b.mp4'},
+            ],
+            pending: 0, running: 1, done: 1, failed: 0, cancelled: 0, total: 2,
+        };
+        await refreshBangumiQueue();
+        results.queueTaskCount = bangumiQueueState.tasks.length;
+        const queueList = document.getElementById('bangumi-queue-list');
+        results.queueRows = queueList.children.length;
+        results.queueFirstLabel = queueList.children.length
+            ? queueList.children[0].children[0].textContent : '';
+
+        // ---- 21: cancelling the queue reaches the bridge ------------------
+        await cancelBangumiQueue();
+        results.cancelCalled = results.calls.includes('queue-cancel');
+
+        // A busy queue keeps a polling timer alive; node will not exit while
+        // one is pending, so the harness stops it before it returns.
+        if (bangumiQueueState.timer) {
+            clearInterval(bangumiQueueState.timer);
+            bangumiQueueState.timer = null;
+        }
+
         return results;
     })();
 `;
@@ -356,6 +469,28 @@ check('新镜像的主机记下来了', results.addedHost === 'api.new.test', re
 check('能添加资源站', results.afterSiteAdd === 2, String(results.afterSiteAdd));
 check('资源站地址记下来了',
       results.siteUrl === 'https://mine.test/{keyword}', results.siteUrl);
+
+// --- download, export and the queue ---
+check('下载走的是 bridge', (results.downloadCall || []).length === 1,
+      (results.downloadCall || []).join(','));
+check('下载失败会提示', (results.downloadFailedToast || []).some(
+      (line) => line.indexOf('error:') === 0),
+      (results.downloadFailedToast || []).join(','));
+check('导出走的是 bridge', (results.exportCalls || []).length === 1,
+      (results.exportCalls || []).join(','));
+check('导出失败会提示', (results.exportFailedToast || []).some(
+      (line) => line.indexOf('error:') === 0),
+      (results.exportFailedToast || []).join(','));
+check('只把直链放进队列', (results.queuedUrls || []).length === 1
+      && (results.queuedUrls || [])[0] === 'https://x.test/a.mp4',
+      (results.queuedUrls || []).join(','));
+check('没有直链就不入队', results.noLinkQueued === 0, String(results.noLinkQueued));
+check('没有直链会提示', (results.noLinkToast || []).length > 0,
+      (results.noLinkToast || []).join(','));
+check('队列画出来了', results.queueRows === 2, String(results.queueRows));
+check('队列带任务名', results.queueFirstLabel === '第一集', results.queueFirstLabel);
+check('取消队列走到了 bridge', results.cancelCalled === true,
+      String(results.cancelCalled));
 
 if (failures.length) {
     console.error(`\n${failures.length} check(s) failed.`);

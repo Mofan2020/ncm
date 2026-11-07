@@ -102,6 +102,34 @@ def fresh_i18n(isolated_home):
     I18n._instance = None
 
 
+@pytest.fixture(autouse=True)
+def _cache_never_touches_the_real_directory(tmp_path, monkeypatch, request):
+    """Every test gets its own metadata cache.
+
+    The cache root is resolved from the settings, and most tests never move
+    the config directory -- so a test that writes a cache entry landed in the
+    developer's real ``cache/meta``.  The empty ``subject``/``episodes``
+    folders that showed up there came from exactly this.  Pinning the root
+    here keeps the real cache out of every test, without moving the settings
+    those same tests read.
+    """
+    from src.core import metacache as metacache_module
+
+    if request.node.get_closest_marker("real_cache"):
+        # The one test that checks where the cache lives needs the real
+        # resolution path; pinning the root would test the pin instead.
+        yield
+        return
+
+    root = tmp_path / "meta-cache"
+    monkeypatch.setattr(
+        metacache_module.MetaCache, "root",
+        property(lambda self: root))
+    metacache_module._instance = None
+    yield
+    metacache_module._instance = None
+
+
 @pytest.fixture()
 def fresh_api(isolated_home):
     """A NeteaseAPI instance with no shared state."""

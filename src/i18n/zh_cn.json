@@ -1111,6 +1111,19 @@
     "download_failed": "下载失败",
     "export_txt": "导出 txt",
     "export_done": "已导出",
-    "download_dir": "下载目录"
+    "download_dir": "下载目录",
+    "queue_title": "下载队列",
+    "queue_download_all": "全部下载",
+    "queue_cancel": "停止下载",
+    "queue_clear": "清除已完成",
+    "queue_empty": "队列是空的",
+    "queue_added": "已加入 {n} 个任务",
+    "queue_cancelled": "已停止下载",
+    "queue_no_links": "当前资源里没有直接能下的链接",
+    "queue_status_pending": "等待中",
+    "queue_status_running": "下载中",
+    "queue_status_done": "已完成",
+    "queue_status_failed": "失败",
+    "queue_status_cancelled": "已取消"
   }
 }

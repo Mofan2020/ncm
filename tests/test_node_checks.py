@@ -30,6 +30,8 @@ CHECKS = (
     ("check-bili-stream-loader.mjs", "the shared Bilibili stream loader"),
     ("check-bili-recommend-paging.mjs", "the paging of the recommendation feed"),
     ("check-bili-default-quality.mjs", "the default quality reaching playback"),
+    ("check-bili-collection-paging.mjs", "the paging of the subscribed collections"),
+    ("check-bangumi-js.mjs", "the Bangumi page"),
 )
 
 NODE = shutil.which("node")

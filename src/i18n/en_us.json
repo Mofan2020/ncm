@@ -1111,6 +1111,19 @@
     "download_failed": "Download failed",
     "export_txt": "Export txt",
     "export_done": "Exported",
-    "download_dir": "Download folder"
+    "download_dir": "Download folder",
+    "queue_title": "Download queue",
+    "queue_download_all": "Download all",
+    "queue_cancel": "Stop",
+    "queue_clear": "Clear finished",
+    "queue_empty": "The queue is empty",
+    "queue_added": "{n} tasks added",
+    "queue_cancelled": "Downloads stopped",
+    "queue_no_links": "None of these links point straight at a file",
+    "queue_status_pending": "Waiting",
+    "queue_status_running": "Downloading",
+    "queue_status_done": "Done",
+    "queue_status_failed": "Failed",
+    "queue_status_cancelled": "Cancelled"
   }
 }
