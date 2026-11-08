@@ -381,13 +381,17 @@
 
                 <!-- 我的收藏：收藏夹 / 订阅的合集 / 追的番剧 -->
                 <div id="bili-favorites" hidden>
-                    <div class="filter-chips" id="bili-fav-segments" role="tablist">
-                        <button class="chip is-active" type="button" data-seg="folders"
-                                data-i18n="bili.seg_folders"></button>
-                        <button class="chip" type="button" data-seg="collections"
-                                data-i18n="bili.seg_collections"></button>
-                        <button class="chip" type="button" data-seg="bangumi"
-                                data-i18n="bili.seg_bangumi"></button>
+                    <div class="bili-fav-head">
+                        <div class="filter-chips" id="bili-fav-segments" role="tablist">
+                            <button class="chip is-active" type="button" data-seg="folders"
+                                    data-i18n="bili.seg_folders"></button>
+                            <button class="chip" type="button" data-seg="collections"
+                                    data-i18n="bili.seg_collections"></button>
+                            <button class="chip" type="button" data-seg="bangumi"
+                                    data-i18n="bili.seg_bangumi"></button>
+                        </div>
+                        <button class="btn btn-sm btn-secondary" id="btn-bili-folder-manage"
+                                type="button" data-i18n="bili.folder_manage"></button>
                     </div>
 
                     <!-- 收藏夹 -->
@@ -2156,7 +2160,7 @@
         <div class="modal-body">
             <div class="bili-grid" id="bili-collection-videos"></div>
             <div id="bili-collection-videos-state"></div>
-            <button class="btn btn-sm btn-block" id="btn-bili-collection-more" type="button" hidden
+            <button class="btn btn-sm btn-block" id="btn-bili-collection-videos-more" type="button" hidden
                     data-i18n="bili.load_more"></button>
         </div>
     </div>
@@ -2174,6 +2178,54 @@
         <div class="modal-body">
             <div class="bili-episode-list" id="bili-episode-list"></div>
             <div id="bili-episodes-state"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ bilibili 收藏夹管理 ============ -->
+<div class="modal" id="bili-folder-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-folder-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="bili.folder_manage"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-folder-modal" data-icon="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="bili-folder-new">
+                <input class="input" id="bili-folder-new-title" type="text" maxlength="40">
+                <input class="input" id="bili-folder-new-intro" type="text" maxlength="200">
+                <label class="bili-folder-privacy">
+                    <input type="checkbox" id="bili-folder-new-private">
+                    <span data-i18n="bili.folder_private"></span>
+                </label>
+                <button class="btn btn-sm btn-primary" id="btn-bili-folder-create" type="button"
+                        data-i18n="bili.folder_create"></button>
+            </div>
+            <div class="bili-folder-list" id="bili-folder-list"></div>
+            <div id="bili-folder-state"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ bilibili 关注与粉丝 ============ -->
+<div class="modal" id="bili-relations-modal" hidden>
+    <div class="modal-backdrop" data-close="bili-relations-modal"></div>
+    <div class="modal-box modal-box-lg glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 data-i18n="bili.relations"></h2>
+            <button class="btn btn-icon" type="button" data-close="bili-relations-modal" data-icon="close"></button>
+        </header>
+        <div class="modal-body">
+            <div class="filter-chips" id="bili-relations-segments" role="tablist">
+                <button class="chip is-active" type="button" data-seg="followings"
+                        data-i18n="bili.relations_followings"></button>
+                <button class="chip" type="button" data-seg="followers"
+                        data-i18n="bili.relations_followers"></button>
+            </div>
+            <div class="bili-relations-list" id="bili-relations-list"></div>
+            <div id="bili-relations-state"></div>
+            <button class="btn btn-sm btn-block" id="btn-bili-relations-more" type="button" hidden
+                    data-i18n="bili.load_more"></button>
         </div>
     </div>
 </div>

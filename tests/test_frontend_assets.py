@@ -493,8 +493,8 @@ def test_the_comment_box_can_read_write_and_like():
     assert 'id="btn-bili-comment-cancel"' in HTML
     for method in ("get_bilibili_comments(", "bili_post_comment(", "bili_like_comment("):
         assert f"state.api.{method}" in JS, f"{method} is never called"
-    # 回复是把对方的 rpid 一起发出去。
-    assert re.search(r"bili_post_comment\(bvid, text, parent\)", JS)
+    # 回复是把对方的 rpid 一起发出去；楼中楼还要带上主楼的 rpid。
+    assert re.search(r"bili_post_comment\(bvid, text, parent, root\)", JS)
 
 
 def test_the_danmaku_can_be_sent_and_filtered():
@@ -537,3 +537,77 @@ def test_the_bilibili_detail_classes_have_styles():
                      ".bili-space-head", ".bili-im-session", ".bili-upload-steps"):
         assert selector + " " in CSS or selector + "{" in CSS or selector + "," in CSS, \
             f"{selector} has no rule in style.css"
+
+
+def test_the_ids_in_the_page_are_unique():
+    """同一个 id 出现两次，浏览器只认第一个，另一个按钮就是死的。
+
+    「订阅的合集」和合集详情里两个「加载更多」都叫
+    btn-bili-collection-more，点哪个都不对。
+    """
+    ids = re.findall(r'\sid="([^"]+)"', HTML)
+    duplicates = sorted({name for name in ids if ids.count(name) > 1})
+    assert duplicates == [], f"these ids are used more than once: {duplicates}"
+
+
+def test_the_favourites_tabs_are_visible():
+    """收藏夹/订阅的合集/追的番剧 这三个标签要能看见。
+
+    .filter-chips 是搜索那行的可折叠样式，套到标签行上就变成
+    高度 0、看不见了。
+    """
+    assert 'id="bili-fav-segments"' in HTML
+    assert 'id="bili-space-segments"' in HTML
+    for selector in ("#bili-fav-segments", "#bili-space-segments"):
+        assert selector in CSS, f"{selector} has no style of its own"
+    # 那两行不能被折叠掉。
+    block = CSS.split("#bili-fav-segments")[1].split("}")[0]
+    assert "max-height" in block and "none" in block
+
+
+def test_the_subscribed_collections_are_reachable():
+    """订阅的合集要能从收藏页进去，而且能往下翻。"""
+    assert 'data-seg="collections"' in HTML
+    assert 'id="bili-seg-collections"' in HTML
+    assert 'id="bili-collection-results"' in HTML
+    assert "loadBiliCollections(" in JS
+    assert "renderBiliCollections(" in JS
+    assert 'id="btn-bili-collection-more"' in HTML
+    assert "loadMoreBiliCollections" in JS
+
+
+def test_the_folders_can_be_managed():
+    """收藏夹管理：新建、改名、删除、公开/私密。"""
+    assert 'id="bili-folder-modal"' in HTML
+    assert 'id="bili-folder-list"' in HTML
+    assert 'id="btn-bili-folder-manage"' in HTML
+    assert 'id="btn-bili-folder-create"' in HTML
+    for method in ("bili_create_favorite_folder(", "bili_edit_favorite_folder(",
+                   "bili_delete_favorite_folder("):
+        assert f"state.api.{method}" in JS, f"{method} is never called"
+    for word in ("createBiliFolder(", "renameBiliFolder(", "deleteBiliFolder(",
+                 "toggleBiliFolderPrivacy("):
+        assert word in JS, f"{word} is never called"
+
+
+def test_the_followings_and_the_followers_can_be_read():
+    """账号要能看自己关注了谁、谁关注了自己。"""
+    assert 'id="bili-relations-modal"' in HTML
+    assert 'id="bili-relations-list"' in HTML
+    for method in ("get_bilibili_followings(", "get_bilibili_followers("):
+        assert f"state.api.{method}" in JS, f"{method} is never called"
+    assert "openBiliRelations(" in JS
+
+
+def test_the_replies_of_a_comment_can_be_opened():
+    """楼中楼：能把主楼下面的回复都拉出来。"""
+    assert "expandBiliCommentReplies(" in JS
+    assert "get_bilibili_comment_replies(" in JS
+    assert "bili.comment_replies" in json.dumps(
+        _flat_catalogue("zh_cn"), ensure_ascii=False)
+
+
+def test_a_reply_carries_the_thread_it_belongs_to():
+    """回复楼中楼要同时带上主楼和被回复的那条。"""
+    assert re.search(r"bili_post_comment\(bvid, text, parent, root\)", JS)
+    assert "root_rpid" in BRIDGE.read_text(encoding="utf-8")

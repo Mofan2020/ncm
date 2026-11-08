@@ -9565,6 +9565,13 @@ function renderBiliAccount() {
             space.addEventListener('click', () => openBiliSpace(biliAccount.mid));
             actions.appendChild(space);
         }
+        // Who this account follows, and who follows it.
+        const relations = document.createElement('button');
+        relations.className = 'btn btn-sm btn-secondary';
+        relations.type = 'button';
+        relations.textContent = t('bili.relations');
+        relations.addEventListener('click', () => openBiliRelations());
+        actions.appendChild(relations);
         const logout = document.createElement('button');
         logout.className = 'btn btn-sm btn-secondary';
         logout.type = 'button';
@@ -10325,9 +10332,316 @@ async function bulkRemoveBiliFavorites() {
         }
         showToast('success', t('bili.bulk_removed', { count: Number(result.count) || aids.length }));
         clearBiliFavSelection();
+        // The folder lost videos, so its count changed too: read both the
+        // list of folders and the open folder again.
+        await loadBiliFolders();
         await loadBiliFavoriteVideos(true);
     } catch (err) {
         showToast('error', t('bili.bulk_remove_failed'));
+    }
+}
+
+/* ------------------------------------------------------- 收藏夹管理 */
+
+/**
+ * Open the folder manager.
+ *
+ * The list it shows is the one the favourites page uses, so both stay
+ * the same after a change.
+ */
+function openBiliFolderManage() {
+    if (!bridgeHas('get_bilibili_favorites')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    openModal('bili-folder-modal');
+    loadBiliFolders();
+    renderBiliFolderList();
+}
+
+/** Draw the folders with the buttons that change them. */
+function renderBiliFolderList() {
+    const list = document.getElementById('bili-folder-list');
+    const state = document.getElementById('bili-folder-state');
+    if (!list) return;
+    list.innerHTML = '';
+    if (state) state.textContent = '';
+    if (!biliAccount.loggedIn) {
+        if (state) state.textContent = t('bili.favorite_login_hint');
+        return;
+    }
+    if (!biliFavorites.folders.length) {
+        if (state) state.textContent = t('bili.no_folders');
+        return;
+    }
+    biliFavorites.folders.forEach((folder) => {
+        if (!folder) return;
+        const row = document.createElement('div');
+        row.className = 'bili-folder-row';
+        const name = document.createElement('span');
+        name.className = 'bili-folder-name';
+        name.textContent = folder.title || '';
+        row.appendChild(name);
+        const count = document.createElement('span');
+        count.className = 'bili-folder-count';
+        count.textContent = t('bili.folder_media_count', { count: folder.media_count || 0 });
+        row.appendChild(count);
+        const privacy = document.createElement('button');
+        privacy.className = 'btn btn-sm btn-ghost';
+        privacy.type = 'button';
+        privacy.textContent = folder.private
+            ? t('bili.folder_private') : t('bili.folder_public');
+        privacy.addEventListener('click', () => toggleBiliFolderPrivacy(folder));
+        row.appendChild(privacy);
+        const rename = document.createElement('button');
+        rename.className = 'btn btn-sm btn-ghost';
+        rename.type = 'button';
+        rename.textContent = t('bili.folder_rename');
+        rename.addEventListener('click', () => renameBiliFolder(folder));
+        row.appendChild(rename);
+        const remove = document.createElement('button');
+        remove.className = 'btn btn-sm btn-ghost';
+        remove.type = 'button';
+        remove.textContent = t('bili.folder_delete');
+        remove.addEventListener('click', () => deleteBiliFolder(folder));
+        row.appendChild(remove);
+        list.appendChild(row);
+    });
+}
+
+/** Create a folder. */
+async function createBiliFolder() {
+    if (!bridgeHas('bili_create_favorite_folder')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const title = biliInputValue('bili-folder-new-title');
+    if (!title) return;
+    const intro = biliInputValue('bili-folder-new-intro');
+    const privateBox = document.getElementById('bili-folder-new-private');
+    const privacy = privateBox && privateBox.checked ? 1 : 0;
+    try {
+        const result = await state.api.bili_create_favorite_folder(title, intro, privacy);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.folder_create'));
+            return;
+        }
+        const titleInput = document.getElementById('bili-folder-new-title');
+        const introInput = document.getElementById('bili-folder-new-intro');
+        if (titleInput) titleInput.value = '';
+        if (introInput) introInput.value = '';
+        showToast('success', t('bili.folder_created'));
+        await loadBiliFolders();
+        renderBiliFolderList();
+    } catch (err) {
+        showToast('error', t('bili.folder_create'));
+    }
+}
+
+/** Ask for a new name and rename the folder. */
+async function renameBiliFolder(folder) {
+    if (!folder || !bridgeHas('bili_edit_favorite_folder')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const title = window.prompt(t('bili.folder_create_title'), folder.title || '');
+    if (title === null) return;
+    const name = String(title).trim();
+    if (!name || name === folder.title) return;
+    try {
+        const result = await state.api.bili_edit_favorite_folder(
+            folder.id, name, folder.intro || '', folder.private ? 1 : 0);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.folder_rename'));
+            return;
+        }
+        showToast('success', t('bili.folder_renamed'));
+        await loadBiliFolders();
+        renderBiliFolderList();
+    } catch (err) {
+        showToast('error', t('bili.folder_rename'));
+    }
+}
+
+/** Switch a folder between public and private. */
+async function toggleBiliFolderPrivacy(folder) {
+    if (!folder || !bridgeHas('bili_edit_favorite_folder')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const next = folder.private ? 0 : 1;
+    try {
+        const result = await state.api.bili_edit_favorite_folder(
+            folder.id, folder.title || '', folder.intro || '', next);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.folder_set_private'));
+            return;
+        }
+        showToast('success', t('bili.folder_privacy_changed', {
+            state: next ? t('bili.folder_private') : t('bili.folder_public')
+        }));
+        await loadBiliFolders();
+        renderBiliFolderList();
+    } catch (err) {
+        showToast('error', t('bili.folder_set_private'));
+    }
+}
+
+/** Delete a folder. */
+async function deleteBiliFolder(folder) {
+    if (!folder || !bridgeHas('bili_delete_favorite_folder')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const name = folder.title || '';
+    if (!window.confirm(t('bili.folder_delete_confirm', { name: name }))) return;
+    try {
+        const result = await state.api.bili_delete_favorite_folder(folder.id);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.folder_delete'));
+            return;
+        }
+        showToast('success', t('bili.folder_deleted'));
+        // The open folder may be the one that was deleted.
+        if (biliFavorites.folderId === folder.id) {
+            biliFavorites.folderId = null;
+            biliFavorites.items = [];
+        }
+        await loadBiliFolders();
+        renderBiliFolderList();
+        renderBiliFavorites();
+    } catch (err) {
+        showToast('error', t('bili.folder_delete'));
+    }
+}
+
+/* ------------------------------------------------------- 关注与粉丝 */
+
+const biliRelations = {
+    seg: 'followings',
+    page: 1,
+    items: [],
+    hasMore: false,
+    loading: false,
+    error: ''
+};
+
+/** Open the list of who this account follows and who follows it. */
+function openBiliRelations() {
+    if (!bridgeHas('get_bilibili_followings')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    openModal('bili-relations-modal');
+    biliRelations.seg = 'followings';
+    biliRelations.page = 1;
+    biliRelations.items = [];
+    biliRelations.hasMore = false;
+    const chips = document.querySelectorAll('#bili-relations-segments .chip');
+    chips.forEach((chip) => {
+        chip.classList.toggle('is-active', chip.dataset.seg === 'followings');
+    });
+    loadBiliRelations(true);
+}
+
+/** Read one page of the relation list. */
+async function loadBiliRelations(reset) {
+    if (biliRelations.loading) return;
+    const followers = biliRelations.seg === 'followers';
+    const method = followers ? 'get_bilibili_followers' : 'get_bilibili_followings';
+    if (!bridgeHas(method)) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    if (!reset && !biliRelations.hasMore) return;
+    biliRelations.loading = true;
+    renderBiliRelations();
+    try {
+        const page = reset ? 1 : biliRelations.page + 1;
+        const result = followers
+            ? await state.api.get_bilibili_followers(biliAccount.mid || '', page, 30)
+            : await state.api.get_bilibili_followings(biliAccount.mid || '', page, 30);
+        if (!result || !result.success) {
+            biliRelations.error = biliFailure(result, 'bili.relations_failed');
+            biliRelations.loading = false;
+            renderBiliRelations();
+            return;
+        }
+        const items = result.items || [];
+        if (reset) biliRelations.items = [];
+        items.forEach((item) => { if (item) biliRelations.items.push(item); });
+        biliRelations.page = page;
+        biliRelations.hasMore = !!result.has_more;
+        biliRelations.error = '';
+    } catch (err) {
+        biliRelations.error = t('error.network');
+    } finally {
+        biliRelations.loading = false;
+        renderBiliRelations();
+    }
+}
+
+/** Draw the relation list. */
+function renderBiliRelations() {
+    const list = document.getElementById('bili-relations-list');
+    const state = document.getElementById('bili-relations-state');
+    const more = document.getElementById('btn-bili-relations-more');
+    if (!list) return;
+    list.innerHTML = '';
+    if (state) state.textContent = biliRelations.loading ? t('common.loading') : '';
+    if (!biliRelations.loading && biliRelations.error) {
+        if (state) state.textContent = biliRelations.error;
+        return;
+    }
+    if (!biliRelations.loading && !biliRelations.items.length) {
+        if (state) state.textContent = t('bili.relations_empty');
+        return;
+    }
+    biliRelations.items.forEach((item) => {
+        if (!item) return;
+        const row = document.createElement('div');
+        row.className = 'bili-relation-row';
+        if (item.face) {
+            const face = document.createElement('img');
+            face.className = 'bili-relation-face';
+            face.alt = '';
+            face.loading = 'lazy';
+            face.src = biliImageSrc(item.face);
+            face.addEventListener('error', () => { face.remove(); });
+            row.appendChild(face);
+        }
+        const info = document.createElement('div');
+        info.className = 'bili-relation-info';
+        const name = document.createElement('button');
+        name.className = 'bili-relation-name';
+        name.type = 'button';
+        name.textContent = item.uname || '';
+        name.addEventListener('click', () => {
+            if (item.mid) openBiliSpace(item.mid);
+        });
+        info.appendChild(name);
+        const verify = item.official_verify && item.official_verify.desc
+            ? item.official_verify.desc : '';
+        if (verify) {
+            const badge = document.createElement('span');
+            badge.className = 'source-badge is-bili';
+            badge.textContent = verify;
+            info.appendChild(badge);
+        }
+        if (item.sign) {
+            const sign = document.createElement('div');
+            sign.className = 'bili-relation-sign';
+            sign.textContent = item.sign;
+            info.appendChild(sign);
+        }
+        row.appendChild(info);
+        list.appendChild(row);
+    });
+    if (more) {
+        more.hidden = !biliRelations.hasMore || biliRelations.loading;
+        more.disabled = biliRelations.loading;
+        more.textContent = biliRelations.loading
+            ? t('common.loading') : t('bili.load_more');
     }
 }
 
@@ -10398,7 +10712,7 @@ async function loadBiliCollectionVideos(reset) {
 function renderBiliCollectionVideos() {
     const grid = document.getElementById('bili-collection-videos');
     const stateEl = document.getElementById('bili-collection-videos-state');
-    const more = document.getElementById('btn-bili-collection-more');
+    const more = document.getElementById('btn-bili-collection-videos-more');
     if (!grid) return;
     grid.innerHTML = '';
     if (stateEl) stateEl.textContent = biliCollection.loading ? t('common.loading') : '';
@@ -11392,8 +11706,49 @@ async function saveBiliFavoriteSelection() {
 
 /* -------------------------------------------------------------- comments */
 
+/**
+ * The replies of a comment that were not drawn yet.
+ *
+ * The backend keeps three replies of a comment at most; the rest is
+ * behind the button, and the button is gone once the thread is open.
+ */
+const biliCommentThreads = {
+    replies: {},
+    loading: {}
+};
+
+/**
+ * The rpid of the thread a comment belongs to.
+ *
+ * The comment on top of a thread is its own root; a reply knows the root
+ * it hangs on.  Both are strings, and the string '0' means "there is
+ * none" -- reading them with their truth would take '0' for a real id.
+ */
+function biliCommentRoot(comment, threadRoot) {
+    if (!comment) return '';
+    if (comment.root && comment.root !== '0') return comment.root;
+    if (threadRoot) return threadRoot;
+    return comment.rpid || '';
+}
+
+/** Whether the account has liked this comment. */
+function biliCommentLiked(comment) {
+    if (!comment || !comment.rpid) return false;
+    return !!comment.liked;
+}
+
+/** The replies that are shown under a comment. */
+function biliCommentChildren(comment, rootRpid, isRoot) {
+    if (!comment) return [];
+    if (isRoot && rootRpid && biliCommentThreads.replies[rootRpid]) {
+        return biliCommentThreads.replies[rootRpid];
+    }
+    return comment.children || [];
+}
+
 /** One comment, with the replies the backend kept. */
-function biliCommentElement(comment, child) {
+function biliCommentElement(comment, child, threadRoot) {
+    if (!comment) return null;
     const row = document.createElement('div');
     row.className = child ? 'bili-comment is-child' : 'bili-comment';
     const head = document.createElement('div');
@@ -11437,20 +11792,82 @@ function biliCommentElement(comment, child) {
     reply.className = 'btn btn-sm btn-link';
     reply.type = 'button';
     reply.textContent = t('bili.comment_reply');
-    reply.addEventListener('click', () => startBiliReply(comment));
+    reply.addEventListener('click', () => startBiliReply(comment, threadRoot));
     meta.appendChild(reply);
     const like = document.createElement('button');
     like.className = 'btn btn-sm btn-link';
     like.type = 'button';
-    like.textContent = t('bili.comment_like') + ' ' + formatPlayCount(comment.like || 0);
+    like.textContent = biliCommentLikeLabel(comment);
+    like.classList.toggle('is-liked', biliCommentLiked(comment));
     like.addEventListener('click', () => likeBiliComment(comment, like));
     meta.appendChild(like);
     row.appendChild(meta);
-    const children = comment.children || [];
+    const isRoot = !child;
+    const rootRpid = isRoot ? (comment.rpid || '') : biliCommentRoot(comment, threadRoot);
+    const children = biliCommentChildren(comment, rootRpid, isRoot);
     children.forEach((childComment) => {
-        row.appendChild(biliCommentElement(childComment, true));
+        const node = biliCommentElement(childComment, true, rootRpid);
+        if (node) row.appendChild(node);
     });
+    // The button that opens the thread: only for the comment on top.
+    if (isRoot) {
+        const count = Number(comment.reply_count || 0);
+        const shown = (comment.children || []).length;
+        if (count > shown && !biliCommentThreads.replies[rootRpid]) {
+            const more = document.createElement('button');
+            more.className = 'btn btn-sm btn-link bili-comment-replies';
+            more.type = 'button';
+            more.disabled = !!biliCommentThreads.loading[rootRpid];
+            more.textContent = biliCommentThreads.loading[rootRpid]
+                ? t('bili.comment_replies_loading')
+                : t('bili.comment_replies', { count: count });
+            more.addEventListener('click', () => expandBiliCommentReplies(comment, rootRpid));
+            row.appendChild(more);
+        }
+    }
     return row;
+}
+
+/** The text of the like button: the word and the counter. */
+function biliCommentLikeLabel(comment) {
+    const word = biliCommentLiked(comment) ? t('bili.comment_liked') : t('bili.comment_like');
+    return word + ' ' + formatPlayCount(comment.like || 0);
+}
+
+/** Load every reply of a thread and show them all. */
+async function expandBiliCommentReplies(comment, rootRpid) {
+    if (!comment || !rootRpid) return;
+    if (!bridgeHas('get_bilibili_comment_replies')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    const bvid = biliDetail.bvid;
+    if (!bvid) return;
+    if (biliCommentThreads.loading[rootRpid]) return;
+    biliCommentThreads.loading[rootRpid] = true;
+    renderBiliComments();
+    try {
+        const replies = [];
+        let page = 1;
+        let more = true;
+        while (more && page <= 10) {
+            const result = await state.api.get_bilibili_comment_replies(bvid, rootRpid, page);
+            if (!result || !result.success) {
+                showToast('error', biliFailure(result, 'bili.comment_failed'));
+                return;
+            }
+            const items = result.comments || [];
+            items.forEach((item) => { if (item) replies.push(item); });
+            more = !!result.has_more && items.length > 0;
+            page += 1;
+        }
+        if (replies.length) biliCommentThreads.replies[rootRpid] = replies;
+    } catch (err) {
+        showToast('error', t('bili.comment_failed'));
+    } finally {
+        delete biliCommentThreads.loading[rootRpid];
+        renderBiliComments();
+    }
 }
 
 /** Draw the comment list. */
@@ -11494,7 +11911,11 @@ async function loadBiliComments(reset) {
             return;
         }
         const items = result.comments || [];
-        if (reset) biliDetail.comments = [];
+        if (reset) {
+            biliDetail.comments = [];
+            // The threads belong to the comments that were read before.
+            biliCommentThreads.replies = {};
+        }
         items.forEach((comment) => {
             if (comment) biliDetail.comments.push(comment);
         });
@@ -11520,8 +11941,9 @@ async function sendBiliComment() {
         return;
     }
     const parent = biliDetail.replyTo ? biliDetail.replyTo.rpid : 0;
+    const root = biliDetail.replyTo ? biliDetail.replyTo.root : 0;
     try {
-        const result = await state.api.bili_post_comment(bvid, text, parent);
+        const result = await state.api.bili_post_comment(bvid, text, parent, root);
         if (!result || !result.success) {
             showToast('error', biliFailure(result, 'bili.comment_failed'));
             return;
@@ -11535,13 +11957,25 @@ async function sendBiliComment() {
     }
 }
 
-/** Remember which comment the next message answers. */
-function startBiliReply(comment) {
+/**
+ * Remember which comment the next message answers.
+ *
+ * A reply hangs on the comment it answers; the thread it belongs to is
+ * the one of the comment on top.
+ */
+function startBiliReply(comment, threadRoot) {
     if (!comment) return;
-    biliDetail.replyTo = { rpid: comment.rpid || 0, name: comment.uname || '' };
+    const root = comment.root && comment.root !== '0'
+        ? comment.root
+        : (threadRoot || comment.rpid || 0);
+    biliDetail.replyTo = {
+        rpid: comment.rpid || 0,
+        root: root,
+        name: comment.uname || ''
+    };
     const bar = document.getElementById('bili-comment-reply');
     const target = document.getElementById('bili-comment-reply-target');
-    if (target) target.textContent = t('bili.comment_reply') + ' ' + (comment.uname || '');
+    if (target) target.textContent = t('bili.comment_reply_to', { name: comment.uname || '' });
     if (bar) bar.hidden = false;
     const input = document.getElementById('bili-comment-input');
     if (input) input.focus();
@@ -11561,7 +11995,7 @@ async function likeBiliComment(comment, button) {
         showToast('error', t('error.unknown'));
         return;
     }
-    const liked = !!comment.liked;
+    const liked = biliCommentLiked(comment);
     try {
         const result = await state.api.bili_like_comment(comment.rpid, !liked);
         if (!result || !result.success) {
@@ -11571,7 +12005,8 @@ async function likeBiliComment(comment, button) {
         comment.liked = !liked;
         comment.like = Math.max(0, Number(comment.like || 0) + (liked ? -1 : 1));
         if (button) {
-            button.textContent = t('bili.comment_like') + ' ' + formatPlayCount(comment.like);
+            button.textContent = biliCommentLikeLabel(comment);
+            button.classList.toggle('is-liked', biliCommentLiked(comment));
         }
     } catch (err) {
         showToast('error', t('bili.comment_failed'));
@@ -12617,7 +13052,7 @@ function bindSectionEvents() {
     if (favBulkRemove) favBulkRemove.addEventListener('click', bulkRemoveBiliFavorites);
     const favBulkClear = document.getElementById('btn-bili-fav-clear');
     if (favBulkClear) favBulkClear.addEventListener('click', clearBiliFavSelection);
-    const collectionMore = document.getElementById('btn-bili-collection-more');
+    const collectionMore = document.getElementById('btn-bili-collection-videos-more');
     if (collectionMore) collectionMore.addEventListener('click', () => loadBiliCollectionVideos(false));
     const detailUp = document.getElementById('bili-detail-up');
     if (detailUp) detailUp.addEventListener('click', () => openBiliSpace(biliDetail.authorMid));
@@ -13349,6 +13784,28 @@ function bindNewBiliFeatures() {
             setBiliSpaceSegment(chip.dataset.seg);
         });
     }
+    // The favourites page: the folder manager and the relations list.
+    const folderManage = document.getElementById('btn-bili-folder-manage');
+    if (folderManage) folderManage.addEventListener('click', openBiliFolderManage);
+    const folderCreate = document.getElementById('btn-bili-folder-create');
+    if (folderCreate) folderCreate.addEventListener('click', createBiliFolder);
+    const relationsSegments = document.getElementById('bili-relations-segments');
+    if (relationsSegments) {
+        relationsSegments.addEventListener('click', (event) => {
+            const chip = event.target.closest('.chip');
+            if (!chip) return;
+            biliRelations.seg = chip.dataset.seg || 'followings';
+            biliRelations.page = 1;
+            biliRelations.items = [];
+            biliRelations.hasMore = false;
+            relationsSegments.querySelectorAll('.chip').forEach((item) => {
+                item.classList.toggle('is-active', item === chip);
+            });
+            loadBiliRelations(true);
+        });
+    }
+    const relationsMore = document.getElementById('btn-bili-relations-more');
+    if (relationsMore) relationsMore.addEventListener('click', () => loadBiliRelations(false));
     const addButton = document.getElementById('btn-local-video-add');
     if (addButton) addButton.addEventListener('click', addLocalVideoFolder);
     const refreshButton = document.getElementById('btn-local-video-refresh');

@@ -113,8 +113,14 @@ B站对同一 IP 的写操作频控很紧。收藏夹的写入（建夹、加视
   `up_mid` 取不到就用 cookie 里的 `DedeUserID`。
 - 收藏夹内容：`/x/v3/fav/resource/list?media_id=<id>&pn=1&ps=30&platform=web`。
 - 写：建夹 `POST /x/v3/fav/folder/add`（`title`/`intro`/`privacy`/`csrf`），
+  改名和改公开私密 `POST /x/v3/fav/folder/edit`（`media_id`/`title`/`intro`/`privacy`/`csrf`），
+  删夹 `POST /x/v3/fav/folder/del`（`media_id`/`csrf`），
   加视频 `POST /x/v3/fav/resource/deal`（`rid`/`type=2`/`add_media_ids`/`csrf`）。
   `add_media_ids` 的格式是 `"<aid>:2"`，逗号分隔。
+- **公开/私密看 `attr` 的第 0 位**：`attr & 1` 是 1 就是私密。实测默认收藏夹是
+  `attr=1`（私密），公开的夹是 `attr=22`，私密的夹是 `attr=23`——
+  22 和 23 只差最低位，正好对得上。用匿名读验证过：`attr=22` 能读，
+  `attr=23` 和 `attr=1` 都是 `-403`。
 
 ## 互动
 
@@ -127,14 +133,34 @@ B站对同一 IP 的写操作频控很紧。收藏夹的写入（建夹、加视
   收藏整个收藏夹是 `POST /x/v3/fav/folder/fav`（取消用 `/x/v3/fav/folder/unfav`）。
 - **关注**：`POST /x/relation/modify`，`act` 是 1（关注）/ 2（取关）——**同一个路由两个方向**，
   不是两个路由。关注状态读 `GET /x/relation?fid=<mid>` 的 `data.attribute`（2 或 3 都是已关注）。
+- **关注列表 / 粉丝列表**：`GET /x/relation/followings?vmid=<mid>&pn=1&ps=50&order=desc`
+  和 `GET /x/relation/followers?...`，两个都要 WBI 签名。回答在 `data.list`，
+  总数在 `data.total`。条目里有 `mid`、`uname`、`face`、`sign`、
+  `official_verify`（认证名）和 `vip`——**没有等级**，别去读 `level_info`。
+  `vmid` 不给就是当前账号，所以「我关注的」和「我的粉丝」都能用同一个方法。
 
 ## 评论
 
-- 查看：`GET /x/v2/reply/main`，要 WBI 签名。翻页用回答里的 `data.cursor.next`
-  （**它是 JSON 字符串**，要先 `json.loads` 再当参数传回去）。
-- 发表/回复：`POST /x/v2/reply/add`，`parent` 填对方的 rpid 就是回复。
+- 查看：`GET /x/v2/reply/main`，要 WBI 签名。
+  - **翻页用的是 offset 协议**：下一页带 `pagination_str=json.dumps({"offset": <next_offset>})`，
+    `<next_offset>` 在 **`data.cursor.pagination_reply.next_offset`**。
+  - **`data.cursor.next` 不是能发回去的令牌**，它只是个页码计数
+    （mode 2 是 464、441 之类的数，mode 3 是 2、3、4 这样的序号）。
+    把它字符串化发回去会得到 `code -400`。
+  - `cursor.is_end` **不可信**：实测 `all_count=459/460` 而只回了 3 条时它也是 `true`。
+    判断还有没有下一页要看 `pagination_reply.next_offset` 在不在。
+  - `mode`：2 是按热度，3 是按时间。
+- **楼中楼**：`GET /x/v2/reply/reply?oid=<aid>&type=1&root=<主楼rpid>&pn=1&ps=20`。
+  这个路由还是老的 `pn`/`ps` 分页，回答在 `data.replies`，总数在 `data.page.count`。
+  主楼评论的 `replies` 里只内联 3 条，剩下的要靠这条路由拉。
+- **发表/回复**：`POST /x/v2/reply/add`，`parent` 填对方的 rpid 就是回复。
+  - 楼中楼要**同时**填 `root`：`parent` 是直接被回的那条，`root` 是主楼那条。
+    只填 `parent` 不填 `root`，回复会挂到错的地方。
+  - 两条都是字符串，`"0"` 表示没有。
 - 点赞评论：`POST /x/v2/reply/action`，`action` 是 **1 或 -1**（不是 1 和 2）。
 - 视频评论用的是 **aid**，不是 bvid。
+- **评论的点赞状态读不出来**：回答里没有「当前用户赞过没」的字段
+  （`action` 恒为 0，`up_action` 是 UP 主自己的动作），所以赞没赞只能前端自己记。
 
 ## 弹幕
 

@@ -45,6 +45,12 @@ jobs:
           node scripts/check-player-js.mjs
           node scripts/check-lyrics-scroll.mjs
           node scripts/check-backup-js.mjs
+          node scripts/check-bili-collection-paging.mjs
+          node scripts/check-bili-recommend-paging.mjs
+          node scripts/check-bili-default-quality.mjs
+          node scripts/check-bili-stream-loader.mjs
+          node scripts/check-bili-folder-and-relations.mjs
+          node scripts/check-bangumi-js.mjs
 
   # --------------------------------------------------------------- macOS
   build-macos:

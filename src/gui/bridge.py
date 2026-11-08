@@ -2896,13 +2896,18 @@ class GuiBridge:
         return self.bilibili.comments(bvid, page=page, sort=sort)
 
     def bili_post_comment(self, bvid: str, content: str,
-                          parent_rpid: int = 0) -> dict[str, Any]:
+                          parent_rpid: int = 0, root_rpid: int = 0) -> dict[str, Any]:
         """Write a Bilibili comment or a reply."""
-        return self.bilibili.post_comment(bvid, content, parent_rpid=parent_rpid)
+        return self.bilibili.post_comment(bvid, content, parent_rpid=parent_rpid, root_rpid=root_rpid)
 
     def bili_like_comment(self, rpid: str, like: bool = True) -> dict[str, Any]:
         """Like (or unlike) a Bilibili comment."""
         return self.bilibili.like_comment(rpid, like=like)
+
+    def get_bilibili_comment_replies(self, bvid: str, root_rpid: str,
+                                    page: int = 1) -> dict[str, Any]:
+        """Load sub-replies of a Bilibili comment (楼中楼)."""
+        return self.bilibili.get_comment_replies(bvid, root_rpid, page=page)
 
     # -- bilibili danmaku ------------------------------------------------------
     def get_bilibili_danmaku(self, bvid: str, cid: int = 0) -> dict[str, Any]:
@@ -2938,6 +2943,35 @@ class GuiBridge:
     def get_bilibili_follow_state(self, mid: str) -> dict[str, Any]:
         """Whether the account follows this Bilibili uploader."""
         return self.bilibili.follow_state(mid)
+
+    # -- bilibili folder management --------------------------------------------
+    def bili_create_favorite_folder(self, title: str, intro: str = "",
+                                   privacy: int = 0) -> dict[str, Any]:
+        """Create a new Bilibili favourite folder."""
+        return self.bilibili.create_favorite_folder(title, intro=intro, privacy=privacy)
+
+    def bili_edit_favorite_folder(self, folder_id: str, title: str = "",
+                                 intro: str = "", privacy: int | None = None) -> dict[str, Any]:
+        """Rename a Bilibili folder, change its description or privacy.
+
+        ``privacy`` of ``None`` means "leave it as it is".
+        """
+        return self.bilibili.edit_favorite_folder(folder_id, title=title, intro=intro, privacy=privacy)
+
+    def bili_delete_favorite_folder(self, folder_id: str) -> dict[str, Any]:
+        """Delete a Bilibili favourite folder."""
+        return self.bilibili.delete_favorite_folder(folder_id)
+
+    # -- bilibili follow / followers -------------------------------------------
+    def get_bilibili_followings(self, mid: str = "", page: int = 1,
+                               page_size: int = 50) -> dict[str, Any]:
+        """Get the list of users the Bilibili account follows (关注列表)."""
+        return self.bilibili.get_followings(mid, page=page, page_size=page_size)
+
+    def get_bilibili_followers(self, mid: str = "", page: int = 1,
+                              page_size: int = 50) -> dict[str, Any]:
+        """Get the list of users following the Bilibili account (粉丝列表)."""
+        return self.bilibili.get_followers(mid, page=page, page_size=page_size)
 
     # -- bilibili private messages ----------------------------------------------
     def get_bilibili_messages(self, size: int = 20) -> dict[str, Any]:

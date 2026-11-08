@@ -319,6 +319,28 @@ def test_the_disk_cache_can_drop_everything_with_one_prefix(isolated_home):
     assert disk.get_playlist("tracks:7") == [1]
 
 
+def test_an_empty_prefix_drops_the_whole_kind(isolated_home):
+    """空前缀就是「这一类的全部」。
+
+    收藏夹删掉视频之后要把整类缓存清掉，之前这里直接返回 0，
+    缓存留着旧内容，界面就还是显示刚被移走的视频。
+    """
+    from src.core.metacache import get_meta_cache
+
+    disk = get_meta_cache()
+    disk.set("playlist", "userplaylists:42:100:0", {"a": 1}, 300)
+    disk.set("playlist", "userplaylists:42:100:100", {"a": 2}, 300)
+    disk.set("meta", "tracks:7", [1], 300)
+
+    removed = disk.discard_prefix("playlist", "")
+
+    assert removed == 2
+    assert disk.get("playlist", "userplaylists:42:100:0") is None
+    assert disk.get("playlist", "userplaylists:42:100:100") is None
+    # 别的类别不受影响。
+    assert disk.get("meta", "tracks:7") == [1]
+
+
 def test_the_disk_cache_drops_unreadable_files_too(isolated_home):
     """A file we cannot read is a file we cannot trust."""
     from src.core.metacache import get_meta_cache

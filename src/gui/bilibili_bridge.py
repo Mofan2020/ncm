@@ -702,6 +702,11 @@ class BilibiliBridge:
                 "title": str(item.get("title") or ""),
                 "media_count": _as_int(item.get("media_count"), 0),
                 "cover": str(item.get("cover") or ""),
+                # attr 的第 0 位是「私密」：默认收藏夹是 1，公开的是 22，
+                # 私密的是 23（见 docs/bili-notes.md）。
+                "attr": _as_int(item.get("attr"), 0),
+                "private": bool(_as_int(item.get("attr"), 0) & 1),
+                "intro": str(item.get("intro") or ""),
             }
             for item in raw if isinstance(item, dict)
         ]
@@ -1038,10 +1043,10 @@ class BilibiliBridge:
         }
 
     def post_comment(self, bvid: str, content: str,
-                     parent_rpid: int = 0) -> dict[str, Any]:
+                     parent_rpid: int = 0, root_rpid: int = 0) -> dict[str, Any]:
         """Write a comment (or a reply to one)."""
         result = self._call_core("post_comment", self._client.post_comment,
-                                 bvid, content, parent_rpid)
+                                 bvid, content, parent_rpid, root_rpid)
         if result.get("success"):
             # 键是 "<bvid>|<页码>|<排序>"，按前缀扔，别把别的视频的也清了。
             self._cache.discard_prefix("comments", f"{bvid or ''}|")
@@ -1057,6 +1062,24 @@ class BilibiliBridge:
             self._cache.discard_prefix("comments", "")
         return {"success": bool(result.get("success")),
                 "message": str(result.get("message") or "")}
+
+    def get_comment_replies(self, bvid: str, root_rpid: str,
+                           page: int = 1) -> dict[str, Any]:
+        """Load sub-replies of a comment (楼中楼)."""
+        cache_key = f"replies|{root_rpid}|{page}"
+        result, _from_disk = self._cache.remember(
+            "comment_replies", cache_key,
+            lambda: self._call_core("get_comment_replies",
+                                    self._client.get_comment_replies,
+                                    bvid, root_rpid, page),
+        )
+        return {
+            "success": bool(result.get("success")),
+            "comments": result.get("comments") or [],
+            "count": int(result.get("count") or 0),
+            "has_more": bool(result.get("has_more")),
+            "message": str(result.get("message") or ""),
+        }
 
     # ------------------------------------------------------------------ 弹幕
     def danmaku(self, bvid: str, cid: int = 0) -> dict[str, Any]:
@@ -1190,6 +1213,66 @@ class BilibiliBridge:
         return {"success": bool(result.get("success")),
                 "following": bool(result.get("following")),
                 "relation": int(result.get("relation") or 0),
+                "message": str(result.get("message") or "")}
+
+    # ------------------------------------------------------------------ Folder management
+    def create_favorite_folder(self, title: str, intro: str = "",
+                              privacy: int = 0) -> dict[str, Any]:
+        """Create a new favourite folder."""
+        result = self._call_core("create_favorite_folder",
+                                 self._client.create_favorite_folder,
+                                 title, intro, privacy)
+        if result.get("success"):
+            self._cache.invalidate_folders()
+        return {"success": bool(result.get("success")),
+                "id": str(result.get("id") or ""),
+                "message": str(result.get("message") or "")}
+
+    def edit_favorite_folder(self, folder_id: str, title: str = "",
+                            intro: str = "", privacy: int | None = None) -> dict[str, Any]:
+        """Rename a folder, change its description or privacy.
+
+        ``privacy`` of ``None`` means "leave it as it is".
+        """
+        result = self._call_core("edit_favorite_folder",
+                                 self._client.edit_favorite_folder,
+                                 folder_id, title, intro, privacy)
+        if result.get("success"):
+            self._cache.invalidate_folders()
+        return {"success": bool(result.get("success")),
+                "message": str(result.get("message") or "")}
+
+    def delete_favorite_folder(self, folder_id: str) -> dict[str, Any]:
+        """Delete a favourite folder."""
+        result = self._call_core("delete_favorite_folder",
+                                 self._client.delete_favorite_folder,
+                                 folder_id)
+        if result.get("success"):
+            self._cache.invalidate_folders()
+        return {"success": bool(result.get("success")),
+                "message": str(result.get("message") or "")}
+
+    # ------------------------------------------------------------------ Follow / Followers
+    def get_followings(self, mid: str = "", page: int = 1,
+                       page_size: int = 50) -> dict[str, Any]:
+        """Get the list of users the account follows (关注列表)."""
+        result = self._call_core("get_followings", self._client.get_followings,
+                                 str(mid or ""), page, page_size)
+        return {"success": bool(result.get("success")),
+                "items": result.get("items") or [],
+                "count": int(result.get("count") or 0),
+                "has_more": bool(result.get("has_more")),
+                "message": str(result.get("message") or "")}
+
+    def get_followers(self, mid: str = "", page: int = 1,
+                      page_size: int = 50) -> dict[str, Any]:
+        """Get the list of users following the account (粉丝列表)."""
+        result = self._call_core("get_followers", self._client.get_followers,
+                                 str(mid or ""), page, page_size)
+        return {"success": bool(result.get("success")),
+                "items": result.get("items") or [],
+                "count": int(result.get("count") or 0),
+                "has_more": bool(result.get("has_more")),
                 "message": str(result.get("message") or "")}
 
     # ------------------------------------------------------------------ 私信

@@ -34,6 +34,18 @@
         commentPage: 1,
         commentHasMore: false,
         commentLoading: false,
+        // The likes this account gave, by rpid of the comment.
+        likedComments: {},
+        // The threads that were opened: the replies, by rpid of the comment
+        // on top of the thread.
+        expandedReplies: {},
+        // The threads that are being read at the moment.
+        expandingReplies: {},
+        // The comment the next message answers.
+        replyTo: null,
+        // The comments that are already on the picture, so a reply that
+        // comes twice is drawn once.
+        drawnComments: new Set(),
         live: [],
         rows: []
     };
@@ -473,10 +485,78 @@
 
     /* -------------------------------------------------------------- the comments */
 
-    /** One comment. */
-    function commentElement(comment) {
+    /**
+     * The rpid of the thread a comment belongs to.
+     *
+     * The comment on top of a thread is its own root; a reply knows the
+     * root it hangs on.  The root and the parent are strings, and the
+     * string '0' means "there is none" -- reading them with their truth
+     * would take the string '0' for a real id.
+     */
+    function commentRootRpid(comment, threadRoot) {
+        if (!comment) return '';
+        if (comment.root && comment.root !== '0') return comment.root;
+        if (threadRoot) return threadRoot;
+        return comment.rpid || '';
+    }
+
+    /** Whether the account has liked this comment. */
+    function isCommentLiked(comment) {
+        if (!comment || !comment.rpid) return false;
+        if (Object.prototype.hasOwnProperty.call(state.likedComments, comment.rpid)) {
+            return !!state.likedComments[comment.rpid];
+        }
+        return !!comment.liked;
+    }
+
+    /** Put the like of a comment into the state and move its counter. */
+    function setCommentLiked(comment, liked) {
+        if (!comment || !comment.rpid) return;
+        const was = isCommentLiked(comment);
+        state.likedComments[comment.rpid] = !!liked;
+        comment.liked = !!liked;
+        if (was !== !!liked) {
+            comment.like = Math.max(0, Number(comment.like || 0) + (liked ? 1 : -1));
+        }
+    }
+
+    /** The text of the like button: the word and the counter. */
+    function commentLikeLabel(comment) {
+        const word = isCommentLiked(comment) ? t('bili.comment_liked') : t('bili.comment_like');
+        return word + ' ' + Number(comment.like || 0);
+    }
+
+    /**
+     * The replies that are shown under a comment.
+     *
+     * A thread that was opened shows every reply the backend gave; the
+     * other ones only the few the backend kept.
+     */
+    function commentChildren(comment, rootRpid, isRoot) {
+        if (!comment) return [];
+        if (isRoot && rootRpid && state.expandedReplies[rootRpid]) {
+            return state.expandedReplies[rootRpid];
+        }
+        return comment.children || [];
+    }
+
+    /**
+     * One comment.
+     *
+     * Under the text come the two buttons everybody expects -- like and
+     * reply -- and under them the replies of the comment.
+     */
+    function commentElement(comment, isChild, threadRoot) {
+        if (!comment) return null;
+        const rpid = comment.rpid || '';
+        // A reply that the backend gave twice is drawn once.
+        if (rpid && state.drawnComments.has(rpid)) return null;
+        if (rpid) state.drawnComments.add(rpid);
+        // A comment on top of a thread is its own root.
+        const rootRpid = isChild ? commentRootRpid(comment, threadRoot) : rpid;
+        const isRoot = !isChild;
         const row = document.createElement('div');
-        row.className = 'bp-comment';
+        row.className = isChild ? 'bp-comment is-child' : 'bp-comment';
         const head = document.createElement('div');
         head.className = 'bp-comment-head';
         if (comment.face) {
@@ -510,13 +590,178 @@
             place.textContent = comment.location;
             meta.appendChild(place);
         }
-        if (comment.like) {
-            const like = document.createElement('span');
-            like.textContent = t('bili.comment_like') + ' ' + comment.like;
-            meta.appendChild(like);
-        }
+        const like = document.createElement('button');
+        like.className = 'bp-comment-like';
+        like.type = 'button';
+        like.textContent = commentLikeLabel(comment);
+        like.classList.toggle('is-liked', isCommentLiked(comment));
+        like.addEventListener('click', () => likeComment(comment, like));
+        meta.appendChild(like);
+        const reply = document.createElement('button');
+        reply.className = 'bp-comment-reply';
+        reply.type = 'button';
+        reply.textContent = t('bili.comment_reply');
+        reply.addEventListener('click', () => startReply(comment));
+        meta.appendChild(reply);
         row.appendChild(meta);
+        const children = commentChildren(comment, rootRpid, isRoot);
+        if (children.length) {
+            const box = document.createElement('div');
+            box.className = 'bp-comment-children';
+            children.forEach((child) => {
+                const node = commentElement(child, true, rootRpid);
+                if (node) box.appendChild(node);
+            });
+            row.appendChild(box);
+        }
+        const more = repliesButton(comment, rootRpid);
+        if (more) row.appendChild(more);
         return row;
+    }
+
+    /**
+     * The button that opens a thread.
+     *
+     * The backend keeps three replies of a comment at most; the rest is
+     * behind the button, and the button is gone once the thread is open.
+     */
+    function repliesButton(comment, rootRpid) {
+        const count = Number(comment.reply_count || 0);
+        if (!count || count <= (comment.children || []).length) return null;
+        if (rootRpid && state.expandedReplies[rootRpid]) return null;
+        const button = document.createElement('button');
+        button.className = 'bp-comment-replies';
+        button.type = 'button';
+        const loading = !!(rootRpid && state.expandingReplies[rootRpid]);
+        button.disabled = loading;
+        button.textContent = loading
+            ? t('bili.comment_replies_loading')
+            : t('bili.comment_replies', { count: count });
+        button.addEventListener('click', () => expandReplies(rootRpid));
+        return button;
+    }
+
+    /**
+     * Load every reply of a thread and show them all.
+     *
+     * The replies are kept under the rpid of the comment on top of the
+     * thread, so the list that is drawn again keeps them and does not
+     * show them twice.
+     */
+    async function expandReplies(rootRpid) {
+        if (!state.api || !state.bvid) return;
+        if (typeof state.api.get_bilibili_comment_replies !== 'function') {
+            el('bp-status').textContent = t('bili.comment_failed');
+            return;
+        }
+        if (!rootRpid || state.expandingReplies[rootRpid]) return;
+        state.expandingReplies[rootRpid] = true;
+        renderComments();
+        const seen = new Set();
+        try {
+            const replies = [];
+            let page = 1;
+            let more = true;
+            while (more && page <= 5) {
+                const result = await state.api.get_bilibili_comment_replies(
+                    state.bvid, rootRpid, page);
+                if (!result || !result.success) {
+                    el('bp-status').textContent = t('bili.comment_failed');
+                    return;
+                }
+                const items = result.comments || [];
+                items.forEach((item) => {
+                    if (!item) return;
+                    const id = item.rpid || '';
+                    if (id && seen.has(id)) return;
+                    if (id) seen.add(id);
+                    replies.push(item);
+                });
+                more = !!result.has_more && items.length > 0;
+                page += 1;
+            }
+            if (replies.length) state.expandedReplies[rootRpid] = replies;
+        } catch (err) {
+            el('bp-status').textContent = t('bili.comment_failed');
+        } finally {
+            delete state.expandingReplies[rootRpid];
+            renderComments();
+        }
+    }
+
+    /** Like a comment, or take the like back. */
+    async function likeComment(comment, button) {
+        if (!state.api || !comment || !comment.rpid) return;
+        const liked = isCommentLiked(comment);
+        if (button) button.disabled = true;
+        try {
+            const result = await state.api.bili_like_comment(comment.rpid, !liked);
+            if (!result || !result.success) {
+                el('bp-status').textContent = t('bili.comment_failed');
+                return;
+            }
+            setCommentLiked(comment, !liked);
+            if (button) {
+                button.textContent = commentLikeLabel(comment);
+                button.classList.toggle('is-liked', isCommentLiked(comment));
+            }
+            el('bp-status').textContent = liked
+                ? t('bili.unlike_done') : t('bili.like_done');
+        } catch (err) {
+            el('bp-status').textContent = t('bili.comment_failed');
+        } finally {
+            if (button) button.disabled = false;
+        }
+    }
+
+    /**
+     * The bar that says who is being answered.
+     *
+     * It sits above the input, so the user always sees what the next
+     * comment will be attached to.
+     */
+    function ensureReplyBar() {
+        return el('bp-comment-reply');
+    }
+
+    /** Show (or hide) the bar that says who is being answered. */
+    function renderReplyBar() {
+        const bar = ensureReplyBar();
+        if (!bar) return;
+        const target = el('bp-comment-reply-target');
+        const cancel = el('bp-comment-reply-cancel');
+        if (target) {
+            target.textContent = state.replyTo
+                ? t('bili.comment_reply_to', { name: state.replyTo.name })
+                : '';
+        }
+        if (cancel) cancel.textContent = t('bili.comment_reply_cancel');
+        bar.hidden = !state.replyTo;
+    }
+
+    /**
+     * Remember which comment the next message answers.
+     *
+     * A reply hangs on the comment it answers; the thread it belongs to is
+     * the one of the comment on top.
+     */
+    function startReply(comment) {
+        if (!comment || !comment.rpid) return;
+        const root = comment.root && comment.root !== '0' ? comment.root : comment.rpid;
+        state.replyTo = {
+            parent: comment.rpid,
+            root: root,
+            name: comment.uname || ''
+        };
+        renderReplyBar();
+        const input = el('bp-comment-input');
+        if (input) input.focus();
+    }
+
+    /** Forget the comment the next message would answer. */
+    function cancelReply() {
+        state.replyTo = null;
+        renderReplyBar();
     }
 
     /** Draw the comments that are read. */
@@ -524,6 +769,7 @@
         const list = el('bp-comment-list');
         if (!list) return;
         list.innerHTML = '';
+        state.drawnComments = new Set();
         if (!state.comments.length) {
             const empty = document.createElement('div');
             empty.className = 'bp-empty';
@@ -531,7 +777,8 @@
             list.appendChild(empty);
         } else {
             state.comments.forEach((comment) => {
-                if (comment) list.appendChild(commentElement(comment));
+                const node = commentElement(comment, false, '');
+                if (node) list.appendChild(node);
             });
         }
         const more = el('bp-comment-more');
@@ -541,6 +788,7 @@
             more.textContent = state.commentLoading
                 ? t('common.loading') : t('bili.load_more');
         }
+        renderReplyBar();
     }
 
     /** Read the comments of the video. */
@@ -567,20 +815,30 @@
         }
     }
 
-    /** Write a comment. */
+    /**
+     * Write a comment, or a reply to the comment that was picked.
+     *
+     * A reply hangs on the comment it answers and belongs to the thread of
+     * the comment on top; a comment of its own hangs on nothing.
+     */
     async function sendComment() {
         const input = el('bp-comment-input');
         const text = (input && input.value ? input.value : '').trim();
         if (!text || !state.api) return;
         const button = el('bp-comment-send');
         if (button) button.disabled = true;
+        const target = state.replyTo;
+        const parent = target ? target.parent : 0;
+        const root = target ? target.root : 0;
         try {
-            const result = await state.api.bili_post_comment(state.bvid, text, 0);
+            const result = await state.api.bili_post_comment(
+                state.bvid, text, parent, root);
             if (!result || !result.success) {
                 el('bp-status').textContent = t('bili.comment_failed');
                 return;
             }
             if (input) input.value = '';
+            cancelReply();
             await loadComments(true);
         } catch (err) {
             el('bp-status').textContent = t('bili.comment_failed');
@@ -1097,6 +1355,10 @@
         if (sendCommentButton) {
             sendCommentButton.addEventListener('click', sendComment);
         }
+        const cancelReplyButton = el('bp-comment-reply-cancel');
+        if (cancelReplyButton) {
+            cancelReplyButton.addEventListener('click', cancelReply);
+        }
         const commentInput = el('bp-comment-input');
         if (commentInput) {
             commentInput.addEventListener('keydown', (event) => {
@@ -1104,10 +1366,18 @@
             });
         }
         const more = el('bp-comment-more');
-        if (more) {
-            more.addEventListener('click', () => loadComments(false));
-        }
-        const tabComments = el('bp-tab-comments');
+                if (more) {
+                    more.addEventListener('click', () => loadComments(false))
+                }
+                // Cancel the reply-to target when the cancel button is clicked.
+                const commentsPanel = el('bp-panel-comments');
+                if (commentsPanel) {
+                    commentsPanel.addEventListener('click', (event) => {
+                        const btn = event.target.closest ? event.target.closest('.bp-reply-cancel') : null;
+                        if (btn) cancelReply();
+                    });
+                }
+                const tabComments = el('bp-tab-comments');
         if (tabComments) {
             tabComments.addEventListener('click', () => switchTab('comments'));
         }

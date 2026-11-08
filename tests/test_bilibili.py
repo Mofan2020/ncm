@@ -190,6 +190,9 @@ FAV_FOLDERS_PAYLOAD = {
                 "title": "默认收藏夹",
                 "media_count": 42,
                 "cover": "//i0.hdslb.com/bfs/fav/cover.jpg",
+                # attr 的第 0 位是「私密」：默认收藏夹是 1，公开的是 22。
+                "attr": 1,
+                "intro": "默认的",
             }
         ]
     },
@@ -1460,6 +1463,9 @@ def test_favorite_folders_reads_the_signed_in_account():
         "title": "默认收藏夹",
         "media_count": 42,
         "cover": "https://i0.hdslb.com/bfs/fav/cover.jpg",
+        # attr 用来分辨公开和私密，界面上的那个开关靠它。
+        "attr": 1,
+        "intro": "默认的",
     }]
     call = [c for c in session.calls if "list-all" in c["url"]][-1]
     assert call["params"]["up_mid"] == "12345678"
@@ -2198,9 +2204,12 @@ def test_space_videos_reports_a_failure_instead_of_raising():
 # 评论
 # ---------------------------------------------------------------------------
 
-#: ``cursor.next`` 是双重编码的 JSON 字符串：B 站在外面又套了一层
-#: 引号，所以发回去之前要先 ``json.loads`` 一次。
-REPLY_CURSOR_NEXT = json.dumps(json.dumps({"offset": "2"}))
+#: 新评论路由的翻页协议：下一页的 ``pagination_str`` 是
+#: ``json.dumps({"offset": <next_offset>})``，``next_offset`` 在
+#: ``data.cursor.pagination_reply.next_offset``。``cursor.next`` 只是个
+#: 页码计数，不是能发回去的令牌。
+REPLY_NEXT_OFFSET = 438
+REPLY_PAGINATION_STR = json.dumps({"offset": REPLY_NEXT_OFFSET}, separators=(",", ":"))
 
 REPLY_CHILD = {
     "rpid": 9101,
@@ -2263,7 +2272,8 @@ REPLY_PAYLOAD = {
             "all_count": 2,
             "count": 2,
             "is_end": False,
-            "next": REPLY_CURSOR_NEXT,
+            "next": 2,
+            "pagination_reply": {"next_offset": REPLY_NEXT_OFFSET},
         },
     },
 }
@@ -2353,14 +2363,16 @@ def test_comments_paginates_with_the_cursor_of_the_previous_page():
     assert len(calls) == 2
     # 第一页不带 pagination_str。
     assert "pagination_str" not in calls[0]["params"]
-    # 第二页带上上一页回答里的 cursor.next。
-    assert calls[1]["params"]["pagination_str"] == json.loads(REPLY_CURSOR_NEXT)
+    # 第二页带上上一页回答里的 cursor.pagination_reply.next_offset，
+    # 按 {"offset": N} 的协议发回去。
+    assert calls[1]["params"]["pagination_str"] == REPLY_PAGINATION_STR
 
 
 def test_comments_stops_at_the_end_of_the_cursor():
     payload = {
         "code": 0,
-        "data": {"replies": [], "cursor": {"is_end": True, "next": ""}},
+        "data": {"replies": [], "cursor": {"is_end": True, "next": "",
+                                          "pagination_reply": {}}},
     }
     client, _ = make_reply_client({"/x/v2/reply/main": payload})
     result = client.comments("BV1EHbhz6EHw")
@@ -2428,6 +2440,250 @@ def test_post_comment_reports_a_failure_instead_of_raising():
     result = client.post_comment("BV1EHbhz6EHw", "写得不错")
     assert result["success"] is False
     assert result["message"]
+
+
+def test_post_comment_carries_the_root_of_the_thread():
+    """楼中楼要同时带上主楼和被回复的那条。"""
+    client, session = make_reply_client({"/x/v2/reply/add": REPLY_ADD_PAYLOAD})
+    result = client.post_comment("BV1EHbhz6EHw", "同感",
+                                 parent_rpid=9102, root_rpid=9001)
+    assert result["success"] is True
+    call = [c for c in session.calls if "reply/add" in c["url"]][-1]
+    # parent 是直接被回的那条，root 是主楼。
+    assert call["params"]["parent"] == 9102
+    assert call["params"]["root"] == 9001
+
+
+def test_post_comment_without_a_reply_sends_zero():
+    client, session = make_reply_client({"/x/v2/reply/add": REPLY_ADD_PAYLOAD})
+    assert client.post_comment("BV1EHbhz6EHw", "写得不错")["success"] is True
+    call = [c for c in session.calls if "reply/add" in c["url"]][-1]
+    assert call["params"]["parent"] == 0
+    assert call["params"]["root"] == 0
+
+
+def test_the_comments_keep_the_root_and_the_parent():
+    """回复要知道自己挂在哪条下面，界面上才接得对。"""
+    payload = {
+        "code": 0,
+        "data": {
+            "replies": [{
+                "rpid": 9001, "mid": 1, "root": 0, "parent": 0, "rcount": 1,
+                "member": {"uname": "甲"},
+                "content": {"message": "主楼"},
+                "replies": [{
+                    "rpid": 9101, "mid": 2, "root": 9001, "parent": 9001,
+                    "member": {"uname": "乙"},
+                    "content": {"message": "回复"},
+                }],
+            }],
+            "cursor": {"is_end": True, "pagination_reply": {}},
+        },
+    }
+    client, _ = make_reply_client({"/x/v2/reply/main": payload})
+    result = client.comments("BV1EHbhz6EHw")
+    assert result["items"][0]["root"] == "0"
+    assert result["items"][0]["parent"] == "0"
+    assert result["items"][0]["children"][0]["root"] == "9001"
+    assert result["items"][0]["children"][0]["parent"] == "9001"
+
+
+def test_the_replies_of_a_comment_can_be_read():
+    """楼中楼：给定主楼 rpid，读它的所有回复。"""
+    payload = {
+        "code": 0,
+        "data": {
+            "replies": [{
+                "rpid": 9101, "mid": 2, "root": 9001, "parent": 9001,
+                "member": {"uname": "乙"},
+                "content": {"message": "回复"},
+            }],
+            "page": {"num": 1, "size": 20, "count": 1},
+        },
+    }
+    client, session = make_reply_client({"/x/v2/reply/reply": payload})
+    result = client.get_comment_replies(115021136794799, "9001")
+    assert result["success"] is True
+    assert result["count"] == 1
+    assert result["comments"][0]["rpid"] == "9101"
+    # 只有一条，所以没有下一页。
+    assert result["has_more"] is False
+    call = [c for c in session.calls if "reply/reply" in c["url"]][-1]
+    assert call["params"]["root"] == "9001"
+    assert call["params"]["oid"] == 115021136794799
+    assert call["params"]["type"] == 1
+
+
+def test_the_replies_of_a_comment_know_when_there_are_more():
+    payload = {
+        "code": 0,
+        "data": {
+            "replies": [{"rpid": 9101, "member": {"uname": "乙"},
+                         "content": {"message": "回复"}}],
+            "page": {"num": 1, "size": 20, "count": 45},
+        },
+    }
+    client, _ = make_reply_client({"/x/v2/reply/reply": payload})
+    result = client.get_comment_replies(115021136794799, "9001")
+    assert result["has_more"] is True
+
+
+def test_the_replies_of_a_comment_need_a_root():
+    client, session = make_reply_client({"/x/v2/reply/reply": REPLY_PAYLOAD})
+    assert client.get_comment_replies(115021136794799, "")["success"] is False
+    assert session.calls == []
+
+
+def test_the_replies_of_a_comment_report_a_failure_instead_of_raising():
+    client, _ = make_reply_client({"/x/v2/reply/reply": ConnectionError("boom")})
+    result = client.get_comment_replies(115021136794799, "9001")
+    assert result["success"] is False
+    assert result["message"]
+    assert result["comments"] == []
+
+
+# ---------------------------------------------------------------------------
+# folder management
+# ---------------------------------------------------------------------------
+
+def test_a_folder_can_be_created():
+    client, session = make_reply_client({
+        "/x/v3/fav/folder/add": {"code": 0, "data": {"id": 555}},
+    })
+    result = client.create_favorite_folder("新收藏夹", "说明", privacy=1)
+    assert result["success"] is True
+    assert result["id"] == "555"
+    call = [c for c in session.calls if "folder/add" in c["url"]][-1]
+    assert call["method"] == "POST"
+    assert call["params"]["title"] == "新收藏夹"
+    assert call["params"]["intro"] == "说明"
+    assert call["params"]["privacy"] == 1
+    assert call["params"]["csrf"] == "def"
+
+
+def test_a_folder_needs_a_title_to_be_created():
+    client, session = make_reply_client({
+        "/x/v3/fav/folder/add": {"code": 0, "data": {}},
+    })
+    result = client.create_favorite_folder("   ")
+    assert result["success"] is False
+    assert session.calls == []
+
+
+def test_a_folder_can_be_renamed_and_made_private():
+    client, session = make_reply_client({
+        "/x/v3/fav/folder/edit": {"code": 0, "data": {}},
+    })
+    result = client.edit_favorite_folder("98765", "新名字", privacy=1)
+    assert result["success"] is True
+    call = [c for c in session.calls if "folder/edit" in c["url"]][-1]
+    assert call["params"]["media_id"] == "98765"
+    assert call["params"]["title"] == "新名字"
+    assert call["params"]["privacy"] == 1
+
+
+def test_renaming_a_folder_leaves_the_privacy_alone():
+    """改名不该顺手把私密收藏夹改成公开。"""
+    client, session = make_reply_client({
+        "/x/v3/fav/folder/edit": {"code": 0, "data": {}},
+    })
+    result = client.edit_favorite_folder("98765", "新名字")
+    assert result["success"] is True
+    call = [c for c in session.calls if "folder/edit" in c["url"]][-1]
+    assert call["params"]["title"] == "新名字"
+    assert "privacy" not in call["params"]
+
+
+def test_a_folder_can_be_deleted():
+    client, session = make_reply_client({
+        "/x/v3/fav/folder/del": {"code": 0, "data": {}},
+    })
+    result = client.delete_favorite_folder("98765")
+    assert result["success"] is True
+    call = [c for c in session.calls if "folder/del" in c["url"]][-1]
+    assert call["method"] == "POST"
+    assert call["params"]["media_id"] == "98765"
+
+
+def test_deleting_a_folder_needs_an_id():
+    client, session = make_reply_client({
+        "/x/v3/fav/folder/del": {"code": 0, "data": {}},
+    })
+    assert client.delete_favorite_folder("")["success"] is False
+    assert session.calls == []
+
+
+# ---------------------------------------------------------------------------
+# followings and followers
+# ---------------------------------------------------------------------------
+
+RELATION_LIST_PAYLOAD = {
+    "code": 0,
+    "data": {
+        "list": [{
+            "mid": 2147353993,
+            "uname": "灼樱zy",
+            "face": "https://i1.hdslb.com/bfs/face/e76aa74a06",
+            "sign": "签名",
+            "official_verify": {"type": 0, "desc": "官方认证"},
+            "vip": {"type": 1},
+        }],
+        "total": 240,
+    },
+}
+
+
+def test_the_followings_can_be_read():
+    client, session = make_reply_client({
+        "/x/relation/followings": RELATION_LIST_PAYLOAD,
+    })
+    result = client.get_followings("12345678")
+    assert result["success"] is True
+    assert result["count"] == 1
+    assert result["items"][0]["uname"] == "灼樱zy"
+    assert result["items"][0]["mid"] == "2147353993"
+    assert result["items"][0]["official_verify"]["desc"] == "官方认证"
+    call = [c for c in session.calls if "followings" in c["url"]][-1]
+    assert call["params"]["vmid"] == "12345678"
+    assert call["params"]["pn"] == 1
+
+
+def test_the_followings_fall_back_to_the_signed_in_account():
+    client, session = make_reply_client({
+        "/x/relation/followings": RELATION_LIST_PAYLOAD,
+    })
+    assert client.get_followings()["success"] is True
+    call = [c for c in session.calls if "followings" in c["url"]][-1]
+    assert call["params"]["vmid"] == "12345678"
+
+
+def test_the_followers_can_be_read():
+    client, session = make_reply_client({
+        "/x/relation/followers": RELATION_LIST_PAYLOAD,
+    })
+    result = client.get_followers("12345678")
+    assert result["success"] is True
+    assert result["items"][0]["uname"] == "灼樱zy"
+    call = [c for c in session.calls if "followers" in c["url"]][-1]
+    assert call["params"]["vmid"] == "12345678"
+
+
+def test_the_relations_know_when_there_are_more():
+    client, _ = make_reply_client({
+        "/x/relation/followings": RELATION_LIST_PAYLOAD,
+    })
+    # 一页 50 个，总共 240 个，所以还有。
+    assert client.get_followings("12345678")["has_more"] is True
+
+
+def test_the_relations_report_a_failure_instead_of_raising():
+    client, _ = make_reply_client({
+        "/x/relation/followings": ConnectionError("boom"),
+    })
+    result = client.get_followings("12345678")
+    assert result["success"] is False
+    assert result["message"]
+    assert result["items"] == []
 
 
 def test_like_comment_sends_action_1_to_like():

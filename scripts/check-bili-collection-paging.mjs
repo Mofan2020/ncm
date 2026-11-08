@@ -10,6 +10,11 @@
  * route answers 20 collections per page and this account has 65, so three
  * quarters of them were unreachable -- there was no way to see them at all.
  *
+ * And then the tab itself was invisible: the segment row of the favourites
+ * page borrowed the collapsible style of the search filter row, so it was
+ * folded to zero height with opacity 0.  The list behind it was fine, but
+ * there was no way to reach it.
+ *
  * What is checked here:
  *
  *   1. 第一页        - a fresh start asks for page 1.
@@ -17,6 +22,7 @@
  *   3. 追加而不是覆盖 - the second page is added to the list.
  *   4. 按钮跟着状态走 - the button shows while there is more, hides at the end.
  *   5. 到底就停      - the last page ends the list, the button goes away.
+ *   6. 看得见        - the tab row is not folded away, and its id is used once.
  *
  * Run:  node scripts/check-bili-collection-paging.mjs
  */
@@ -231,6 +237,37 @@ check('the list is exhausted', r.exhausted === false, `has_more=${r.exhausted}`)
 check('"more" at the end does not ask the backend',
     r.callsAfter === r.callsBefore,
     `${r.callsBefore} -> ${r.callsAfter} calls`);
+
+// ---- 6: the tab is reachable ---------------------------------------------
+// The row of the segment tabs must not be folded away, and the id of the
+// "load more" button must not be used twice: the browser only knows the
+// first one, and the second button would be dead.
+const cssPath = path.join(root, 'src', 'gui', 'assets', 'style.css');
+const htmlPath = path.join(root, 'src', 'gui', 'assets', 'index.html');
+const css = fs.readFileSync(cssPath, 'utf8');
+const html = fs.readFileSync(htmlPath, 'utf8');
+
+for (const id of ['bili-fav-segments', 'bili-space-segments', 'bili-relations-segments']) {
+    const marker = `#${id}`;
+    const at = css.indexOf(marker);
+    if (at < 0) {
+        check(`${id} has a style of its own`, false, 'not in style.css');
+        continue;
+    }
+    const block = css.slice(at, css.indexOf('}', at));
+    const folded = /max-height\s*:\s*(0|0px)/.test(block)
+        || /opacity\s*:\s*0/.test(block);
+    check(`${id} is not folded away`, !folded, block.trim().replace(/\s+/g, ' '));
+}
+
+const ids = html.match(/\sid="([^"]+)"/g) || [];
+const seen = new Map();
+for (const raw of ids) {
+    const name = raw.replace(/\sid="([^"]+)"/, '$1');
+    seen.set(name, (seen.get(name) || 0) + 1);
+}
+const twice = [...seen.entries()].filter(([, count]) => count > 1).map(([name]) => name);
+check('no id is used twice', twice.length === 0, twice.join(', '));
 
 console.log('');
 if (failures.length) {

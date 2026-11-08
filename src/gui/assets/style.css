@@ -2821,6 +2821,25 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 .bili-comment-name:hover { color: var(--info); }
 .bili-comment-body { font-size: 13px; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 .bili-comment-meta { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--text-3); }
+.bili-comment-meta .is-liked { color: var(--info); }
+.bili-comment-replies { align-self: flex-start; }
+/* --- bilibili: the favourite folders and the relation lists ----------- */
+.bili-fav-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bili-fav-head .filter-chips { flex: 1 1 auto; min-width: 0; }
+.bili-folder-new { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.bili-folder-new .input { flex: 1 1 160px; min-width: 0; }
+.bili-folder-privacy { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.bili-folder-list { display: flex; flex-direction: column; gap: 6px; }
+.bili-folder-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 10px; background: var(--sunken); }
+.bili-folder-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); }
+.bili-folder-count { font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.bili-relations-list { display: flex; flex-direction: column; gap: 8px; }
+.bili-relation-row { display: flex; align-items: center; gap: 10px; }
+.bili-relation-face { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: var(--sunken); flex: 0 0 auto; }
+.bili-relation-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; flex: 1 1 auto; }
+.bili-relation-name { background: none; border: none; padding: 0; color: var(--text); font-size: 13px; cursor: pointer; }
+.bili-relation-name:hover { color: var(--info); }
+.bili-relation-sign { flex: 1 1 100%; font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bili-comment-reply { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
 .bili-comment-reply-target { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bili-comment-input, .bili-danmaku-input, .bili-im-input { display: flex; gap: 8px; align-items: center; }
@@ -2857,6 +2876,14 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 /* --- bilibili: the uploader's page ---------------------------------- */
+/* The segment rows of the Bilibili pages are tabs, not the collapsible
+ * filter row of the search: they have to stay visible. */
+#bili-fav-segments, #bili-space-segments, #bili-relations-segments {
+    max-height: none;
+    opacity: 1;
+    overflow: visible;
+}
+
 .bili-space-head { display: flex; align-items: center; gap: 12px; }
 .bili-space-face { width: 58px; height: 58px; border-radius: 50%; object-fit: cover; background: var(--sunken); flex: 0 0 auto; }
 .bili-space-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }

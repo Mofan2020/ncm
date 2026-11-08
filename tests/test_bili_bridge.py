@@ -84,7 +84,8 @@ class FakeClient:
 
     def favorite_folders(self) -> list[dict]:
         self._record("favorite_folders")
-        return [{"id": "9", "title": "我的收藏", "media_count": 2, "cover": "c"}]
+        return [{"id": "9", "title": "我的收藏", "media_count": 2, "cover": "c",
+                "attr": 22, "intro": "说明"}]
 
     def favorite_videos(self, folder_id, page=1, page_size=30) -> dict:
         self._record("favorite_videos", folder_id, page, page_size)
@@ -130,13 +131,47 @@ class FakeClient:
                                             "content": "好看"}],
                 "count": 1, "has_more": False, "message": ""}
 
-    def post_comment(self, bvid, content, parent_rpid=0) -> dict:
-        self._record("post_comment", bvid, content, parent_rpid)
+    def post_comment(self, bvid, content, parent_rpid=0, root_rpid=0) -> dict:
+        self._record("post_comment", bvid, content, parent_rpid, root_rpid)
         return {"success": True, "rpid": "99", "message": ""}
 
     def like_comment(self, rpid, like=True) -> dict:
         self._record("like_comment", rpid, like)
         return {"success": True, "message": ""}
+
+    def get_comment_replies(self, oid, root_rpid, page=1) -> dict:
+        self._record("get_comment_replies", oid, root_rpid, page)
+        return {"success": True,
+                "comments": [{"rpid": "2", "uname": "乙", "content": "同意"}],
+                "count": 1, "has_more": False, "message": ""}
+
+    def create_favorite_folder(self, title, intro="", privacy=0) -> dict:
+        self._record("create_favorite_folder", title, intro, privacy)
+        return {"success": True, "id": "77", "message": ""}
+
+    def edit_favorite_folder(self, folder_id, title="", intro="", privacy=0) -> dict:
+        self._record("edit_favorite_folder", folder_id, title, intro, privacy)
+        return {"success": True, "message": ""}
+
+    def delete_favorite_folder(self, folder_id) -> dict:
+        self._record("delete_favorite_folder", folder_id)
+        return {"success": True, "message": ""}
+
+    def get_followings(self, mid="", page=1, page_size=50) -> dict:
+        self._record("get_followings", mid, page, page_size)
+        return {"success": True,
+                "items": [{"mid": "42", "uname": "乙", "face": "f",
+                           "sign": "签名",
+                           "official_verify": {"type": 0, "desc": "认证"},
+                           "vip": {}}],
+                "count": 1, "has_more": False, "message": ""}
+
+    def get_followers(self, mid="", page=1, page_size=50) -> dict:
+        self._record("get_followers", mid, page, page_size)
+        return {"success": True,
+                "items": [{"mid": "43", "uname": "丙", "face": "f",
+                           "sign": "", "official_verify": {}, "vip": {}}],
+                "count": 1, "has_more": True, "message": ""}
 
     def history(self, page=1, page_size=30) -> dict:
         self._record("history", page, page_size)
@@ -299,6 +334,58 @@ def test_the_favourite_videos_become_tracks(bridge):
     assert track["key"] == "bilibili:BV1aa"
     assert track["name"] == "第一"
     assert track["duration"] == 61
+
+
+def test_the_replies_of_a_comment_go_through_the_bridge(bridge):
+    result = bridge.get_comment_replies("BV1aa", "1")
+
+    assert result["success"] is True
+    assert result["comments"][0]["rpid"] == "2"
+    assert result["count"] == 1
+
+
+def test_a_folder_can_be_created_through_the_bridge(bridge):
+    result = bridge.create_favorite_folder("新的", "说明", privacy=1)
+
+    assert result["success"] is True
+    assert result["id"] == "77"
+
+
+def test_a_folder_can_be_renamed_through_the_bridge(bridge):
+    result = bridge.edit_favorite_folder("9", "新名字", privacy=0)
+
+    assert result["success"] is True
+
+
+def test_a_folder_can_be_deleted_through_the_bridge(bridge):
+    result = bridge.delete_favorite_folder("9")
+
+    assert result["success"] is True
+
+
+def test_the_folders_say_whether_they_are_private(bridge):
+    """界面上那个公开/私密的开关靠 attr 判。"""
+    result = bridge.favorites()
+
+    # attr 22 是公开：第 0 位是 0。
+    assert result["folders"][0]["private"] is False
+    assert result["folders"][0]["attr"] == 22
+
+
+def test_the_followings_go_through_the_bridge(bridge):
+    result = bridge.get_followings("123", 1, 30)
+
+    assert result["success"] is True
+    assert result["items"][0]["uname"] == "乙"
+    assert result["items"][0]["official_verify"]["desc"] == "认证"
+
+
+def test_the_followers_go_through_the_bridge(bridge):
+    result = bridge.get_followers("123")
+
+    assert result["success"] is True
+    assert result["items"][0]["uname"] == "丙"
+    assert result["has_more"] is True
 
 
 def test_the_streams_go_through_the_loopback(bridge):

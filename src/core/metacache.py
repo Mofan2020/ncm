@@ -173,10 +173,14 @@ class MetaCache:
         stored key is kept inside the file, which makes this a read of every
         entry -- acceptable, because invalidation happens after a write and
         the folders hold at most :data:`MAX_ENTRIES` files.
+
+        An empty prefix means "every key of this kind" -- every key starts
+        with the empty string.  Callers use it to drop a whole kind (the
+        favourite folders after a write, say); refusing the empty prefix
+        left those caches stale, which showed up as a folder still holding
+        the videos the user had just removed.
         """
         prefix = str(prefix or "")
-        if not prefix:
-            return 0
         folder = self.root / kind
         removed = 0
         try:

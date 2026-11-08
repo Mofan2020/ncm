@@ -1553,6 +1553,10 @@ class BiliClient:
                 "title": str(item.get("title") or ""),
                 "media_count": int(item.get("media_count") or 0),
                 "cover": _absolute_url(item.get("cover")),
+                # attr 的第 0 位是「私密」：默认收藏夹是 1，公开的是 22，
+                # 私密的是 23。
+                "attr": int(item.get("attr") or 0),
+                "intro": str(item.get("intro") or ""),
             })
         return folders
 
@@ -2786,6 +2790,162 @@ class BiliClient:
             return {"success": False, "message": _error_message(payload, "收藏夹操作失败")}
         return {"success": True, "message": "已取消收藏收藏夹" if remove else "收藏夹已收藏"}
 
+    # ------------------------------------------------------------------
+    # Folder management (create / rename / delete / privacy)
+    # ------------------------------------------------------------------
+    def create_favorite_folder(self, title: str, intro: str = "",
+                              privacy: int = 0) -> dict[str, Any]:
+        """Create a new favourite folder.
+
+        ``privacy``: 0 = public, 1 = private.
+        """
+        title = str(title or "").strip()
+        intro = str(intro or "").strip()
+        if not title:
+            return {"success": False, "message": "收藏夹标题不能为空"}
+        if not self.is_logged_in:
+            return {"success": False, "message": "请先登录B站账号"}
+        payload = self.post_form(
+            "/x/v3/fav/folder/add",
+            {
+                "title": title,
+                "intro": intro,
+                "privacy": int(privacy),
+            },
+        )
+        if not payload:
+            return {"success": False, "message": "网络异常，创建失败，请稍后重试"}
+        if payload.get("code") != 0:
+            return {"success": False, "message": _error_message(payload, "创建收藏夹失败")}
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        fid = str(data.get("id") or data.get("fid") or "")
+        return {"success": True, "message": "创建成功", "id": fid}
+
+    def edit_favorite_folder(self, folder_id: str, title: str = "",
+                            intro: str = "", privacy: int | None = None) -> dict[str, Any]:
+        """Rename a folder, change its description or privacy.
+
+        ``privacy``: 0 = public, 1 = private, ``None`` = leave it as it is.
+        At least one of title/intro/privacy must be given.
+        """
+        folder_id = str(folder_id or "").strip()
+        title = str(title or "").strip()
+        intro = str(intro or "").strip()
+        if not folder_id:
+            return {"success": False, "message": "缺少收藏夹 ID"}
+        if not title and not intro and privacy is None:
+            return {"success": False, "message": "没有可修改的内容"}
+        if not self.is_logged_in:
+            return {"success": False, "message": "请先登录B站账号"}
+        form: dict[str, Any] = {"media_id": folder_id}
+        if title:
+            form["title"] = title
+        if intro:
+            form["intro"] = intro
+        # 私密这一项不填就是「不动它」——填 0 是「改成公开」，两件事不一样。
+        if privacy is not None:
+            form["privacy"] = int(privacy)
+        payload = self.post_form("/x/v3/fav/folder/edit", form)
+        if not payload:
+            return {"success": False, "message": "网络异常，修改失败，请稍后重试"}
+        if payload.get("code") != 0:
+            return {"success": False, "message": _error_message(payload, "修改收藏夹失败")}
+        return {"success": True, "message": "修改成功"}
+
+    def delete_favorite_folder(self, folder_id: str) -> dict[str, Any]:
+        """Delete a favourite folder."""
+        folder_id = str(folder_id or "").strip()
+        if not folder_id:
+            return {"success": False, "message": "缺少收藏夹 ID"}
+        if not self.is_logged_in:
+            return {"success": False, "message": "请先登录B站账号"}
+        payload = self.post_form(
+            "/x/v3/fav/folder/del",
+            {"media_id": folder_id},
+        )
+        if not payload:
+            return {"success": False, "message": "网络异常，删除失败，请稍后重试"}
+        if payload.get("code") != 0:
+            return {"success": False, "message": _error_message(payload, "删除收藏夹失败")}
+        return {"success": True, "message": "删除成功"}
+
+    # ------------------------------------------------------------------
+    # Follow / Followers lists
+    # ------------------------------------------------------------------
+    def get_followings(self, mid: str = "", page: int = 1,
+                       page_size: int = 50) -> dict[str, Any]:
+        """Get the list of users the account follows (关注列表)."""
+        mid = str(mid or "").strip()
+        if not mid:
+            mid = self._self_mid()
+        if not mid:
+            return {"success": False, "items": [], "count": 0, "has_more": False,
+                    "message": "未获取到用户 ID"}
+        page = max(1, int(page or 1))
+        page_size = max(1, min(int(page_size or 50), 50))
+        payload = self.get_wbi(
+            "/x/relation/followings",
+            {"vmid": mid, "pn": page, "ps": page_size, "order": "desc"},
+        )
+        if not payload or payload.get("code") != 0:
+            return {"success": False, "items": [], "count": 0, "has_more": False,
+                    "message": _error_message(payload, "关注列表加载失败")}
+        data = payload.get("data") or {}
+        lst = data.get("list") or []
+        items = []
+        for item in lst:
+            if not isinstance(item, dict):
+                continue
+            items.append({
+                "mid": str(item.get("mid") or ""),
+                "uname": str(item.get("uname") or ""),
+                "face": _absolute_url(item.get("face")),
+                "sign": str(item.get("sign") or ""),
+                "official_verify": item.get("official_verify") if isinstance(item.get("official_verify"), dict) else {},
+                "vip": item.get("vip") if isinstance(item.get("vip"), dict) else {},
+            })
+        total = int(data.get("total") or 0)
+        return {"success": True, "items": items, "count": len(items),
+                "has_more": (page * page_size) < total,
+                "message": ""}
+
+    def get_followers(self, mid: str = "", page: int = 1,
+                      page_size: int = 50) -> dict[str, Any]:
+        """Get the list of users following the account (粉丝列表)."""
+        mid = str(mid or "").strip()
+        if not mid:
+            mid = self._self_mid()
+        if not mid:
+            return {"success": False, "items": [], "count": 0, "has_more": False,
+                    "message": "未获取到用户 ID"}
+        page = max(1, int(page or 1))
+        page_size = max(1, min(int(page_size or 50), 50))
+        payload = self.get_wbi(
+            "/x/relation/followers",
+            {"vmid": mid, "pn": page, "ps": page_size, "order": "desc"},
+        )
+        if not payload or payload.get("code") != 0:
+            return {"success": False, "items": [], "count": 0, "has_more": False,
+                    "message": _error_message(payload, "粉丝列表加载失败")}
+        data = payload.get("data") or {}
+        lst = data.get("list") or []
+        items = []
+        for item in lst:
+            if not isinstance(item, dict):
+                continue
+            items.append({
+                "mid": str(item.get("mid") or ""),
+                "uname": str(item.get("uname") or ""),
+                "face": _absolute_url(item.get("face")),
+                "sign": str(item.get("sign") or ""),
+                "official_verify": item.get("official_verify") if isinstance(item.get("official_verify"), dict) else {},
+                "vip": item.get("vip") if isinstance(item.get("vip"), dict) else {},
+            })
+        total = int(data.get("total") or 0)
+        return {"success": True, "items": items, "count": len(items),
+                "has_more": (page * page_size) < total,
+                "message": ""}
+
     def follow_user(self, mid: str, follow: bool = True) -> dict[str, Any]:
         """Follow a user, or stop following them.
 
@@ -3159,7 +3319,8 @@ class BiliClient:
             items = pinned + items
             cursor_data = data.get("cursor") if isinstance(data.get("cursor"), dict) else {}
             # 下一页的游标存起来，下一次翻页直接用。
-            next_cursor = _pagination_value(cursor_data.get("next"))
+            # _pagination_value 现在要整个 cursor 对象，从 pagination_reply.next_offset 取值。
+            next_cursor = _pagination_value(cursor_data)
             if next_cursor:
                 cache.setdefault(f"{bvid}|{sort}", {})[page + 1] = next_cursor
             result.update({
@@ -3217,7 +3378,7 @@ class BiliClient:
                     return None
                 data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
                 cursor_data = data.get("cursor") if isinstance(data.get("cursor"), dict) else {}
-                next_cursor = _pagination_value(cursor_data.get("next"))
+                next_cursor = _pagination_value(cursor_data)
                 if not next_cursor:
                     return None
                 cursors[current + 1] = next_cursor
@@ -3259,6 +3420,10 @@ class BiliClient:
             "ctime": _as_int(reply.get("ctime")),
             "location": str(reply.get("location") or ""),
             "is_owner": bool(owner_mid) and mid == owner_mid,
+            # root 是这条评论所属的主楼，parent 是它直接回的那条。
+            # 两条都是字符串，"0" 表示没有。
+            "root": str(reply.get("root") or reply.get("root_str") or "0"),
+            "parent": str(reply.get("parent") or reply.get("parent_str") or "0"),
             "children": children,
         }
 
@@ -3267,9 +3432,12 @@ class BiliClient:
         bvid: str,
         content: str,
         parent_rpid: int = 0,
+        root_rpid: int = 0,
     ) -> dict[str, Any]:
         """发一条评论，或者回复某条评论。
 
+        ``parent_rpid`` 是直接被回复的评论 rpid（楼中楼时用），
+        ``root_rpid`` 是主楼评论的 rpid（楼中楼时用，主楼评论时与 parent 相同或 0）。
         未登录和空正文都不发请求：服务端对这两种情况给不出有用的
         答案，只会留下一条无意义的写操作。
         """
@@ -3291,6 +3459,7 @@ class BiliClient:
                 result["message"] = "无法获取视频信息，评论发送失败"
                 return result
             parent = max(0, _as_int(parent_rpid))
+            root = max(0, _as_int(root_rpid))
             payload = self.post_form(
                 "/x/v2/reply/add",
                 {
@@ -3299,6 +3468,7 @@ class BiliClient:
                     "message": text,
                     # 回复时填对方的 rpid，发主楼时是 0。
                     "parent": parent,
+                    "root": root,
                     "buvid3": self._buvid3(),
                 },
             )
@@ -3349,6 +3519,68 @@ class BiliClient:
         except Exception as exc:  # noqa: BLE001 - the UI must never see an exception
             log.warning("bilibili like_comment failed: %s", exc)
             result["message"] = "网络异常，操作失败，请稍后重试"
+            return result
+
+    def get_comment_replies(
+        self,
+        oid: int,
+        root_rpid: str,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        """Load sub-replies of a comment (楼中楼).
+
+        Uses the legacy ``/x/v2/reply/reply`` route which still uses ``pn``/``ps``
+        and returns the full list of replies for a given root comment.
+        """
+        result: dict[str, Any] = {
+            "success": False,
+            "comments": [],
+            "count": 0,
+            "has_more": False,
+            "message": "",
+        }
+        oid = int(oid)
+        root = str(root_rpid or "").strip()
+        page = max(1, int(page or 1))
+        if not oid or not root:
+            result["message"] = "缺少参数"
+            return result
+        try:
+            payload = self._get(
+                "/x/v2/reply/reply",
+                {
+                    "oid": oid,
+                    "type": 1,
+                    "root": root,
+                    "pn": page,
+                    "ps": 20,
+                },
+            )
+            if not payload:
+                result["message"] = "网络异常，加载回复失败"
+                return result
+            if payload.get("code") != 0:
+                result["message"] = _error_message(payload, "加载回复失败")
+                return result
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            replies = data.get("replies")
+            replies = replies if isinstance(replies, list) else []
+            owner_mid = str(self.account_info().get("mid") or "")
+            items = [self._from_reply(item, owner_mid) for item in replies if isinstance(item, dict)]
+            page_info = data.get("page") if isinstance(data.get("page"), dict) else {}
+            total = int(page_info.get("count") or 0)
+            has_more = len(items) > 0 and (page * 20) < total
+            result.update({
+                "success": True,
+                "comments": items,
+                "count": len(items),
+                "has_more": has_more,
+                "message": "",
+            })
+            return result
+        except Exception as exc:  # noqa: BLE001 - the UI must never see an exception
+            log.warning("bilibili get_comment_replies failed: %s", exc)
+            result["message"] = "网络异常，加载回复失败，请稍后重试"
             return result
 
     def _buvid3(self) -> str:
@@ -3972,23 +4204,20 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 
 def _pagination_value(raw: Any) -> str:
-    """Turn ``data.cursor.next`` into the ``pagination_str`` to send back.
+    """Turn ``data.cursor.pagination_reply.next_offset`` into the ``pagination_str`` to send back.
 
-    ``next`` 是服务端给的 JSON 字符串，而它里面偶尔还套了一层字符串。
-    所以先 ``json.loads`` 一次：解出来是字符串就取那层，是 JSON 本身
-    就原样送回去。
+    The new comment route uses an offset protocol:
+    - First page: no pagination_str
+    - Subsequent pages: pagination_str = json.dumps({"offset": <next_offset>})
+    where next_offset comes from data.cursor.pagination_reply.next_offset (integer).
+    The legacy cursor.next is just a page counter, not a real token.
     """
     if raw is None:
         return ""
-    if isinstance(raw, dict | list):
-        return json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
-    text = str(raw).strip()
-    if not text:
-        return ""
-    try:
-        parsed = json.loads(text)
-    except (TypeError, ValueError):
-        return text
-    if isinstance(parsed, str):
-        return parsed.strip()
-    return text
+    # raw here is the cursor dict, extract next_offset from pagination_reply
+    if isinstance(raw, dict):
+        pag = raw.get("pagination_reply") or {}
+        offset = pag.get("next_offset")
+        if offset is not None:
+            return json.dumps({"offset": offset}, ensure_ascii=False, separators=(",", ":"))
+    return ""

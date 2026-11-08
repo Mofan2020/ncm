@@ -162,18 +162,22 @@ Full reference: `docs/bili-notes.md`. The endpoints in use:
 | Password login | `passport.bilibili.com/x/passport-login/web/login` | needs the geetest challenge |
 | SMS login | `passport.bilibili.com/x/passport-login/web/sms/sendcode` + `/sms/login` | |
 | Register | `passport.bilibili.com/x/passport-register/web/sendcode` + `/register` | |
-| Favourite folders | `/x/v3/fav/folder/created/list-all` | `up_mid` |
+| Favourite folders | `/x/v3/fav/folder/created/list-all` | `up_mid`; `attr` bit 0 = private |
 | Folder content | `/x/v3/fav/resource/list` | `media_id`, `pn`, `ps` |
-| Create a folder | `/x/v3/fav/folder/add` | write; needs `csrf` |
+| Create a folder | `/x/v3/fav/folder/add` | write; needs `csrf`, `title`, `privacy` |
+| Rename a folder / change its privacy | `/x/v3/fav/folder/edit` | write; needs `csrf`, `media_id` |
+| Delete a folder | `/x/v3/fav/folder/del` | write; needs `csrf`, `media_id` |
 | Add to a folder | `/x/v3/fav/resource/deal` | write; needs `csrf`, `add_media_ids` = `"<aid>:2"` |
 | Video counters | `/x/web-interface/archive/stat` | view / danmaku / reply / favourite / coin / like |
 | Like a video | `/x/web-interface/archive/like` | write; `like` = 1 or 2, needs `csrf` |
 | Coins | `/x/web-interface/coin/add` + `/coin/number` | write; `multiply` 1–2; the balance route is a GET |
 | Comments | `/x/v2/reply/main` + `/x/v2/reply/add` + `/x/v2/reply/action` | the two write routes need `csrf` |
+| Replies of a comment | `/x/v2/reply/reply` | `oid`, `root`, `pn`, `ps` — the replies of one thread |
 | Danmaku | `/x/v2/dm/web/seg.so` + `/x/v2/dm/post` | the read route answers **protobuf**, not JSON |
 | Watch history | `/x/web-interface/history/cursor` | WBI signed; page through `cursor.max` |
 | Uploader profile | `/x/space/wbi/acc/info` + `/x/space/wbi/arc/search` + `/x/space/upstat` | the first two are WBI signed, `upstat` is not |
 | Follow / unfollow | `/x/relation/modify` + `/x/relation` | `act` = 1 / 2 on the same route |
+| Followings / followers | `/x/relation/followings` + `/x/relation/followers` | `vmid`, `pn`, `ps`; WBI signed |
 | Private messages | `api.vc.bilibili.com/session_svr/v1/session/notify_fetch` + `sess_svr/v1/sess/get_messages` + `sess_svr/v1/sess/send_msg` | a **different gateway**, no WBI |
 | Uploading | `member.bilibili.com/x/vuweb/pre` + `/x/vuweb/add` | pre-upload first, then the file, then the form |
 
