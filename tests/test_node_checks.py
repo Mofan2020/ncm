@@ -31,6 +31,7 @@ CHECKS = (
     ("check-bili-recommend-paging.mjs", "the paging of the recommendation feed"),
     ("check-bili-default-quality.mjs", "the default quality reaching playback"),
     ("check-bili-collection-paging.mjs", "the paging of the subscribed collections"),
+    ("check-bili-fav-paging.mjs", "the paging of the favourite folders"),
     ("check-bangumi-js.mjs", "the Bangumi page"),
 )
 

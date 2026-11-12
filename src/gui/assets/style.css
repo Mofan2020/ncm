@@ -2531,6 +2531,27 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* --- bilibili ------------------------------------------------ */
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* 收藏夹分页条。跟批量操作条一样横排，窄窗口时换行。 */
+.bili-pager {
+    display: flex; align-items: center; justify-content: center;
+    flex-wrap: wrap; gap: 10px;
+    padding: 12px 0 4px;
+}
+.bili-pager-label {
+    font-size: 12px; color: var(--text-3);
+    min-width: 96px; text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+.bili-pager-size {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-3);
+}
+.bili-pager-select {
+    padding: 3px 6px; border-radius: var(--radius-xs);
+    background: var(--bg-2); color: var(--text);
+    border: 1px solid var(--border); font-size: 12px;
+}
 .bili-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     column-gap: var(--grid-gap); row-gap: 18px;

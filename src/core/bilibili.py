@@ -1573,7 +1573,7 @@ class BiliClient:
         # with code -400 ("请求错误") and an empty list, which used to look
         # like "the folder is empty" rather than "the request was refused".
         page_size = max(1, min(int(page_size or 30), 40))
-        empty: dict[str, Any] = {"items": [], "has_more": False, "page": page}
+        empty: dict[str, Any] = {"items": [], "has_more": False, "page": page, "total": 0}
         if not folder_id:
             return empty
         payload = self._get(
@@ -1615,7 +1615,16 @@ class BiliClient:
         has_more = data.get("has_more")
         if has_more is None:
             has_more = len(medias) >= page_size
-        return {"items": items, "has_more": bool(has_more), "page": page}
+        # ``info.media_count`` is the size of the whole folder; it is what
+        # lets the page control say "page 2 of 8" instead of only knowing
+        # whether a next page exists.  Zero means the route did not say.
+        total = _as_int((data.get("info") or {}).get("media_count"))
+        return {
+            "items": items,
+            "has_more": bool(has_more),
+            "page": page,
+            "total": max(0, total),
+        }
 
     # ------------------------------------------------------------------
     # playback

@@ -1514,8 +1514,45 @@ def test_favorite_videos_normalises_the_entries():
 def test_favorite_videos_without_a_folder_is_empty():
     client, session = make_client()
     result = client.favorite_videos("")
-    assert result == {"items": [], "has_more": False, "page": 1}
+    assert result == {"items": [], "has_more": False, "page": 1, "total": 0}
     assert session.calls == []
+
+
+def test_favorite_videos_reports_the_folder_total():
+    """总数来自 info.media_count，界面拿它算「第 N / M 页」。
+
+    没有它只能知道「还有下一页」，写不出「共几页」，用户也就没法知道
+    自己在收藏夹的哪个位置。
+    """
+    payload = {
+        "code": 0,
+        "data": {
+            "info": {"id": 98765, "media_count": 137},
+            "has_more": True,
+            "medias": [],
+        },
+    }
+    client, _ = make_client({"/x/v3/fav/resource/list": payload})
+    result = client.favorite_videos("98765", page=1, page_size=30)
+    assert result["total"] == 137
+    assert result["has_more"] is True
+
+
+def test_favorite_videos_without_an_info_block_reports_zero():
+    """接口没回 info 时不能编一个总数，要老实说不知道（0）。"""
+    payload = {"code": 0, "data": {"has_more": False, "medias": []}}
+    client, _ = make_client({"/x/v3/fav/resource/list": payload})
+    assert client.favorite_videos("98765")["total"] == 0
+
+
+def test_favorite_videos_total_never_goes_negative():
+    """media_count 是垃圾值时按 0 处理，别让界面算出负数页数。"""
+    payload = {
+        "code": 0,
+        "data": {"info": {"media_count": -5}, "has_more": False, "medias": []},
+    }
+    client, _ = make_client({"/x/v3/fav/resource/list": payload})
+    assert client.favorite_videos("98765")["total"] == 0
 
 
 def test_favorite_videos_survives_a_failure():

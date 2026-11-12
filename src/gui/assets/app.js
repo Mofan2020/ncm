@@ -9445,16 +9445,26 @@ const biliLogin = {
 };
 
 /** The account's own favourites: the folders and the open one. */
+/** 每页条数的选项。上限 40 是接口给的：ps=41 回来是 code -400。 */
+const BILI_FAV_PAGE_SIZES = [10, 20, 30, 40];
+const BILI_FAV_PAGE_SIZE_DEFAULT = 30;
+
 const biliFavorites = {
     folders: [],
     folderId: null,
+    /** 当前是第几页（从 1 开始）。 */
     page: 1,
+    /** 每页多少条，界面可选，最大 40。 */
+    pageSize: BILI_FAV_PAGE_SIZE_DEFAULT,
+    /** 整个收藏夹的总条数；接口没说时是 0。 */
+    total: 0,
+    /** 只有当前这一页的内容，换页就整页替换。 */
     items: [],
     hasMore: false,
     loading: false,
     error: '',
     loaded: false,
-    /** 勾选的视频（bvid）；换收藏夹就清空。 */
+    /** 勾选的视频（bvid）；换页和换收藏夹都清空。 */
     selected: new Set()
 };
 
@@ -10059,11 +10069,12 @@ function openBiliFolder(folderId) {
     biliFavorites.selected.clear();
     biliFavorites.folderId = folderId;
     biliFavorites.page = 1;
+    biliFavorites.total = 0;
     biliFavorites.items = [];
     biliFavorites.hasMore = false;
     biliFavorites.error = '';
     renderBiliFolderChips();
-    loadBiliFavoriteVideos(true);
+    loadBiliFavoritePage(1);
 }
 
 /** Read the folders of the account. */
@@ -10102,14 +10113,23 @@ async function loadBiliFolders() {
     }
 }
 
-/** Read one page of the open folder. */
-async function loadBiliFavoriteVideos(reset) {
+/**
+ * Read one page of the open folder.
+ *
+ * 这是分页而不是"加载更多"：传进来的页码就是最终显示的那一页，格子里
+ * 只有这一页的内容。之前是累加，翻到后面页时前面几百条全留在 DOM 里，
+ * 越往后越卡，而且没法回到已经翻过的位置。
+ *
+ * 换页会清空勾选。批量下载/移动用的是「当前页上的勾选」，跨页留着勾选
+ * 会让看不见的条目被一起处理——那是最难查的一类误操作。
+ */
+async function loadBiliFavoritePage(page) {
     if (biliFavorites.loading) return;
     if (!biliFavorites.folderId) {
         renderBiliFavorites();
         return;
     }
-    if (!reset && !biliFavorites.hasMore) return;
+    const target = Math.max(1, Math.floor(Number(page) || 1));
     biliFavorites.loading = true;
     biliFavorites.error = '';
     renderBiliFavorites();
@@ -10120,20 +10140,19 @@ async function loadBiliFavoriteVideos(reset) {
             renderBiliFavorites();
             return;
         }
-        const page = reset ? 1 : biliFavorites.page + 1;
         const result = await state.api.get_bilibili_favorite_videos(
-            biliFavorites.folderId, page, 30);
+            biliFavorites.folderId, target, biliFavorites.pageSize);
         if (!result || !result.success) {
             biliFavorites.error = biliFailure(result, 'bili.favorite_login_hint');
             biliFavorites.loading = false;
             renderBiliFavorites();
             return;
         }
-        const items = result.items || [];
-        if (reset) biliFavorites.items = [];
-        items.forEach((item) => biliFavorites.items.push(item));
-        biliFavorites.page = page;
+        biliFavorites.items = result.items || [];
+        biliFavorites.page = target;
         biliFavorites.hasMore = !!result.has_more;
+        biliFavorites.total = Number(result.total) || 0;
+        biliFavorites.selected.clear();
         biliFavorites.loading = false;
         renderBiliFavorites();
     } catch (err) {
@@ -10141,6 +10160,31 @@ async function loadBiliFavoriteVideos(reset) {
         biliFavorites.loading = false;
         renderBiliFavorites();
     }
+}
+
+/** 一共几页；接口没给总数时返回 0，表示只能靠 has_more 判断。 */
+function biliFavPageCount() {
+    const size = biliFavorites.pageSize || 1;
+    if (biliFavorites.total > 0) {
+        return Math.max(1, Math.ceil(biliFavorites.total / size));
+    }
+    return 0;
+}
+
+/** 上一页 / 下一页。 */
+function gotoBiliFavoritePage(page) {
+    const target = Math.max(1, Math.floor(Number(page) || 1));
+    if (target === biliFavorites.page && !biliFavorites.error) return;
+    loadBiliFavoritePage(target);
+}
+
+/** 换每页条数：回到第一页重新读。 */
+function setBiliFavPageSize(size) {
+    const value = Math.max(1, Math.min(Math.floor(Number(size) || 0), 40));
+    if (!value || value === biliFavorites.pageSize) return;
+    biliFavorites.pageSize = value;
+    biliFavorites.selected.clear();
+    loadBiliFavoritePage(1);
 }
 
 /** Draw the favourites: the folders, the grid and the states. */
@@ -10170,22 +10214,48 @@ function renderBiliFavorites() {
     if (biliFavorites.error && box) {
         box.appendChild(buildStateBlock('close', t('bili.error_title'),
             t('bili.error_hint', { message: biliFavorites.error }),
-            t('common.retry'), () => loadBiliFavoriteVideos(true)));
+            t('common.retry'), () => loadBiliFavoritePage(biliFavorites.page)));
         return;
     }
     if (!biliFavorites.items.length && box) {
         box.appendChild(buildStateBlock('list', t('bili.favorites_empty'), ''));
     }
-    const more = document.getElementById('btn-bili-fav-more');
-    if (more) {
-        more.hidden = !biliFavorites.hasMore || biliFavorites.loading;
-        more.disabled = biliFavorites.loading;
-        more.textContent = biliFavorites.loading ? t('common.loading') : t('bili.load_more');
+    renderBiliFavPager();
+}
+
+/**
+ * 页码条：上一页 / 第 N / M 页 / 下一页 / 每页条数。
+ *
+ * 「还有没有下一页」有两个来源：接口给的总数算出来的页数，以及 has_more。
+ * 总数拿不到时（接口没回 media_count）只靠 has_more，这时不知道最后一页
+ * 是第几页，标签就只写"第 N 页"。
+ */
+function renderBiliFavPager() {
+    const pager = document.getElementById('bili-fav-pager');
+    if (!pager) return;
+
+    const label = document.getElementById('bili-fav-page-label');
+    const prev = document.getElementById('btn-bili-fav-prev');
+    const next = document.getElementById('btn-bili-fav-next');
+    const sizeBox = document.getElementById('bili-fav-page-size');
+
+    const open = !!biliFavorites.folderId
+        && (biliFavorites.items.length > 0 || biliFavorites.page > 1);
+    pager.hidden = !open;
+
+    const pages = biliFavPageCount();
+    if (label) {
+        label.textContent = pages > 1
+            ? t('bili.page_status', { page: biliFavorites.page, pages })
+            : t('bili.page_status_unknown', { page: biliFavorites.page });
     }
-    const end = document.getElementById('bili-fav-end');
-    if (end) {
-        end.hidden = biliFavorites.loading || !biliFavorites.items.length || biliFavorites.hasMore;
-        end.textContent = t('bili.no_more');
+    if (prev) prev.disabled = biliFavorites.loading || biliFavorites.page <= 1;
+    if (next) {
+        const beyond = pages > 0 ? biliFavorites.page >= pages : !biliFavorites.hasMore;
+        next.disabled = biliFavorites.loading || beyond;
+    }
+    if (sizeBox && String(sizeBox.value) !== String(biliFavorites.pageSize)) {
+        sizeBox.value = String(biliFavorites.pageSize);
     }
 }
 
@@ -10309,7 +10379,7 @@ async function applyBiliFavTarget(targetId) {
         closeModal('bili-fav-target-modal');
         showToast('success', t('bili.bulk_moved', { count: Number(result.count) || aids.length }));
         clearBiliFavSelection();
-        await loadBiliFavoriteVideos(true);
+        await loadBiliFavoritePage(biliFavorites.page);
     } catch (err) {
         showToast('error', t('bili.bulk_move_failed'));
     }
@@ -10335,7 +10405,7 @@ async function bulkRemoveBiliFavorites() {
         // The folder lost videos, so its count changed too: read both the
         // list of folders and the open folder again.
         await loadBiliFolders();
-        await loadBiliFavoriteVideos(true);
+        await loadBiliFavoritePage(biliFavorites.page);
     } catch (err) {
         showToast('error', t('bili.bulk_remove_failed'));
     }
@@ -13020,8 +13090,18 @@ function bindSectionEvents() {
             setBiliTab(tab.dataset.tab);
         });
     }
-    const favMore = document.getElementById('btn-bili-fav-more');
-    if (favMore) favMore.addEventListener('click', () => loadBiliFavoriteVideos(false));
+    const favPrev = document.getElementById('btn-bili-fav-prev');
+    if (favPrev) {
+        favPrev.addEventListener('click', () => gotoBiliFavoritePage(biliFavorites.page - 1));
+    }
+    const favNext = document.getElementById('btn-bili-fav-next');
+    if (favNext) {
+        favNext.addEventListener('click', () => gotoBiliFavoritePage(biliFavorites.page + 1));
+    }
+    const favPageSize = document.getElementById('bili-fav-page-size');
+    if (favPageSize) {
+        favPageSize.addEventListener('change', () => setBiliFavPageSize(favPageSize.value));
+    }
     // 订阅的合集一页只有 20 条，要能往下翻。
     const collectionsMore = document.getElementById('btn-bili-collection-more');
     if (collectionsMore) collectionsMore.addEventListener('click', loadMoreBiliCollections);

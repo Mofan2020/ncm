@@ -3906,3 +3906,37 @@ scrollTop 从 0 移到 500。
 3. 没有真正的多镜像自动切换——主机不通时会报错让用户自己换，不静默重试
 4. 真实网络验收脚本在 `~/.hermes/cache/scratch/bgm_live_verify.py` 与
    `bgm_download_verify.py`，不在仓库里
+
+## 收藏夹改成分页（v3.20.0）
+
+原来是「累加 + 加载更多」：翻到第 8 页时前面 7 页两百多条全留在 DOM 里，
+越往后越卡，而且翻不回已经看过的位置，只有一条单行道。每页 30 条写死在
+`loadBiliFavoriteVideos` 里，改不了。
+
+现在是页码：上一页 / 第 N / M 页 / 下一页 / 每页条数。翻页**整页替换**，
+格子里只有当前这一页。
+
+几个必须知道的点：
+
+- **每页条数上限 40，不是随便定的。** `/x/v3/fav/resource/list` 的 `ps=41`
+  回来是 `code -400 请求错误`，而一个把非零 code 变成 `[]` 的包装会把它
+  渲染成「收藏夹是空的」。`favorite_videos` 里已经 `min(..., 40)` 夹住了，
+  界面的下拉也只有 10/20/30/40 四档。
+- **页数要总数才算得出来。** 后端从 `data.info.media_count` 取 `total`，
+  界面用 `ceil(total / pageSize)` 算。接口不回 `info` 时 `total` 是 0，
+  这时标签只写「第 N 页」，下一页由 `has_more` 决定——不编一个假总数。
+- **换页清空勾选。** 批量下载/移动/移出用的是 `selectedBiliFavTracks()`，
+  它按 `biliFavorites.items` 过滤。整页替换之后，上一页勾的条目已经不在
+  `items` 里，留着勾选会让「N 条已选」和实际被处理的数量对不上，而且是
+  静默的——操作成功但少做了几条。
+- **批量操作之后重读当前页，不是回第一页。** 移出几条之后跳回第一页会把
+  用户翻到的位置丢掉。
+- 重试按钮重读当前页，不是回第一页。
+
+`localStorage` 在这个项目里是死的（每个 pywebview 窗口各自独立的 JS 上下文），
+所以每页条数没有做跨会话记忆。要做的话得走 settings。
+
+测试：`scripts/check-bili-fav-paging.mjs`（33 项），注册在
+`tests/test_node_checks.py` 和 `.github/workflows/build.yml` 两处。
+它把真实的 `zh_cn.json` 注入 `state.translations`，否则 `t()` 会返回键名，
+「第 2 / 4 页」这种断言永远不可能对。

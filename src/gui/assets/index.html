@@ -413,9 +413,24 @@
                         </div>
                         <div class="bili-grid" id="bili-fav-results"></div>
                         <div id="bili-fav-state"></div>
-                        <button class="btn btn-sm btn-block" id="btn-bili-fav-more" type="button" hidden
-                                data-i18n="bili.load_more"></button>
-                        <div class="result-end" id="bili-fav-end" hidden></div>
+                        <!-- 分页：上一页 / 页码 / 下一页 / 每页条数。上限 40 是接口给的。 -->
+                        <div class="bili-pager" id="bili-fav-pager" hidden>
+                            <button class="btn btn-sm btn-secondary" id="btn-bili-fav-prev"
+                                    type="button" data-i18n="bili.page_prev"></button>
+                            <span class="bili-pager-label" id="bili-fav-page-label"></span>
+                            <button class="btn btn-sm btn-secondary" id="btn-bili-fav-next"
+                                    type="button" data-i18n="bili.page_next"></button>
+                            <label class="bili-pager-size">
+                                <span data-i18n="bili.page_size"></span>
+                                <select id="bili-fav-page-size" class="bili-pager-select">
+                                    <option value="10">10</option>
+                                    <option value="20">20</option>
+                                    <option value="30">30</option>
+                                    <option value="40">40</option>
+                                </select>
+                                <span data-i18n="bili.page_size_unit"></span>
+                            </label>
+                        </div>
                     </div>
 
                     <!-- 订阅的合集 -->
