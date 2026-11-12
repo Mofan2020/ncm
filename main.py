@@ -314,6 +314,25 @@ def _run_self_test(report_path: str | None = None) -> int:
 
     checks.append(("downloader", MAX_CONCURRENT == 3, f"max_concurrent={MAX_CONCURRENT}"))
 
+    # 番剧规则用 lxml，那是原生扩展，PyInstaller 对它的收集不完全。
+    # 这两个模块是在方法里懒导入的，所以导入 GuiBridge 并不会把它们带进来——
+    # 打包版可能"文件都在却导不进来"，而界面上只会显示"模块不可用"。
+    # 编译一条真实的 XPath，确认 libxml2 那层也在。
+    try:
+        from lxml import etree
+
+        from src.core import bangumi_rules, bangumi_source
+
+        etree.XPath("//div[contains(@class,'x')]")
+        probe_rule = bangumi_rules.Rule(name="probe", search_url="u", search_list="//a")
+        stream_ok = bool(bangumi_source.find_streams(
+            '<video src="https://e.com/a.mp4"></video>', "https://e.com/"))
+        rules_ok = probe_rule.usable and stream_ok
+        rules_detail = f"lxml {'.'.join(str(part) for part in etree.LXML_VERSION[:3])}"
+    except Exception as exc:  # pragma: no cover - 打包坏了才走到
+        rules_ok, rules_detail = False, f"{type(exc).__name__}: {exc}"
+    checks.append(("bangumi rules", rules_ok, rules_detail))
+
     from src.config import get_settings
 
     settings = get_settings()
