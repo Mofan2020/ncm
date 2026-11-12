@@ -804,6 +804,7 @@ function fillSettingsForm() {
     if (!s) return;
     fillBangumiSettings(s.bangumi);
     setValue('quality-select', s.download.quality);
+    setChecked('hires-toggle', s.download.hires_enabled);
     setValue('concurrent-select', String(s.download.max_concurrent));
     setChecked('overwrite-check', s.download.overwrite);
     setValue('default-quality-select', s.download.quality);
@@ -2435,6 +2436,7 @@ async function startDownload() {
     const options = downloadOptions({
         indices: Array.from(state.selected).sort((a, b) => a - b),
         quality: document.getElementById('quality-select').value,
+        hires_enabled: document.getElementById('hires-toggle').checked,
         max_concurrent: parseInt(document.getElementById('concurrent-select').value, 10),
         overwrite: document.getElementById('overwrite-check').checked,
         download_lyrics: document.getElementById('lyrics-check').checked,
@@ -2463,6 +2465,7 @@ function downloadOptions(overrides) {
         overwrite: download.overwrite,
         download_lyrics: download.download_lyrics,
         lyrics_translation: download.lyrics_translation !== false,
+        hires_enabled: download.hires_enabled === true,
         download_dir: download.download_dir || '',
     }, overrides || {});
 }
@@ -7583,6 +7586,18 @@ function bindStaticEvents() {
             },
         });
     });
+    // Hi-Res 开关：改完立刻存盘。它同时管下载和在线播放——关掉之后
+    // 请求停在无损，不去试那首可能根本没有 Hi-Res 的歌。
+    const hiresToggle = document.getElementById('hires-toggle');
+    if (hiresToggle) {
+        hiresToggle.addEventListener('change', async () => {
+            const enabled = hiresToggle.checked;
+            if (state.settings && state.settings.download) {
+                state.settings.download.hires_enabled = enabled;
+            }
+            await state.api.update_settings('download', { hires_enabled: enabled });
+        });
+    }
     document.getElementById('btn-add-folder-settings').addEventListener('click', addLocalFolder);
     document.getElementById('btn-rescan-settings').addEventListener('click', async () => {
         await rescanLocal();

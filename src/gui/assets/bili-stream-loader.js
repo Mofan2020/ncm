@@ -32,7 +32,7 @@
      * @param {number} [timeoutMs]
      * @returns {Promise<Object>} the answer of the backend
      */
-    async function fetchStreams(api, bvid, quality, timeoutMs) {
+    async function fetchStreams(api, bvid, quality, timeoutMs, cid) {
         if (!api || typeof api.get_bilibili_video_streams !== 'function') {
             const err = new Error('no bridge');
             err.name = 'NoBridgeError';
@@ -48,7 +48,7 @@
         });
         try {
             return await Promise.race([
-                api.get_bilibili_video_streams(bvid, quality),
+                api.get_bilibili_video_streams(bvid, quality, cid || 0),
                 deadline
             ]);
         } finally {
@@ -137,7 +137,8 @@
         onStatus('buffering');
         let result = null;
         try {
-            result = await fetchStreams(api, bvid, opts.quality, opts.timeoutMs);
+            result = await fetchStreams(api, bvid, opts.quality, opts.timeoutMs,
+                                        opts.cid || 0);
         } catch (err) {
             onStatus('error');
             const timeout = err && err.name === 'TimeoutError';

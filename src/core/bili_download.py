@@ -314,23 +314,23 @@ class BiliDownloader:
             finally:
                 self._pace_last = time.monotonic()
 
-    def _resolve(self, bvid: str) -> dict[str, Any]:
+    def _resolve(self, bvid: str, cid: int = 0) -> dict[str, Any]:
         try:
             try:
                 # 下载要的是分轨的两条流，单文件流用不上，少问一次是一次。
                 return self.client.video_streams(bvid, quality=self.quality,
-                                                 with_muxed=False) or {}
+                                                 with_muxed=False, cid=cid) or {}
             except TypeError:
-                # 旧的核心客户端没有这个参数。
+                # 旧的核心客户端没有这些参数。
                 return self.client.video_streams(bvid, quality=self.quality) or {}
         except Exception as exc:  # pragma: no cover - the client does not raise
             self.logger.warning("cannot resolve the streams of %s: %s", bvid, exc)
             return {}
 
-    def _resolve_paced(self, bvid: str) -> dict[str, Any]:
+    def _resolve_paced(self, bvid: str, cid: int = 0) -> dict[str, Any]:
         """Resolve the streams of one video, inside the paced queue."""
         with self._paced():
-            return self._resolve(bvid)
+            return self._resolve(bvid, cid=cid)
 
     @staticmethod
     def _best_audio(streams: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -351,11 +351,20 @@ class BiliDownloader:
         bvid = str(track.get("bvid") or track.get("id") or "").strip()
         title = str(track.get("name") or track.get("title") or bvid)
         author = str(track.get("artists") or track.get("author") or "")
+        # 分P：track 里带了 cid 就下那一集，文件名后面也标上是第几集。
+        page_cid = 0
+        try:
+            page_cid = int(track.get("cid") or 0)
+        except (TypeError, ValueError):
+            page_cid = 0
+        page_title = str(track.get("page_title") or "").strip()
+        if page_title and page_title not in title:
+            title = f"{title} - {page_title}"
         results: list[BiliDownloadResult] = []
         if not bvid:
             return results
 
-        streams = self._resolve_paced(bvid)
+        streams = self._resolve_paced(bvid, cid=page_cid)
         video = streams.get("video") or {}
         muxed = streams.get("muxed") or {}
         # 音质挑最好的那一条：Hi-Res 无损 > 杜比 > 普通音轨。

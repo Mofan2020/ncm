@@ -291,7 +291,8 @@ class BilibiliBridge:
         }
 
     # ------------------------------------------------------------------ audio
-    def audio_url(self, bvid: str, quality: int = 0) -> dict[str, Any]:
+    def audio_url(self, bvid: str, quality: int = 0,
+                  cid: int = 0) -> dict[str, Any]:
         """Resolve the audio stream of one video.
 
         The core client answers with a failure dictionary instead of raising,
@@ -306,7 +307,9 @@ class BilibiliBridge:
                 "message": "missing bvid",
             }
         try:
-            result = self._client.audio_url(video_id, quality=_as_int(quality, 0))
+            result = self._client.audio_url(
+                video_id, quality=_as_int(quality, 0), cid=_as_int(cid, 0)
+            )
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             log.warning("bilibili audio url failed: %s", exc)
             return {"success": False, "error_key": "error.unknown", "message": str(exc)}
@@ -755,6 +758,10 @@ class BilibiliBridge:
             "items": items,
             "count": len(items),
             "has_more": bool(result.get("has_more")),
+            # **整个收藏夹的总条数。** 界面靠它算「第 3 / 8 页」。
+            # 以前这里没带出去，前端只能拿到 0，于是分页永远显示
+            # 「第 3 页」——用户看不出还有多远。
+            "total": max(0, _as_int(result.get("total"), 0)),
             "message": "",
         }
 
@@ -789,7 +796,8 @@ class BilibiliBridge:
             })
         return {"success": True, "keyword": keyword, "items": rows, "count": len(rows)}
 
-    def video_streams(self, bvid: str, quality: int = 0) -> dict[str, Any]:
+    def video_streams(self, bvid: str, quality: int = 0,
+                      cid: int = 0) -> dict[str, Any]:
         """The playable streams of one video.
 
         The CDN urls are replaced with loopback urls: the webview may not
@@ -800,7 +808,17 @@ class BilibiliBridge:
         if not video_id:
             return {"success": False, "message": "缺少视频编号"}
         try:
-            streams = self._client.video_streams(video_id, quality=_as_int(quality, 0)) or {}
+            wanted_cid = _as_int(cid, 0)
+            if wanted_cid:
+                # 只有指定了分P才多传一个参数：没指定时保持原来的调用，
+                # 老客户端和测试替身都不会因为签名不同而失败。
+                streams = self._client.video_streams(
+                    video_id, quality=_as_int(quality, 0), cid=wanted_cid
+                ) or {}
+            else:
+                streams = self._client.video_streams(
+                    video_id, quality=_as_int(quality, 0)
+                ) or {}
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             log.warning("bilibili streams failed: %s", exc)
             return {"success": False, "message": str(exc)}
@@ -819,6 +837,18 @@ class BilibiliBridge:
             "author": str(streams.get("author") or ""),
             "author_mid": str(streams.get("author_mid") or ""),
             "cover": str(streams.get("cover") or ""),
+            # 选集：普通投稿的分P和合集都在这个数组里，第一条是默认。
+            "pages": [
+                {
+                    "cid": _as_int(item.get("cid"), 0),
+                    "page": _as_int(item.get("page"), 0),
+                    "title": str(item.get("title") or ""),
+                    "duration": _as_int(item.get("duration"), 0),
+                }
+                for item in (streams.get("pages") or [])
+                if isinstance(item, dict)
+            ],
+            "page_title": str(streams.get("page_title") or ""),
             "qualities": streams.get("qualities") or [],
             "audio": self._proxied(streams.get("audio")),
             "video": self._proxied(streams.get("video")),

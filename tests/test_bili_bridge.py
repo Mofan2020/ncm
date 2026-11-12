@@ -91,7 +91,7 @@ class FakeClient:
         self._record("favorite_videos", folder_id, page, page_size)
         return {"items": [{"bvid": "BV1aa", "aid": "11", "title": "第一",
                            "author": "甲", "cover": "cover.jpg", "duration": 61}],
-                "has_more": False, "page": page}
+                "has_more": True, "page": page, "total": 214}
 
     # -- interactions ---------------------------------------------------------
     def video_stat(self, bvid) -> dict:
@@ -334,6 +334,18 @@ def test_the_favourite_videos_become_tracks(bridge):
     assert track["key"] == "bilibili:BV1aa"
     assert track["name"] == "第一"
     assert track["duration"] == 61
+
+
+def test_the_folder_total_goes_out_so_the_pager_can_say_how_many_pages(bridge):
+    """「第 2 / 8 页」里的 8 来自收藏夹的总条数。
+
+    核心层早就把 `info.media_count` 取出来了，但桥接层没往下传，于是
+    前端只拿到 0，分页永远显示「第 2 页」——用户看不出还剩多远。
+    """
+    result = bridge.favorite_videos("9")
+
+    assert result["total"] == 214
+    assert result["has_more"] is True
 
 
 def test_the_replies_of_a_comment_go_through_the_bridge(bridge):

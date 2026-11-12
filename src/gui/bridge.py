@@ -33,7 +33,7 @@ from src.auth import LoginStatus, get_login_manager
 from src.config import PLAY_MODES, default_download_dir, get_settings
 from src.core import backup as backup_core
 from src.core import get_api
-from src.core.api import LOGIN_REQUIRED_CODES
+from src.core.api import LOGIN_REQUIRED_CODES, cap_quality
 from src.core.downloader import MAX_CONCURRENT, DownloadStats, DownloadTask, SongDownloader
 from src.core.library import get_library, track_key
 from src.core.localmusic import (
@@ -278,6 +278,7 @@ class GuiBridge:
                 "overwrite": self.settings.download.overwrite,
                 "download_lyrics": self.settings.download.download_lyrics,
                 "lyrics_translation": self.settings.download.lyrics_translation,
+                "hires_enabled": self.settings.download.hires_enabled,
                 "download_dir": self._download_dir(),
             },
             "playback": {
@@ -1160,6 +1161,9 @@ class GuiBridge:
 
             download_dir = options.get("download_dir") or self._download_dir()
             quality = options.get("quality") or self.settings.download.quality
+            # Hi-Res 没开就压在无损：那首歌没有 Hi-Res 时接口也回 200，
+            # 只是给的音质低一级，白花带宽还看不出区别。
+            quality = cap_quality(quality, hires=self.settings.download.hires_enabled)
             overwrite = bool(options.get("overwrite", self.settings.download.overwrite))
             max_concurrent = options.get("max_concurrent", self.settings.download.max_concurrent)
             download_lyrics = bool(options.get("download_lyrics",
@@ -1487,6 +1491,8 @@ class GuiBridge:
         prefer_online = bool(self.settings.playback.prefer_online)
         quality = str(track.get("quality") or self.settings.playback.online_quality
                       or "standard")
+        # 播放跟下载用同一个开关：没开 Hi-Res 就压在无损。
+        quality = cap_quality(quality, hires=self.settings.download.hires_enabled)
         song_id = str(track.get("id") or "")
         attempts: list[str] = ["online", "local"] if prefer_online else ["local", "online"]
         errors: list[str] = []

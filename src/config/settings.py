@@ -72,6 +72,10 @@ class DownloadSettings:
     """Download-related settings."""
 
     quality: str = "standard"        # standard|higher|exhigh|lossless|hires
+    #: 是否允许请求 Hi-Res（24bit/96kHz 以上）。默认关：
+    #: 实测这首歌没有 Hi-Res 版权时接口照样回 200，但给的是低一级的音质，
+    #: 带宽白花、文件还是无损；关掉之后请求直接停在无损。
+    hires_enabled: bool = False
     max_concurrent: int = 2          # 1-3
     overwrite: bool = False
     download_lyrics: bool = True      # write a .lrc next to every song
@@ -586,7 +590,8 @@ class Settings:
             playback.local_video_dirs = []
         playback.local_video_dirs = [str(item) for item in playback.local_video_dirs
                                      if str(item or "").strip()]
-        for flag in ("overwrite", "download_lyrics", "lyrics_translation"):
+        for flag in ("overwrite", "download_lyrics", "lyrics_translation",
+                     "hires_enabled"):
             setattr(self._data.download, flag, _as_bool(getattr(self._data.download, flag)))
         playback.crossfade_duration = self._clamp_float(playback.crossfade_duration, 0.0, 12.0, 0.0)
         playback.lyrics_scroll_idle_seconds = self._clamp_range(
@@ -699,7 +704,8 @@ class Settings:
         for key, value in _filtered(DownloadSettings, kwargs).items():
             setattr(self._data.download, key, value)
         # The UI sends JSON, so booleans may arrive as "true"/"false" strings.
-        for flag in ("overwrite", "download_lyrics", "lyrics_translation"):
+        for flag in ("overwrite", "download_lyrics", "lyrics_translation",
+                     "hires_enabled"):
             setattr(self._data.download, flag, _as_bool(getattr(self._data.download, flag)))
         self._data.download.max_concurrent = self._clamp_concurrency(
             self._data.download.max_concurrent)

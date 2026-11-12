@@ -861,7 +861,7 @@ class BiliClient:
         item = self._from_view(data)
         return item if item.get("bvid") else {}
 
-    def audio_url(self, bvid: str, quality: int = 0) -> dict[str, Any]:
+    def audio_url(self, bvid: str, quality: int = 0, cid: int = 0) -> dict[str, Any]:
         """Resolve the audio stream of a video.
 
         Never raises: on failure it returns ``success=False`` with an empty
@@ -871,11 +871,13 @@ class BiliClient:
         if not bvid:
             return _failure("invalid_bvid", "missing bvid")
         self._ensure_buvid()
-        cid = 0
-        view = self._get("/x/web-interface/view", {"bvid": bvid})
-        if view and view.get("code") == 0:
-            data = view.get("data") or {}
-            cid = int(data.get("cid") or 0)
+        wanted_cid = int(cid or 0)
+        cid = wanted_cid
+        if not cid:
+            view = self._get("/x/web-interface/view", {"bvid": bvid})
+            if view and view.get("code") == 0:
+                data = view.get("data") or {}
+                cid = int(data.get("cid") or 0)
         if not cid:
             return _failure("no_cid", "could not resolve cid")
 
@@ -1630,7 +1632,7 @@ class BiliClient:
     # playback
     # ------------------------------------------------------------------
     def video_streams(self, bvid: str, quality: int = 0,
-                       with_muxed: bool = True) -> dict[str, Any]:
+                       with_muxed: bool = True, cid: int = 0) -> dict[str, Any]:
         """Resolve the playable streams of one video.
 
         ``quality=0`` means "the best the account may watch".  The answer
@@ -1652,6 +1654,8 @@ class BiliClient:
             "author": "",
             "author_mid": "",
             "cover": "",
+            "pages": [],
+            "page_title": "",
             "qualities": [],
             "picked_quality": 0,
             "requested_quality": 0,
@@ -1671,9 +1675,32 @@ class BiliClient:
             result["message"] = "视频信息获取失败"
             return result
         view_data = view.get("data") or {}
-        cid = int(view_data.get("cid") or 0)
+        # 指定了分P就用它，否则用视频自己的默认 cid。
+        chosen = int(cid or 0) or int(view_data.get("cid") or 0)
+        cid = chosen
         owner = view_data.get("owner") or {}
         result["cid"] = cid
+        # 选集列表跟着一起给：界面要显示「P1 / P2…」得知道全集。
+        pages: list[dict[str, Any]] = []
+        raw_pages = view_data.get("pages")
+        if isinstance(raw_pages, list):
+            for entry in raw_pages:
+                if not isinstance(entry, dict):
+                    continue
+                page_cid = _as_int(entry.get("cid"))
+                if not page_cid:
+                    continue
+                pages.append({
+                    "cid": page_cid,
+                    "page": _as_int(entry.get("page")),
+                    "title": _strip_html(str(entry.get("part") or "")),
+                    "duration": _duration_seconds(entry.get("duration")),
+                })
+        result["pages"] = pages
+        for entry in pages:
+            if entry["cid"] == cid and entry["title"]:
+                result["page_title"] = entry["title"]
+                break
         result["duration"] = _duration_seconds(view_data.get("duration"))
         result["title"] = _strip_html(str(view_data.get("title") or ""))
         result["author"] = str(owner.get("name") or "")
@@ -2223,6 +2250,25 @@ class BiliClient:
             data.get("tname") or data.get("tname_v2"), data.get("tid")
         )
         out["cid"] = int(data.get("cid") or 0)
+        # **分P（选集）。** 普通投稿也能有多集：合集投稿和「分P」在接口
+        # 里是同一个 `pages` 数组，第一条就是默认播的那一集。没有这个
+        # 数组时给空列表，界面据此决定要不要显示选集。
+        pages: list[dict[str, Any]] = []
+        raw_pages = data.get("pages")
+        if isinstance(raw_pages, list):
+            for entry in raw_pages:
+                if not isinstance(entry, dict):
+                    continue
+                page_cid = _as_int(entry.get("cid"))
+                if not page_cid:
+                    continue
+                pages.append({
+                    "cid": page_cid,
+                    "page": _as_int(entry.get("page")),
+                    "title": _strip_html(str(entry.get("part") or "")),
+                    "duration": _duration_seconds(entry.get("duration")),
+                })
+        out["pages"] = pages
         out["pubdate"] = int(data.get("pubdate") or 0)
         out["description"] = _strip_html(str(data.get("desc") or ""))
         return out

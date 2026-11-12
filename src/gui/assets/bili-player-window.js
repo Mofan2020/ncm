@@ -20,6 +20,8 @@
         bvid: '',
         page: 1,
         quality: 0,
+        /** 正在放的是哪一集（分P 的 cid）；0 = 视频自己的默认集。 */
+        cid: 0,
         streams: null,
         danmaku: [],
         danmakuCursor: 0,
@@ -124,6 +126,7 @@
     function applyStaticText() {
         const title = label('bili.window_title');
         if (title) document.title = title;
+        setLabel('bp-page-label', 'bili.pages');
         setLabel('bp-quality-label', 'bili.quality');
         setLabel('bp-danmaku-label', 'bili.settings_danmaku');
         setLabel('bp-size-label', 'bili.settings_danmaku_size');
@@ -255,6 +258,50 @@
         else select.value = '0';
     }
 
+    /**
+     * The episode list (分P / 合集).
+     *
+     * 普通投稿也能有多集：合集投稿和「分P」在接口里是同一个 `pages`
+     * 数组。只有一集时整条藏起来——多数视频就一集，多一行空控件只是
+     * 噪音。
+     */
+    function renderPages(streams) {
+        const field = el('bp-page-field');
+        const select = el('bp-page');
+        if (!field || !select) return;
+        const pages = (streams && Array.isArray(streams.pages)) ? streams.pages : [];
+        select.innerHTML = '';
+        if (pages.length < 2) {
+            field.hidden = true;
+            state.cid = Number((streams && streams.cid) || 0) || 0;
+            return;
+        }
+        field.hidden = false;
+        const current = Number(state.cid || (streams && streams.cid) || 0);
+        pages.forEach((page) => {
+            const option = document.createElement('option');
+            option.value = String(page.cid || 0);
+            const index = Number(page.page) || 0;
+            const name = String(page.title || '');
+            option.textContent = index
+                ? ('P' + index + (name ? ' ' + name : ''))
+                : name;
+            if (Number(page.cid) === current) option.selected = true;
+            select.appendChild(option);
+        });
+        if (current) select.value = String(current);
+    }
+
+    /** Switch to another episode: same quality, from the start. */
+    async function changePage(cid) {
+        state.cid = Number(cid) || 0;
+        const videoEl = el('bp-video');
+        if (videoEl) {
+            try { videoEl.pause(); } catch (err) { /* not started yet */ }
+        }
+        await loadStreams(state.quality, state.cid);
+    }
+
     /** Switch to another quality and keep the place in the video. */
     async function changeQuality(value) {
         const videoEl = el('bp-video');
@@ -269,7 +316,7 @@
     }
 
     /** Fetch the streams and hand them to the player. */
-    async function loadStreams(quality) {
+    async function loadStreams(quality, cid) {
         const videoEl = el('bp-video');
         if (!videoEl || !state.api) return;
         const bvid = state.bvid;
@@ -286,6 +333,7 @@
             api: state.api,
             bvid: bvid,
             quality: quality,
+            cid: cid === undefined ? state.cid : cid,
             videoEl: videoEl,
             onStatus: (code) => setStatus(code),
             onStreams: (result) => {
@@ -294,6 +342,7 @@
                 el('bp-title').textContent = result.title || state.bvid;
                 el('bp-sub').textContent = result.author || '';
                 renderQualities(result);
+                renderPages(result);
             },
             resumePlayback: !!state.resumePlayback
         });
@@ -1278,6 +1327,10 @@
             });
         }
 
+        const pageSelect = el('bp-page');
+        if (pageSelect) {
+            pageSelect.addEventListener('change', () => changePage(pageSelect.value));
+        }
         const quality = el('bp-quality');
         if (quality) {
             quality.addEventListener('change', () => changeQuality(quality.value));

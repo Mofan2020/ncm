@@ -39,7 +39,7 @@ def test_roundtrip_persistence(isolated_home):
 
     settings = get_settings()
     settings.update_download(quality="lossless", max_concurrent=3, overwrite=True,
-                             download_dir="/tmp/somewhere")
+                             hires_enabled=True, download_dir="/tmp/somewhere")
     settings.update_ui(language="en_us", theme="dark")
     settings.update_auth(remember_login=True, saved_cookie="MUSIC_U=abc")
 
@@ -48,11 +48,25 @@ def test_roundtrip_persistence(isolated_home):
     assert reloaded.download.quality == "lossless"
     assert reloaded.download.max_concurrent == 3
     assert reloaded.download.overwrite is True
+    assert reloaded.download.hires_enabled is True
     assert reloaded.download.download_dir == "/tmp/somewhere"
     assert reloaded.ui.language == "en_us"
     assert reloaded.ui.theme == "dark"
     assert reloaded.auth.remember_login is True
     assert reloaded.auth.saved_cookie == "MUSIC_U=abc"
+
+
+def test_a_string_false_for_hires_does_not_turn_it_on(isolated_home):
+    """界面传的是 JSON，布尔可能变成字符串 "false"。
+
+    `bool("false")` 是 True——所以这里必须走 `_as_bool`，否则用户明明
+    关掉了 Hi-Res，重启之后它自己又开了。
+    """
+    settings = get_settings()
+    settings.update_download(hires_enabled="false")
+    assert settings.download.hires_enabled is False
+    settings.update_download(hires_enabled="true")
+    assert settings.download.hires_enabled is True
 
 
 def test_bili_settings_survive_a_restart(isolated_home):

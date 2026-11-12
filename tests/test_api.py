@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from src.core.api import LOGIN_REQUIRED_CODES, PLAY_URL_CODES, QUALITY_ORDER, quality_fallbacks
+from src.core.api import (
+    LOGIN_REQUIRED_CODES,
+    PLAY_URL_CODES,
+    QUALITY_ORDER,
+    cap_quality,
+    quality_fallbacks,
+)
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 
@@ -43,6 +49,26 @@ def test_fallback_chain_reaches_standard_for_every_level():
     for level in QUALITY_ORDER:
         assert quality_fallbacks(level)[-1] == "standard"
         assert quality_fallbacks(level)[0] == level
+
+
+@pytest.mark.parametrize("requested,expected", [
+    ("hires", "lossless"),
+    ("lossless", "lossless"),
+    ("exhigh", "exhigh"),
+    ("bogus", "standard"),
+])
+def test_hi_res_off_caps_the_request_at_lossless(requested, expected):
+    """关掉 Hi-Res 之后，请求的最高一级就是无损。
+
+    不封顶的话，那首没有 Hi-Res 的歌一样会回 200，只是音质低一级——
+    带宽白花，文件还是无损，用户看不出区别。
+    """
+    assert cap_quality(requested, hires=False) == expected
+
+
+@pytest.mark.parametrize("requested", ["hires", "lossless", "exhigh", "standard"])
+def test_hi_res_on_keeps_what_the_user_picked(requested):
+    assert cap_quality(requested, hires=True) == requested
 
 
 def test_play_url_codes_are_localised(fresh_i18n):

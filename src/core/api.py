@@ -229,6 +229,20 @@ PLAY_URL_CODES = {
 LOGIN_REQUIRED_CODES = {301, 401, -462, -447, -475}
 
 
+def cap_quality(quality: str, *, hires: bool) -> str:
+    """把请求的音质压在允许的最高一级。
+
+    Hi-Res 不是每首歌都有。没有的时候接口仍然回 200，只是给的音质低一
+    级——所以「选了 Hi-Res」不等于「拿到 Hi-Res」。这个开关是用户那边
+    的决定：关掉就明确要无损，不浪费带宽去试。
+    """
+    if quality not in QUALITY_ORDER:
+        quality = "standard"
+    if hires:
+        return quality
+    return "lossless" if quality == "hires" else quality
+
+
 def quality_fallbacks(quality: str) -> list[str]:
     """Return the requested level followed by progressively lower ones."""
     if quality not in QUALITY_ORDER:
