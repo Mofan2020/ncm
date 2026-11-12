@@ -412,3 +412,287 @@ class BangumiBridge:
         """停掉整个队列：不再取新任务，当前那个也取消。"""
         return {"success": True, "cancelled": self.queue.cancel()}
 
+
+    # ------------------------------------------------- 番剧规则播放（Kazumi）
+
+    def _rule_cache_root(self):
+        """规则缓存放在配置目录下，跟账号数据分开。"""
+        from pathlib import Path
+
+        from src.config.settings import Settings
+
+        return Path(Settings._config_dir()) / "bangumi_rules"
+
+    def _source_fetcher(self, *, override: dict | None = None):
+        """按设置造一个取页器。
+
+        跳过校验、自动镜像、请求间隔都从设置读；``override`` 给单次调用覆盖
+        （界面上改完设置还没保存就点试用的场景）。
+        """
+        from src.core.bangumi_source import Fetcher
+
+        cfg = self._cfg()
+        override = override or {}
+
+        def pick(name: str, default):
+            if name in override and override[name] is not None:
+                return override[name]
+            value = getattr(cfg, name, default) if cfg is not None else default
+            return default if value is None else value
+
+        return Fetcher(
+            skip_ssl_verify=bool(pick("skip_ssl_verify", False)),
+            auto_mirror=bool(pick("auto_mirror", False)),
+            interval=float(pick("request_interval", 0.0) or 0.0),
+        )
+
+    def _rule_library(self, *, override: dict | None = None):
+        from src.core.bangumi_rules import RuleCache, RuleLibrary
+
+        cfg = self._cfg()
+        repos = list(getattr(cfg, "rule_repos", []) or []) if cfg is not None else []
+        return RuleLibrary(RuleCache(self._rule_cache_root()), self._source_fetcher(override=override), repos)
+
+    def _active_repo(self, repo: str = "") -> str:
+        from src.core.bangumi_rules import KAZUMI_RULES_REPO, normalise_repo_url
+
+        chosen = normalise_repo_url(repo)
+        if chosen:
+            return chosen
+        cfg = self._cfg()
+        repos = list(getattr(cfg, "rule_repos", []) or []) if cfg is not None else []
+        return normalise_repo_url(repos[0]) if repos else KAZUMI_RULES_REPO
+
+    def _active_rule_name(self, name: str = "") -> str:
+        if name:
+            return str(name).strip()
+        cfg = self._cfg()
+        return str(getattr(cfg, "active_rule", "") or "").strip() if cfg is not None else ""
+
+    def _load_rule(self, *, rule_name: str = "", repo: str = "", override: dict | None = None):
+        from src.core.bangumi_rules import RuleError
+
+        repo_url = self._active_repo(repo)
+        name = self._active_rule_name(rule_name)
+        if not name:
+            raise RuleError("没有选规则：先去「播放源」里挑一条")
+        return self._rule_library(override=override).load_rule(repo_url, name)
+
+    # ------------------------------------------------------------------ 设置
+
+    def source_settings(self) -> dict[str, Any]:
+        """规则播放相关的设置，给界面回显。"""
+        from src.core.bangumi_rules import KAZUMI_RULES_REPO
+
+        cfg = self._cfg()
+        if cfg is None:
+            return {"success": False, "error_key": "error.unknown"}
+        repos = list(getattr(cfg, "rule_repos", []) or []) or [KAZUMI_RULES_REPO]
+        return {
+            "success": True,
+            "enabled": bool(getattr(cfg, "source_enabled", False)),
+            "repos": repos,
+            "active_rule": str(getattr(cfg, "active_rule", "") or ""),
+            "auto_mirror": bool(getattr(cfg, "auto_mirror", False)),
+            "skip_ssl_verify": bool(getattr(cfg, "skip_ssl_verify", False)),
+            "stream_patterns": list(getattr(cfg, "stream_patterns", []) or []),
+            "default_repo": KAZUMI_RULES_REPO,
+        }
+
+    def save_source_settings(self, values: dict | None = None) -> dict[str, Any]:
+        """存规则播放的设置。
+
+        只认这里列出的键——界面传什么就写什么的话，一个拼错的键会静默写进
+        YAML，下次读出来还在。
+        """
+        values = values or {}
+        if self._settings is None:
+            return {"success": False, "error_key": "error.unknown"}
+
+        allowed = {"source_enabled", "auto_mirror", "skip_ssl_verify", "active_rule", "rule_repos"}
+        applied: dict[str, Any] = {}
+        for key in allowed:
+            if key not in values:
+                continue
+            applied[key] = values[key]
+
+        try:
+            self._settings.update_bangumi(**applied)
+        except Exception as exc:  # noqa: BLE001 - 保存失败要说出来
+            log.warning("bangumi source settings not saved: %s", exc)
+            return {"success": False, "error_key": "error.unknown"}
+
+        cfg = self._cfg()
+        # 证书校验这个开关同时要作用到媒体服务器那头
+        try:
+            from src.core.mediaserver import get_media_server
+
+            get_media_server().set_bangumi_ssl_verify(
+                not bool(getattr(cfg, "skip_ssl_verify", False)))
+        except Exception:  # noqa: BLE001 - 服务器还没起也没关系
+            pass
+
+        return self.source_settings()
+
+    # ------------------------------------------------------------------ 规则
+
+    def list_rules(self, repo: str = "", refresh: bool = False) -> dict[str, Any]:
+        """列出仓库里的规则。
+
+        ``refresh`` 为真时忽略缓存重新拉。拉失败但磁盘上有旧的就用旧的，
+        并且告诉界面这是旧的——比显示"没有规则"强。
+        """
+        from src.core.bangumi_rules import RuleError
+
+        repo_url = self._active_repo(repo)
+        try:
+            library = self._rule_library()
+            if refresh:
+                # 让缓存过期：写一个空索引不划算，直接清掉这个仓库的索引文件
+                try:
+                    path = library.cache._path(repo_url, "index")
+                    path.unlink()
+                except OSError:
+                    pass
+            items, source = library.list_rules(repo_url)
+        except RuleError as exc:
+            return {"success": False, "error_key": "bili.error_network", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "error_key": "error.network", "detail": str(exc)}
+
+        return {
+            "success": True,
+            "repo": repo_url,
+            "items": items,
+            "source": source,
+            "count": len(items),
+        }
+
+    def rule_detail(self, name: str, repo: str = "") -> dict[str, Any]:
+        """一条规则的详情，含每个 XPath 能不能编译。"""
+        from src.core.bangumi_rules import RuleError
+
+        try:
+            rule = self._load_rule(rule_name=name, repo=repo)
+        except RuleError as exc:
+            return {"success": False, "error_key": "error.unknown", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "error_key": "error.network", "detail": str(exc)}
+
+        return {
+            "success": True,
+            "rule": rule.to_dict(),
+            "usable": rule.usable,
+            "problems": rule.problems,
+        }
+
+    # ------------------------------------------------------------------ 搜索
+
+    def rule_search(self, keyword: str, rule_name: str = "", repo: str = "") -> dict[str, Any]:
+        """按规则搜番。"""
+        from src.core.bangumi_rules import RuleError
+        from src.core.bangumi_source import FetchError, search
+
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return {"success": False, "error_key": "bangumi.rule_keyword_empty"}
+
+        try:
+            rule = self._load_rule(rule_name=rule_name, repo=repo)
+            hits = search(rule, keyword, self._source_fetcher())
+        except RuleError as exc:
+            return {"success": False, "error_key": "bangumi.rule_unusable", "detail": str(exc)}
+        except FetchError as exc:
+            return {"success": False, "error_key": "error.network", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "error_key": "error.network", "detail": str(exc)}
+
+        return {
+            "success": True,
+            "rule": rule.name,
+            "keyword": keyword,
+            "items": [hit.to_dict() for hit in hits],
+        }
+
+    def rule_chapters(self, url: str, rule_name: str = "", repo: str = "") -> dict[str, Any]:
+        """取一部番的线路和剧集。"""
+        from src.core.bangumi_rules import RuleError
+        from src.core.bangumi_source import FetchError, chapters
+
+        url = str(url or "").strip()
+        if not url:
+            return {"success": False, "error_key": "error.unknown"}
+
+        try:
+            rule = self._load_rule(rule_name=rule_name, repo=repo)
+            items = chapters(rule, url, self._source_fetcher())
+        except RuleError as exc:
+            return {"success": False, "error_key": "bangumi.rule_unusable", "detail": str(exc)}
+        except FetchError as exc:
+            return {"success": False, "error_key": "error.network", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "error_key": "error.network", "detail": str(exc)}
+
+        return {
+            "success": True,
+            "rule": rule.name,
+            "items": [item.to_dict() for item in items],
+            "count": len(items),
+        }
+
+    def rule_streams(self, url: str, rule_name: str = "", repo: str = "") -> dict[str, Any]:
+        """从剧集页找播放地址，并给出可以直接给 <video> 用的本地代理地址。
+
+        找到 0 条是正常结果（这站点的地址在 JS 里拼的），返回空列表而不是错误。
+        """
+
+        from src.core.bangumi_rules import RuleError
+        from src.core.bangumi_source import FetchError, resolve_streams
+
+        url = str(url or "").strip()
+        if not url:
+            return {"success": False, "error_key": "error.unknown"}
+
+        cfg = self._cfg()
+        patterns = list(getattr(cfg, "stream_patterns", []) or []) if cfg is not None else []
+
+        try:
+            rule = self._load_rule(rule_name=rule_name, repo=repo)
+            streams = resolve_streams(rule, url, self._source_fetcher(), patterns=patterns or None)
+        except RuleError as exc:
+            return {"success": False, "error_key": "bangumi.rule_unusable", "detail": str(exc)}
+        except FetchError as exc:
+            return {"success": False, "error_key": "error.network", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "error_key": "error.network", "detail": str(exc)}
+
+        referer = rule.referer or rule.base_url or ""
+        items = []
+        for stream in streams:
+            item = stream.to_dict()
+            # 走本地代理：站点要的是详情页 Referer，webview 设不了。
+            item["play_url"] = self._bgm_proxy_url(stream.url, referer)
+            items.append(item)
+
+        return {
+            "success": True,
+            "rule": rule.name,
+            "items": items,
+            "count": len(items),
+            "referer": referer,
+            "page": url,
+        }
+
+    def _bgm_proxy_url(self, url: str, referer: str = "") -> str:
+        from urllib.parse import quote
+
+        try:
+            from src.core.mediaserver import get_media_server
+
+            base = get_media_server().base_url
+        except Exception:  # noqa: BLE001 - 服务器没起就退原始地址
+            return url
+        suffix = f"?u={quote(url, safe='')}"
+        if referer:
+            suffix += f"&ref={quote(referer, safe='')}"
+        return f"{base}/bgm-media{suffix}"

@@ -103,6 +103,14 @@ hiddenimports = [
     # localvideo`），只在点开本地视频时才走到；静态分析容易漏掉它，
     # 漏掉的后果是打包版一点那张卡就 ImportError。
     "src.core.localvideo",
+    # 番剧规则。这两个模块是按设置里的开关才导入的，而且 lxml 是原生扩展，
+    # PyInstaller 对它的收集不完全（etree 的 C 模块、libxml2 的依赖）。
+    # 打包版一开"用规则播放"就 ImportError 的话，用户看到的是"功能不存在"。
+    "src.core.bangumi_rules",
+    "src.core.bangumi_source",
+    "lxml",
+    "lxml.etree",
+    "lxml.html",
 ]
 if sys.platform == "win32":
     hiddenimports += ["webview.platforms.winforms", "webview.platforms.edgechromium"]

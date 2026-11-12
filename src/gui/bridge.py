@@ -2294,6 +2294,35 @@ class GuiBridge:
         """Wipe the local watch history.  The favourites stay."""
         return self.bangumi.clear_history()
 
+    # -- bangumi rules (Kazumi) -------------------------------------------------
+    def get_bangumi_source_settings(self) -> dict[str, Any]:
+        """规则播放的设置。"""
+        return self.bangumi.source_settings()
+
+    def save_bangumi_source_settings(self, values: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.bangumi.save_source_settings(values or {})
+
+    def get_bangumi_rules(self, repo: str = "", refresh: bool = False) -> dict[str, Any]:
+        """规则仓库里的规则列表。"""
+        return self.bangumi.list_rules(repo, refresh=refresh)
+
+    def get_bangumi_rule_detail(self, name: str, repo: str = "") -> dict[str, Any]:
+        return self.bangumi.rule_detail(name, repo=repo)
+
+    def search_bangumi_by_rule(self, keyword: str, rule_name: str = "",
+                               repo: str = "") -> dict[str, Any]:
+        """用规则搜番。"""
+        return self.bangumi.rule_search(keyword, rule_name=rule_name, repo=repo)
+
+    def get_bangumi_rule_chapters(self, url: str, rule_name: str = "",
+                                  repo: str = "") -> dict[str, Any]:
+        return self.bangumi.rule_chapters(url, rule_name=rule_name, repo=repo)
+
+    def get_bangumi_rule_streams(self, url: str, rule_name: str = "",
+                                 repo: str = "") -> dict[str, Any]:
+        """从剧集页取播放地址（已转成本地代理地址）。"""
+        return self.bangumi.rule_streams(url, rule_name=rule_name, repo=repo)
+
     def get_bangumi_mirrors(self, refresh: bool = False) -> dict[str, Any]:
         """The mirror list, in the order the user put them."""
         return self.bangumi.mirrors(refresh=refresh)

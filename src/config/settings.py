@@ -176,6 +176,17 @@ class BangumiSettings:
     skip_ssl_verify: bool = False
     #: 下载落盘的位置。空字符串表示用默认的「下载/Bangumi」。
     download_dir: str = ""
+    #: 用 Kazumi 规则搜索和播放。默认关：它会去请求第三方站点，
+    #: 该由用户自己决定要不要开。
+    source_enabled: bool = False
+    #: 规则仓库。默认官方那个，可以换成自己的。
+    rule_repos: list[str] = field(default_factory=lambda: ["https://github.com/Predidit/KazumiRules"])
+    #: 当前选中的规则名。
+    active_rule: str = ""
+    #: 拉规则和拉页面时自动换镜像。默认关——用户自己走代理时多试几个只会更慢。
+    auto_mirror: bool = False
+    #: 找播放地址用的正则。空表示用内置的那几条。
+    stream_patterns: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -312,6 +323,37 @@ def _clean_host(value: Any) -> str:
     if not any(ch.isalpha() for ch in text):
         return ""
     return text.lower()
+
+
+def _clean_string_list(
+    value: Any,
+    fallback: list[str] | None = None,
+    limit: int = 20,
+) -> list[str]:
+    """把一串字符串洗净：去空白、丢空项、去重、限长。
+
+    ``fallback`` 只在结果为空时用——用户清空列表想要的是"没有"，不是
+    "回到默认"，所以不能无条件补回去。但规则仓库列表清空了程序就没法工作，
+    那种情况调用方自己决定要不要给 fallback。
+    """
+    if isinstance(value, str):
+        items: list[Any] = [value]
+    elif isinstance(value, list | tuple):
+        items = list(value)
+    else:
+        items = []
+
+    out: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in out:
+            continue
+        out.append(text)
+        if len(out) >= max(1, limit):
+            break
+    if not out and fallback:
+        return list(fallback)
+    return out
 
 
 def _clean_mirrors(value: Any) -> list[dict[str, Any]]:
@@ -576,6 +618,12 @@ class Settings:
         bangumi.download_dir = str(bangumi.download_dir or "")
         bangumi.mirrors = _clean_mirrors(bangumi.mirrors)
         bangumi.resource_sites = _clean_resource_sites(bangumi.resource_sites)
+        bangumi.source_enabled = _as_bool(bangumi.source_enabled)
+        bangumi.auto_mirror = _as_bool(bangumi.auto_mirror)
+        bangumi.rule_repos = _clean_string_list(
+            bangumi.rule_repos, fallback=["https://github.com/Predidit/KazumiRules"], limit=10)
+        bangumi.stream_patterns = _clean_string_list(bangumi.stream_patterns, limit=20)
+        bangumi.active_rule = str(bangumi.active_rule or "").strip()[:80]
 
     @staticmethod
     def _clamp_range(value: Any, low: int, high: int, fallback: int) -> int:

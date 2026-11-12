@@ -480,6 +480,8 @@
                             data-bangumi-tab="favorites" data-i18n="bangumi.tab_favorites"></button>
                     <button class="top-tab is-compact" type="button" role="tab"
                             data-bangumi-tab="history" data-i18n="bangumi.tab_history"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
+                            data-bangumi-tab="source" data-i18n="bangumi.tab_source"></button>
                 </div>
 
                 <!-- 搜索 -->
@@ -503,6 +505,55 @@
                     <p class="page-hint" data-i18n="bangumi.history_local_only"></p>
                     <div class="bili-grid" id="bangumi-favorites"></div>
                     <div id="bangumi-favorites-state"></div>
+                </div>
+
+                <!-- 播放源（Kazumi 规则） -->
+                <div id="bangumi-seg-source" hidden>
+                    <p class="page-hint" data-i18n="bangumi.source_hint"></p>
+
+                    <div class="bgm-source-bar">
+                        <label class="bgm-toggle">
+                            <input type="checkbox" id="bgm-source-enabled">
+                            <span data-i18n="bangumi.source_enabled"></span>
+                        </label>
+                        <label class="bgm-toggle">
+                            <input type="checkbox" id="bgm-source-auto-mirror">
+                            <span data-i18n="bangumi.source_auto_mirror"></span>
+                        </label>
+                        <label class="bgm-toggle">
+                            <input type="checkbox" id="bgm-source-skip-ssl">
+                            <span data-i18n="bangumi.source_skip_ssl"></span>
+                        </label>
+                    </div>
+
+                    <div class="inline-form">
+                        <div class="search-wrapper">
+                            <input type="text" id="bgm-source-repo" autocomplete="off" spellcheck="false"
+                                   data-i18n-placeholder="bangumi.source_repo_placeholder">
+                        </div>
+                        <button class="btn btn-secondary" id="btn-bgm-source-refresh" type="button"
+                                data-i18n="bangumi.source_refresh"></button>
+                    </div>
+                    <div class="page-hint" id="bgm-source-status"></div>
+                    <div class="bgm-rule-list" id="bgm-source-rules"></div>
+
+                    <div class="inline-form">
+                        <div class="search-wrapper">
+                            <input type="search" id="bgm-source-keyword" autocomplete="off" spellcheck="false"
+                                   data-i18n-placeholder="bangumi.source_keyword_placeholder">
+                        </div>
+                        <button class="btn btn-primary" id="btn-bgm-source-search" type="button"
+                                data-i18n="bangumi.source_search"></button>
+                    </div>
+
+                    <div class="bgm-rule-hits" id="bgm-source-hits"></div>
+                    <div class="bgm-rule-chapters" id="bgm-source-chapters"></div>
+
+                    <div class="bgm-player" id="bgm-source-player" hidden>
+                        <video id="bgm-source-video" controls preload="metadata"></video>
+                        <div class="page-hint" id="bgm-source-now"></div>
+                    </div>
+                    <div class="page-hint" id="bgm-source-msg"></div>
                 </div>
 
                 <!-- 本地观看历史 -->

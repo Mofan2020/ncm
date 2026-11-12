@@ -3940,3 +3940,86 @@ scrollTop 从 0 移到 500。
 `tests/test_node_checks.py` 和 `.github/workflows/build.yml` 两处。
 它把真实的 `zh_cn.json` 注入 `state.translations`，否则 `t()` 会返回键名，
 「第 2 / 4 页」这种断言永远不可能对。
+
+## 番剧播放源（Kazumi 规则，v3.21.0）
+
+用 Kazumi 那套社区规则去第三方站点找番、取章节、找播放地址。
+
+### 规则格式
+
+`Predidit/KazumiRules` 的 JSON，一条规则用 XPath 描述三件事：搜索地址
+（`@keyword` 占位）、搜索结果（`searchList` / `searchName` / `searchResult`）、
+章节（`chapterRoads` / `chapterResult`）。字段随 API 版本增长，仓库里同时
+存在 api 1 到 9，所以按字段名容错读，认不出的留在 `raw` 里。
+
+几个必须照抄的细节：字段名是 **`muliSources`**（少个 t，Kazumi 自己的拼写），
+隐私位、`deprecated` 之类都是可选的。
+
+### 用了 lxml，这是有理由的
+
+规则是 XPath，而且真实规则里位置谓词 `[n]` 出现了近两百处、`contains()` 二十
+多处、还有并集和轴。标准库 `ElementTree` 只认一个子集，位置谓词语义也不同。
+自己写一个引擎，出错时是**静默返回空节点**——比多一个原生依赖糟得多。
+
+决定前拿全部 87 个规则文件、394 个 XPath 表达式验过：lxml 编译通过 392 个，
+失败的 2 个是**仓库自己的规则写错了**（把 CSS 的 `[@class*='x']` 当 XPath 写、
+只剩一个 `//`）。这两条会被记进 `Rule.problems` 而不是让整个仓库不可用。
+
+打包要注意：`main.spec` 里加了 `lxml` / `lxml.etree` / `lxml.html`，原生扩展
+静态分析看不全。
+
+### 子表达式必须改成相对路径
+
+**这是最容易写错、又最难发现的一处。** 规则里的 `searchName`、`chapterResult`
+大量写成 `//div/...`。XPath 里 `//x` 在某个节点上求值仍然是**全文档**搜索，
+不是"这个节点里面"。照原样用的话：
+
+- 每条线路都会返回全站所有剧集，`chapterRoads` 形同虚设；
+- 每一行搜索结果都会取到页面上第一个标题。
+
+而且不报错，界面看起来还挺正常。所以 `relative()` 把这类表达式改成 `.//x`
+（`/self::x` 改成 `self::x`，并集逐段处理），只对子表达式这么做。
+
+### 播放地址：规则里没有
+
+Kazumi 是 webview 里 hook JS / 拦请求拿到的（README 的 "JavaScript hook-based
+parser"）。这里做不到，退一步做两件事：正则扫页面源码找 m3u8/mp4/flv，以及
+按属性找（`src` / `data-src` / `data-url` / `data-video` / `data-player` /
+`data-original`）。
+
+**两个坑：**
+
+- 地址常写在 JSON 里、斜杠是转义的（`https:\/\/...`）。正则必须允许反斜杠，
+  解转义发生在匹配之后，那时已经太晚。
+- 按属性找要**按属性选元素**，不是按标签。播放地址常挂在 `<div data-src>` 这种
+  懒加载容器上，只扫 `video`/`source` 会漏掉一大半站点。
+
+用户自己配了 `stream_patterns` 时，内置的扩展名白名单不再否决它——他写了那条
+正则说明他知道自己要什么。
+
+找不到流是**正常结果**，如实告诉用户「地址可能在脚本里拼出来的」，不假装能播。
+
+### 网络开关
+
+- `skip_ssl_verify`：同时作用在规则拉取和 `/bgm-media` 代理上，默认关。
+- `auto_mirror`：GitHub raw 依次试 `gh-proxy` / `ghproxy` / `ghfast`，默认关
+  （用户自己走代理时多试几个只会更慢）。
+- 请求间隔沿用 `request_interval`。
+
+### 媒体服务器
+
+`/bgm-media` 加了 `ref` 参数：站点要的是详情页的 Referer，不是播放地址自己的
+域，所以不能就地推。没给 `ref` 才退回原域。
+
+### 三个界面契约
+
+`tests/test_bangumi_source_ui.py` 钉住三件事，它们的共同点是**不报错**：
+桥方法不存在（TypeError 被 try/catch 吞）、元素 id 不存在（`null.hidden`
+静默失败）、i18n 键不存在（原样显示键名）。只能静态比对。
+
+### 已知边界
+
+- 地址在 JS 里运行时拼出来的站点拿不到流。要覆盖它们得做 webview 请求拦截，
+  这次没做。
+- 规则仓库里真有写错的规则，坏在哪记在 `problems` 里，界面上不显示细节。
+- 没有在真实站点上跑过一遍完整链路（搜索→章节→播放），第一次用请自己确认。

@@ -12,3 +12,7 @@ requests>=2.31.0
 PyYAML>=6.0
 qrcode>=7.4.2
 imageio-ffmpeg>=0.4.9
+# Kazumi 规则用的是 XPath。标准库那套 ElementTree 只认一个子集，没有
+# contains()，位置谓词的语义也不一样——而那些规则里位置谓词用了近两百处。
+# 自己写一个 XPath 引擎出错时是静默返回空节点，比多一个依赖糟得多。
+lxml>=5.0

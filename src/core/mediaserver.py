@@ -182,7 +182,10 @@ class _Handler(BaseHTTPRequestHandler):
                 # and the webview cannot set one.  The loopback does it.
                 # Range is forwarded -- the player asks for the first chunk
                 # and then for the rest.
-                self._bgm_media(query.get("u", [""])[0], send_body)
+                # ``ref`` 是规则里写的 Referer。站点要求的是详情页的
+                # Referer，不是播放地址自己的域，所以不能就地推。
+                self._bgm_media(query.get("u", [""])[0], send_body,
+                                query.get("ref", [""])[0])
             elif route == "bg":
                 self._background(send_body)
             else:
@@ -604,7 +607,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.media.write_cover_cache(url, data, mime)
         self._send_cover_bytes(data, mime, send_body)
 
-    def _bgm_media(self, url: str, send_body: bool) -> None:
+    def _bgm_media(self, url: str, send_body: bool, referer: str = "") -> None:
         """Stream a file from a Bangumi resource site.
 
         The resource sites are the user's own configuration, so there is no
@@ -623,11 +626,14 @@ class _Handler(BaseHTTPRequestHandler):
         if not url.startswith(("http://", "https://")):
             self._error(400, "bad url")
             return
-        try:
-            parsed = urlparse(url)
-            referer = f"{parsed.scheme}://{parsed.netloc}/"
-        except ValueError:
-            referer = ""
+        referer = str(referer or "").strip()
+        if not referer.startswith(("http://", "https://")):
+            # 规则没给才退回播放地址自己的域。
+            try:
+                parsed = urlparse(url)
+                referer = f"{parsed.scheme}://{parsed.netloc}/"
+            except ValueError:
+                referer = ""
         headers = {
             "User-Agent": _UA,
             "Accept": "*/*",
@@ -639,8 +645,10 @@ class _Handler(BaseHTTPRequestHandler):
             headers["Range"] = range_header
 
         try:
-            response = self.media.session.get(url, headers=headers, stream=True,
-                                              timeout=BILI_TIMEOUT)
+            response = self.media.session.get(
+                url, headers=headers, stream=True, timeout=BILI_TIMEOUT,
+                verify=self.media.bgm_verify,
+            )
         except (requests.exceptions.RequestException, OSError) as exc:
             log.info("bangumi resource unreachable (%s): %s", _host_of(url), exc)
             self._error(502, "upstream error")
@@ -1068,6 +1076,9 @@ class MediaServer:
         self._api_provider: Callable[[], Any] | None = None
         self._background_provider: Callable[[], Path | None] | None = None
         self._bili_cookie: str = ""
+        #: 番剧资源站点用不用证书校验。默认校验——跳过校验是降低安全性，
+        #: 只有用户在设置里明确开了才关。
+        self._bgm_verify: bool = True
         #: stream key -> the host that last answered for it (failover memory).
         self._bili_hosts: dict[str, str] = {}
         self._bili_hosts_lock = threading.Lock()
@@ -1268,6 +1279,14 @@ class MediaServer:
             if len(self._bili_hosts) > 200:
                 self._bili_hosts.clear()
             self._bili_hosts[key] = url
+
+    def set_bangumi_ssl_verify(self, verify: bool) -> None:
+        """番剧资源流是否校验证书。跟设置里的 `skip_ssl_verify` 反着来。"""
+        self._bgm_verify = bool(verify)
+
+    @property
+    def bgm_verify(self) -> bool:
+        return self._bgm_verify
 
     def set_bili_cookie(self, cookie: str) -> None:
         """Remember the Bilibili cookie used for CDN requests."""

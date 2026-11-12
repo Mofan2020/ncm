@@ -2529,6 +2529,44 @@ input[type="range"]::-webkit-slider-thumb {
     color: var(--danger); font-size: 12px;
 }
 
+/* --- 番剧播放源（Kazumi 规则） -------------------------------- */
+.bgm-source-bar {
+    display: flex; flex-wrap: wrap; gap: 14px;
+    padding: 8px 0 10px;
+}
+.bgm-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12.5px; color: var(--text-2); cursor: pointer;
+}
+.bgm-toggle input { accent-color: var(--accent); }
+
+.bgm-rule-list,
+.bgm-rule-hits,
+.bgm-rule-chapters {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 4px 0 10px;
+}
+.bgm-rule-list:empty,
+.bgm-rule-hits:empty,
+.bgm-rule-chapters:empty { display: none; }
+
+.bgm-rule-hits, .bgm-rule-chapters { flex-direction: column; }
+
+.bgm-rule-row {
+    text-align: left; width: 100%;
+    background: var(--bg-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-xs);
+    padding: 7px 10px; font-size: 12.5px; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bgm-rule-row:hover { border-color: var(--accent); }
+
+.bgm-player { padding: 6px 0 10px; }
+.bgm-player video {
+    width: 100%; max-height: 60vh;
+    border-radius: var(--radius-sm); background: #000;
+}
+
 /* --- bilibili ------------------------------------------------ */
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
 

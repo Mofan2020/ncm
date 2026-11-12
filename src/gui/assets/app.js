@@ -13976,16 +13976,17 @@ function bangumiTileElement(item, options) {
 
 /** 切标签页。 */
 function setBangumiTab(tab) {
-    const known = ['search', 'favorites', 'history'];
+    const known = ['search', 'favorites', 'history', 'source'];
     bangumiState.tab = known.indexOf(tab) >= 0 ? tab : 'search';
     document.querySelectorAll('#bangumi-tabs .top-tab').forEach((button) =>
         button.classList.toggle('is-active', button.dataset.bangumiTab === bangumiState.tab));
-    ['search', 'favorites', 'history'].forEach((key) => {
+    known.forEach((key) => {
         const box = document.getElementById('bangumi-seg-' + key);
         if (box) box.hidden = key !== bangumiState.tab;
     });
     if (bangumiState.tab === 'favorites') loadBangumiFavorites(false);
     if (bangumiState.tab === 'history') loadBangumiHistory(false);
+    if (bangumiState.tab === 'source') loadBangumiSource();
 }
 
 /** 搜番剧。 */
@@ -14132,6 +14133,8 @@ async function openBangumiSubject(subjectId) {
     document.getElementById('bangumi-seg-search').hidden = true;
     document.getElementById('bangumi-seg-favorites').hidden = true;
     document.getElementById('bangumi-seg-history').hidden = true;
+    const sourceSeg = document.getElementById('bangumi-seg-source');
+    if (sourceSeg) sourceSeg.hidden = true;
     bangumiState.detailLoading = true;
     bangumiState.subject = null;
     bangumiState.episodes = [];
@@ -14839,4 +14842,273 @@ if (document.readyState === 'loading') {
 } else {
     bindNewBiliFeatures();
     bindBangumiFeatures();
+}
+
+
+/* -------------------------------------------- 播放源（Kazumi 规则）
+
+规则负责「搜到哪部番、它有哪些集」，播放地址是从剧集页里找出来的。
+规则本身不含视频地址（Kazumi 是靠 webview 拦请求拿的），所以有些站点
+找得到集数、找不到流 —— 那时如实说，不假装能播。
+*/
+
+const bangumiSource = {
+    settings: null,
+    rules: [],
+    active: '',
+    hits: [],
+    chapters: [],
+    wired: false,
+    message: ''
+};
+
+function bgmSrc(id) {
+    return document.getElementById(id);
+}
+
+function bgmSay(text) {
+    const box = bgmSrc('bgm-source-msg');
+    if (box) box.textContent = text || '';
+    bangumiSource.message = text || '';
+}
+
+function wireBangumiSource() {
+    if (bangumiSource.wired) return;
+    bangumiSource.wired = true;
+
+    const refresh = bgmSrc('btn-bgm-source-refresh');
+    if (refresh) refresh.addEventListener('click', () => loadBangumiRules(true));
+    const find = bgmSrc('btn-bgm-source-search');
+    if (find) find.addEventListener('click', () => searchBangumiSource());
+
+    const toggles = [
+        ['bgm-source-enabled', 'source_enabled'],
+        ['bgm-source-auto-mirror', 'auto_mirror'],
+        ['bgm-source-skip-ssl', 'skip_ssl_verify']
+    ];
+    toggles.forEach(([id, key]) => {
+        const box = bgmSrc(id);
+        if (box) box.addEventListener('change', () => {
+            saveBangumiSourceSettings({ [key]: !!box.checked });
+        });
+    });
+
+    const repo = bgmSrc('bgm-source-repo');
+    if (repo) repo.addEventListener('change', () => {
+        const value = String(repo.value || '').trim();
+        if (!value) return;
+        saveBangumiSourceSettings({ rule_repos: [value] });
+    });
+}
+
+function renderBangumiSourceSettings() {
+    const settings = bangumiSource.settings || {};
+    const repo = bgmSrc('bgm-source-repo');
+    if (repo) repo.value = (settings.repos && settings.repos[0]) || '';
+    const pairs = [
+        ['bgm-source-enabled', 'enabled'],
+        ['bgm-source-auto-mirror', 'auto_mirror'],
+        ['bgm-source-skip-ssl', 'skip_ssl_verify']
+    ];
+    pairs.forEach(([id, key]) => {
+        const box = bgmSrc(id);
+        if (box) box.checked = !!settings[key];
+    });
+}
+
+async function loadBangumiSource() {
+    wireBangumiSource();
+    if (!bridgeHas('get_bangumi_source_settings')) {
+        bgmSay(t('error.unknown'));
+        return;
+    }
+    try {
+        const result = await state.api.get_bangumi_source_settings();
+        if (result && result.success) {
+            bangumiSource.settings = result;
+            renderBangumiSourceSettings();
+        }
+    } catch (err) {
+        bgmSay(t('error.network'));
+        return;
+    }
+    if (!bangumiSource.rules.length) loadBangumiRules(false);
+}
+
+async function saveBangumiSourceSettings(values) {
+    try {
+        const result = await state.api.save_bangumi_source_settings(values);
+        if (result && result.success) {
+            bangumiSource.settings = result;
+            renderBangumiSourceSettings();
+            // 换仓库或开自动镜像之后规则列表要重新拉
+            if ('rule_repos' in values || 'auto_mirror' in values) loadBangumiRules(true);
+        } else if (result) {
+            bgmSay(t(result.error_key || 'error.unknown'));
+        }
+    } catch (err) {
+        bgmSay(t('error.network'));
+    }
+}
+
+async function loadBangumiRules(refresh) {
+    wireBangumiSource();
+    const status = bgmSrc('bgm-source-status');
+    if (status) status.textContent = t('common.loading');
+    try {
+        const result = await state.api.get_bangumi_rules('', !!refresh);
+        if (!result || !result.success) {
+            if (status) status.textContent = t((result && result.error_key) || 'error.network');
+            return;
+        }
+        bangumiSource.rules = result.items || [];
+        const settings = bangumiSource.settings || {};
+        bangumiSource.active = settings.active_rule || bangumiSource.active;
+        if (status) {
+            status.textContent = t('bangumi.source_rule_count', {
+                count: result.count,
+                source: result.source || ''
+            });
+        }
+        renderBangumiRules();
+    } catch (err) {
+        if (status) status.textContent = t('error.network');
+    }
+}
+
+function renderBangumiRules() {
+    const box = bgmSrc('bgm-source-rules');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!bangumiSource.rules.length) {
+        const empty = document.createElement('div');
+        empty.className = 'page-hint';
+        empty.textContent = t('bangumi.source_no_rules');
+        box.appendChild(empty);
+        return;
+    }
+    bangumiSource.rules.forEach((rule) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip' + (rule.name === bangumiSource.active ? ' is-active' : '');
+        chip.textContent = rule.deprecated
+            ? t('bangumi.source_rule_deprecated', { name: rule.name })
+            : rule.name;
+        chip.addEventListener('click', () => {
+            bangumiSource.active = rule.name;
+            renderBangumiRules();
+            saveBangumiSourceSettings({ active_rule: rule.name });
+        });
+        box.appendChild(chip);
+    });
+}
+
+async function searchBangumiSource() {
+    const input = bgmSrc('bgm-source-keyword');
+    const keyword = String((input && input.value) || '').trim();
+    if (!keyword) {
+        bgmSay(t('bangumi.rule_keyword_empty'));
+        return;
+    }
+    if (!bangumiSource.active) {
+        bgmSay(t('bangumi.source_pick_rule_first'));
+        return;
+    }
+    bgmSay(t('common.loading'));
+    try {
+        const result = await state.api.search_bangumi_by_rule(keyword, bangumiSource.active, '');
+        if (!result || !result.success) {
+            bgmSay(t((result && result.error_key) || 'error.network'));
+            return;
+        }
+        bangumiSource.hits = result.items || [];
+        bangumiSource.chapters = [];
+        bgmSay(bangumiSource.hits.length ? '' : t('bangumi.source_no_hits'));
+        renderBangumiSourceHits();
+        renderBangumiSourceChapters();
+    } catch (err) {
+        bgmSay(t('error.network'));
+    }
+}
+
+function renderBangumiSourceHits() {
+    const box = bgmSrc('bgm-source-hits');
+    if (!box) return;
+    box.innerHTML = '';
+    bangumiSource.hits.forEach((hit) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'bgm-rule-row';
+        row.textContent = hit.name || hit.url;
+        row.title = hit.url;
+        row.addEventListener('click', () => openBangumiSourceHit(hit));
+        box.appendChild(row);
+    });
+}
+
+async function openBangumiSourceHit(hit) {
+    bgmSay(t('common.loading'));
+    try {
+        const result = await state.api.get_bangumi_rule_chapters(
+            hit.url, bangumiSource.active, '');
+        if (!result || !result.success) {
+            bgmSay(t((result && result.error_key) || 'error.network'));
+            return;
+        }
+        bangumiSource.chapters = result.items || [];
+        bgmSay(bangumiSource.chapters.length ? '' : t('bangumi.source_no_chapters'));
+        renderBangumiSourceChapters();
+    } catch (err) {
+        bgmSay(t('error.network'));
+    }
+}
+
+function renderBangumiSourceChapters() {
+    const box = bgmSrc('bgm-source-chapters');
+    if (!box) return;
+    box.innerHTML = '';
+    bangumiSource.chapters.forEach((chapter) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'chip';
+        row.textContent = chapter.title || chapter.url;
+        row.title = chapter.group ? `${chapter.group} · ${chapter.url}` : chapter.url;
+        row.addEventListener('click', () => playBangumiSourceChapter(chapter, row));
+        box.appendChild(row);
+    });
+}
+
+async function playBangumiSourceChapter(chapter, row) {
+    if (row) row.classList.add('is-active');
+    bgmSay(t('bangumi.source_looking_stream'));
+    try {
+        const result = await state.api.get_bangumi_rule_streams(
+            chapter.url, bangumiSource.active, '');
+        if (!result || !result.success) {
+            bgmSay(t((result && result.error_key) || 'error.network'));
+            return;
+        }
+        const streams = result.items || [];
+        if (!streams.length) {
+            // 这是最常见的结果：地址在页面的 JS 里拼出来，静态拿不到。
+            bgmSay(t('bangumi.source_no_stream'));
+            return;
+        }
+        const player = bgmSrc('bgm-source-player');
+        const video = bgmSrc('bgm-source-video');
+        const now = bgmSrc('bgm-source-now');
+        if (!player || !video) return;
+        player.hidden = false;
+        video.src = streams[0].play_url || streams[0].url;
+        const play = video.play();
+        if (play && play.catch) play.catch(() => { /* 自动播放被拒是正常的 */ });
+        if (now) {
+            now.textContent = streams.length > 1
+                ? t('bangumi.source_stream_count', { count: streams.length })
+                : '';
+        }
+        bgmSay('');
+    } catch (err) {
+        bgmSay(t('error.network'));
+    }
 }
