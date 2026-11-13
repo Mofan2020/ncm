@@ -46,6 +46,7 @@ from src.core.mediaserver import get_media_server
 from src.core.metacache import get_meta_cache
 from src.gui.bangumi_bridge import BangumiBridge
 from src.gui.bilibili_bridge import BilibiliBridge
+from src.gui.pixiv_bridge import PixivBridge
 from src.gui.theme import effective_theme, normalize_theme, system_theme
 from src.i18n import get_i18n, t
 from src.version import (
@@ -179,6 +180,9 @@ class GuiBridge:
         # 都存在本地。客户端跟着设置走，所以设置改了之后这里要重建。
         self.bangumi = BangumiBridge()
         self.bangumi.set_settings(self.settings)
+        # Pixiv：登录走一个真正的 pixiv 登录窗口（不抓密码），成人内容按
+        # 设置过滤，缩略图走媒体服务器的 /pixiv 代理。
+        self.pixiv = PixivBridge(media=self.media, on_event=self._call_js)
         # The remembered Bilibili cookie has to reach the media server too:
         # the CDN refuses the video streams without it.
         bili_session = self.bilibili.session
@@ -1318,13 +1322,22 @@ class GuiBridge:
         self.settings.update_ui(skipped_update_versions=versions[-20:])
         return {"success": True, "message": ""}
 
-    def download_app_update(self, url: str = "", filename: str = "") -> dict[str, Any]:
+    def download_app_update(self, url: str = "", filename: str = "",
+                            use_sdm: bool | None = None) -> dict[str, Any]:
         """Download one release asset into the temp folder and return its path.
 
         The bytes never go through the webview: the UI only ever sees the
         path on disk, and only then can it ask to install it.
+
+        下载过程中每四分之一秒往界面推一次进度（字节、总量、速度）。**这层
+        限流是必须的**：一个几十兆的包会回几千次进度回调，每一次都是一条
+        ``evaluate_js``，不掐频率界面会跟着掉帧。
+
+        macOS 上如果装了 SDM 并且它的后台在跑，就借它分片下（见
+        :mod:`src.core.update_fetch`）；「跳过证书校验」打开时不借——SDM 没有
+        这个开关，硬用它只会每次连接都证书失败。借不到就自己下。
         """
-        from src.core.updater import download_asset
+        from src.core import update_fetch
 
         target_url = str(url or "").strip()
         if not target_url:
@@ -1333,14 +1346,36 @@ class GuiBridge:
         # 只取文件名部分，别让服务器给的路径跳出临时目录。
         name = Path(name).name
         dest = Path(tempfile.gettempdir()) / "skycmedia-update" / name
+        last_push = [0.0]
+
+        def push_progress(received: int, total: int, speed: float) -> None:
+            now = time.monotonic()
+            if total and received < total and now - last_push[0] < 0.25:
+                return
+            last_push[0] = now
+            percent = round(received * 100.0 / total, 1) if total else 0.0
+            self._call_js("onAppUpdateProgress", {
+                "received": int(received),
+                "total": int(total),
+                "speed": float(speed),
+                "percent": percent,
+            })
+
+        use = self.settings.ui.update_use_sdm if use_sdm is None else bool(use_sdm)
         try:
-            result = download_asset(
+            result = update_fetch.download(
                 target_url, str(dest),
+                on_progress=push_progress,
                 verify=not self.settings.ui.update_skip_ssl_verify,
+                use_sdm=use,
+                threads=int(self.settings.ui.update_threads or 8),
             )
         except Exception as exc:  # noqa: BLE001 - the UI must never see it
             self.logger.warning("update download failed: %s", exc)
-            return {"success": False, "message": str(exc), "path": ""}
+            return {"success": False, "message": str(exc), "path": "", "engine": ""}
+        if result.get("success"):
+            push_progress(int(result.get("bytes") or 0),
+                          int(result.get("bytes") or 0), 0.0)
         return result
 
     def install_app_update(self, path: str = "") -> dict[str, Any]:
@@ -2694,9 +2729,15 @@ class GuiBridge:
                                               page_size=page_size)
 
     # -- bilibili playback / download -------------------------------------------
-    def get_bilibili_video_streams(self, bvid: str, quality: int = 0) -> dict[str, Any]:
-        """The playable streams of one Bilibili video."""
-        return self.bilibili.video_streams(bvid, quality=quality)
+    def get_bilibili_video_streams(self, bvid: str = "", quality: int = 0,
+                                   cid: int = 0) -> dict[str, Any]:
+        """The playable streams of one Bilibili video.
+
+        ``cid`` 是分P的编号：前端在选集之后会带上它。**这个参数必须在这里
+        也有一份**——pywebview 是按位置把 JS 的参数喂进来的，多传一个就直接
+        TypeError，而前端只会看到「没能拿到播放地址」，看起来像取流失败。
+        """
+        return self.bilibili.video_streams(bvid, quality=quality, cid=cid)
 
     def get_bilibili_video_progress(self, bvid: str) -> dict[str, Any]:
         """The watch progress of one Bilibili video from the user's history.
@@ -2726,6 +2767,119 @@ class GuiBridge:
         except Exception as exc:  # noqa: BLE001 - history is best-effort
             self.logger.warning("get_bilibili_video_progress failed: %s", exc)
             return {"success": False, "progress": 0, "duration": 0}
+
+    # ------------------------------------------------------------------ Pixiv
+    #
+    # 这一串都是薄封装：真正的事在 :mod:`src.gui.pixiv_bridge` 里做（过滤、
+    # 缓存、登录窗口），这里只负责让前端能按 ``state.api.pixiv_xxx()`` 叫到。
+    def pixiv_state(self) -> dict[str, Any]:
+        return self.pixiv.state()
+
+    def pixiv_update_settings(self, patch: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.pixiv.update_settings(patch)
+
+    def pixiv_login_open(self, signup: bool = False) -> dict[str, Any]:
+        """开 pixiv 自己的登录页。密码不经过我们，只等它的会话 cookie。"""
+        return self.pixiv.login_open(webview=self._webview_module, signup=signup)
+
+    def pixiv_login_status(self) -> dict[str, Any]:
+        return self.pixiv.login_status()
+
+    def pixiv_login_cancel(self) -> dict[str, Any]:
+        return self.pixiv.login_cancel()
+
+    def pixiv_login_cookie(self, cookie: str = "") -> dict[str, Any]:
+        return self.pixiv.login_cookie(cookie)
+
+    def pixiv_logout(self) -> dict[str, Any]:
+        return self.pixiv.logout()
+
+    def pixiv_home(self) -> dict[str, Any]:
+        return self.pixiv.home()
+
+    def pixiv_search(self, word: str = "", page: int = 1,
+                     order: str = "date_d", kind: str = "artworks") -> dict[str, Any]:
+        return self.pixiv.search(word, page=page, order=order, kind=kind)
+
+    def pixiv_ranking(self, mode: str = "daily", page: int = 1,
+                      content: str = "illust") -> dict[str, Any]:
+        return self.pixiv.ranking(mode=mode, page=page, content=content)
+
+    def pixiv_feed(self, page: int = 1) -> dict[str, Any]:
+        return self.pixiv.feed(page=page)
+
+    def pixiv_bookmarks(self, tag: str = "", offset: int = 0,
+                        rest: str = "", uid: str = "") -> dict[str, Any]:
+        return self.pixiv.bookmarks(tag=tag, offset=offset, rest=rest, uid=uid)
+
+    def pixiv_following(self, offset: int = 0) -> dict[str, Any]:
+        return self.pixiv.following(offset=offset)
+
+    def pixiv_user(self, uid: str = "") -> dict[str, Any]:
+        return self.pixiv.user(uid)
+
+    def pixiv_user_works(self, uid: str = "", offset: int = 0,
+                         kind: str = "illust") -> dict[str, Any]:
+        return self.pixiv.user_works(uid, offset=offset, kind=kind)
+
+    def pixiv_illust(self, pid: str = "") -> dict[str, Any]:
+        return self.pixiv.illust(pid)
+
+    def pixiv_bookmark(self, pid: str = "", add: bool = True,
+                       private: bool | None = None) -> dict[str, Any]:
+        return self.pixiv.bookmark(pid, add=add, private=private)
+
+    def pixiv_like(self, pid: str = "") -> dict[str, Any]:
+        return self.pixiv.like(pid)
+
+    def pixiv_follow(self, uid: str = "", follow: bool = True) -> dict[str, Any]:
+        return self.pixiv.follow(uid, follow=follow)
+
+    def pixiv_download(self, pid: str = "", quality: str = "") -> dict[str, Any]:
+        return self.pixiv.download(pid, quality)
+
+    def pixiv_export_data(self) -> dict[str, Any]:
+        """导出账号数据成 JSON 文件（原生保存对话框）。"""
+        payload = self.pixiv.export_data()
+        if not payload.get("ok"):
+            return {"success": False, "message": payload.get("message") or ""}
+        data = payload.get("data") or {}
+        name = (data.get("account") or {}).get("name") or "pixiv"
+        path = self._choose_pixiv_save_path(str(name))
+        if not path:
+            return {"success": False, "cancelled": True, "message": ""}
+        try:
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+        except OSError as exc:
+            self.logger.warning("cannot write the pixiv export: %s", exc)
+            return {"success": False, "message": str(exc)}
+        return {
+            "success": True,
+            "path": str(path),
+            "counts": {
+                "bookmarks": len(data.get("bookmarks") or []),
+                "following": len(data.get("following") or []),
+            },
+        }
+
+    def _choose_pixiv_save_path(self, name: str) -> Path | None:
+        if not self._window:
+            return None
+        safe = "".join(ch for ch in str(name) if ch not in '\\/:*?"<>|').strip()
+        try:
+            result = self._window.create_file_dialog(
+                webview.SAVE_DIALOG,
+                directory=str(Path.home()),
+                save_filename=f"SkycMedia-pixiv-{safe or 'account'}.json",
+                file_types=("JSON (*.json)",))
+        except Exception as exc:
+            self.logger.warning("pixiv export dialog failed: %s", exc)
+            return None
+        if not result:
+            return None
+        chosen = result[0] if isinstance(result, list | tuple) else result
+        return Path(str(chosen))
 
     def open_bili_player_window(self, bvid: str = "", page: int = 1,
                                 quality: int = 0) -> dict[str, Any]:

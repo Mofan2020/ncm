@@ -4063,3 +4063,56 @@ parser"）。这里做不到，退一步做两件事：正则扫页面源码找 
 
 设置写盘走 `_as_bool`——界面传的是 JSON，`"false"` 进 `bool()` 是 True，
 不处理的话用户关掉了、重启又自己开。
+
+
+## B 站视频全部播不了：参数的个数（v3.23.0）
+
+用户报「无论什么视频都提示没能拿到这个视频的播放地址」。不是取流接口挂了，
+是**函数签名和调用点的参数个数对不上**：
+
+```js
+// bili-stream-loader.js
+api.get_bilibili_video_streams(bvid, quality, cid || 0)   // 三个
+```
+```python
+# bridge.py
+def get_bilibili_video_streams(self, bvid, quality=0):    # 两个
+```
+
+v3.22.0 加分P 时，`cid` 加到了前端和 `BilibiliBridge.video_streams`，中间的
+`GuiBridge` 包装漏了。pywebview 按位置喂参数，多一个直接 `TypeError`，JS 那边
+只是一次 promise 拒绝：界面看到的就是「取流失败」，看起来跟网络问题一模一样。
+
+**修法**是补上第三个参数并透传。**真正值钱的是 `tests/test_bridge_arity.py`**：
+它扫 `src/gui/assets/*.js` 里每一处 `api.xxx(...)`，用括号配平数出顶层参数
+个数（字符串里的括号先抹掉），再和 `bridge.py` 里每个 `def` 能收的位置参数
+比。把 `cid` 改回去那两条断言立刻红——这个洞以后不会再静默出现。
+
+## Pixiv（v3.23.0）
+
+接口全部走 `www.pixiv.net/ajax/*`，登录态就是一个 `PHPSESSID` cookie。
+完整的事实、坑和逐条验证结论写在 `docs/pixiv-notes.md`。三条最要紧的：
+
+- **详情和列表的字段名不一样**：列表 `url` / `userId` / `tags: ["a"]`，
+  详情 `urls.*` / `tags: {tags: [{tag}]}`。`normalize_work()` 是唯一出口。
+- **`/ajax/*` 的失败是 HTTP 200 + `error: true`**，`body` 还可能是空数组。
+  `/ranking.php` 和两条老 PHP 路由没有包络、字段是下划线风格。
+- **图片必须带 `Referer: https://www.pixiv.net/`**，`<img>` 设不了请求头，
+  所以走媒体服务器的 `/pixiv` 路由（主机白名单 + 磁盘缓存）。
+
+## 更新包：进度、速度、借 SDM（v3.23.0）
+
+`src/core/update_fetch.py`。判据是「能不能借」：macOS + `sdm` 在 PATH +
+`sdm ping` 有回答 + **没有打开忽略证书校验**。
+
+最后一条是硬的：`sdm add` 只有 `--referer/--filename/--category/--threads`，
+**没有「不校验证书」这一档**。开着忽略证书还硬让 SDM 下，结果是每次连接都
+证书失败，用户看到一个不动的进度条。所以这种情况直接走内置下载。
+
+SDM 有自己的下载目录，命令行没有「下到这个路径」，所以流程是「按文件名下 →
+等完成 → 把文件 move 过来」。退回内置之前会 `sdm cancel`，但只掐**非终态**
+的：`failed` / `cancelled` 已经结束，取消没有意义；`awaiting_new_link` 还占着
+任务槽，必须掐。（这条一开始测试写反了，改的是测试不是代码。）
+
+进度推到界面每 0.25 秒一次：一个几十兆的包会回几千次进度回调，每条都是一次
+`evaluate_js`，不限频界面会跟着掉帧。

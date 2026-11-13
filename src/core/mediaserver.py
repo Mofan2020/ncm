@@ -11,6 +11,8 @@ to read).  Both are served from here, so the ``<audio>`` element only ever sees
   configured music folders (and the download folder)
 * ``/m/<token>/art?p=<abs path>``          - cover art embedded in a local file
 * ``/m/<token>/bg``                        - the user's background image
+* ``/m/<token>/pixiv?u=<url>``             - a pixiv picture (``i.pximg.net``
+  answers 403 without the site's ``Referer``)
 * ``/m/<token>/health``                    - readiness probe
 
 ``Range`` requests are forwarded (online) or honoured directly (local), which is
@@ -20,6 +22,7 @@ read arbitrary files.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import mimetypes
 import os
@@ -33,6 +36,11 @@ from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import requests
+
+#: pixiv 的三件套（图片主机白名单、站点 Referer、浏览器 UA）。放在客户端
+#: 模块里是因为 API 层和这一层必须用同一份值：白名单只要有一边漏掉一个
+#: 主机，表现就是一半的图片忽然 403。
+from src.core.pixiv import PIXIV_IMG_HOSTS, PIXIV_REFERER, PIXIV_UA
 
 __all__ = ["MediaServer", "get_media_server"]
 
@@ -50,6 +58,14 @@ MAX_COVER_ENTRY_BYTES = 4 * 1024 * 1024
 
 #: How many resolved CDN urls we remember (they expire after :data:`URL_TTL`).
 MAX_CACHED_URLS = 512
+
+#: pixiv 的图片缓存单独一个目录：原图动辄十几 MB，和封面挤在同一份预算里
+#: 会把真正要显示的封面挤掉；分开也方便「清封面」不动这些。
+PIXIV_CACHE_DIRNAME = "pixiv-img"
+
+#: 多大的 pixiv 图片值得落盘。缩略图、头像、regular 都在几百 KB 以内，
+#: 而原图经常十几 MB —— 缓存它既占地方，又因为地址带尺寸段几乎不会命中。
+MAX_PIXIV_CACHE_BYTES = 2 * 1024 * 1024
 
 #: The wallpaper is served scaled to this many pixels on the long edge.
 #: A 4K display is 3840; going bigger only costs memory.  The CSS applies
@@ -186,6 +202,12 @@ class _Handler(BaseHTTPRequestHandler):
                 # Referer，不是播放地址自己的域，所以不能就地推。
                 self._bgm_media(query.get("u", [""])[0], send_body,
                                 query.get("ref", [""])[0])
+            elif route == "pixiv":
+                # Pixiv 图片代理。``i.pximg.net`` 对不带
+                # ``Referer: https://www.pixiv.net/`` 的请求一律 403，而
+                # ``<img>`` 设不了请求头 —— 这是整个 pixiv 页面能不能显示
+                # 图片的唯一通道，所以主机白名单必须在这一层。
+                self._pixiv(query.get("u", [""])[0], send_body)
             elif route == "bg":
                 self._background(send_body)
             else:
@@ -684,6 +706,99 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             response.close()
 
+    def _pixiv(self, url: str, send_body: bool) -> None:
+        """Serve a pixiv picture.
+
+        ``i.pximg.net`` answers 403 to every request that does not carry
+        ``Referer: https://www.pixiv.net/``, and an ``<img>`` inside the
+        webview cannot set one -- so the bytes come through here.
+
+        Two kinds of picture arrive on this route and they want opposite
+        treatment:
+
+        * **缩略图、头像、regular**（一百 KB 上下）：收藏夹、关注动态、搜索
+          结果一页就是几十张，同一个 url 会反复出现，所以小于
+          :data:`MAX_PIXIV_CACHE_BYTES` 的落进 ``cache/pixiv-img/``。命中
+          时一个上游请求都不发。
+        * **原图**（十几 MB）：只转发不缓存。缓存它既占地方，地址里又带着
+          尺寸段，下次换一个尺寸就是另一个键 —— 说白了永远不命中。
+
+        ``Range`` 照转：图片查看器会先要好一段来试，206 和
+        ``Content-Range`` 必须原样回去。
+        """
+        url = str(url or "").strip()
+        if not _is_pixiv_img_url(url):
+            # 白名单在这里，不在调用方：能拼出这条 url 的还有网页里的 JS。
+            self._error(403, "url not allowed")
+            return
+        cached = self.media.cached_pixiv_image(url)
+        if cached is not None:
+            data, mime = cached
+            self._send_cover_bytes(data, mime, send_body)
+            return
+
+        headers = dict(_PIXIV_HEADERS)
+        range_header = self.headers.get("Range")
+        if range_header:
+            headers["Range"] = range_header
+
+        try:
+            response = self.media.session.get(
+                url, headers=headers, stream=True, timeout=(10, 20))
+        except (requests.exceptions.RequestException, OSError) as exc:
+            # 连不上是常事（图床在境外），必须是 502 而不是把异常冒给
+            # handler：那个兜底分支会写一条 500，前端只会看到「内部错误」。
+            log.warning("pixiv image unreachable (%s): %s", _host_of(url), exc)
+            self._error(502, "upstream error")
+            return
+        try:
+            if response.status_code not in (200, 206):
+                # 日志只写主机和状态码。图片地址里带着搜索词、画师和作品
+                # id，整条 URL 写进日志等于把用户在看什么记下来了。
+                log.warning("pixiv image refused (%s): http %s",
+                            _host_of(url), response.status_code)
+                self._error(502, "upstream error")
+                return
+            length = response.headers.get("content-length")
+            size = int(length) if length and length.isdigit() else None
+            content_type = (response.headers.get("content-type") or "")
+            content_type = content_type.split(";")[0].strip()
+            if not content_type or content_type == "application/octet-stream":
+                content_type = _content_type_for(Path(urlparse(url).path))
+            extra = {"Accept-Ranges": response.headers.get("accept-ranges", "bytes"),
+                     # pixiv 的图片地址带尺寸和作品 id，内容不会变。
+                     "Cache-Control": "public, max-age=604800"}
+            content_range = response.headers.get("content-range")
+            if content_range:
+                extra["Content-Range"] = content_range
+
+            if not send_body:
+                self._send_headers(response.status_code, content_type, size, extra)
+                return
+            # 只有「整张都在手上而且不大」的图值得落盘：Range 的回答是半个
+            # 文件，存下去就是一张残缺的图；没有 content-length 就无从判断
+            # 大小，宁可每次都去拿。
+            if (response.status_code == 200 and not range_header
+                    and size is not None and size <= MAX_PIXIV_CACHE_BYTES):
+                data = response.content
+                if not data:
+                    log.warning("pixiv image empty (%s)", _host_of(url))
+                    self._error(502, "upstream error")
+                    return
+                # 写缓存失败不能拖累这次回答 —— 字节已经在手上了。
+                self.media.write_pixiv_image(url, data)
+                self._send_cover_bytes(data, content_type, send_body)
+                return
+            self._send_headers(response.status_code, content_type, size, extra)
+            try:
+                for chunk in response.iter_content(CHUNK):
+                    if chunk:
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+        finally:
+            response.close()
+
     def _background(self, send_body: bool) -> None:
         """Serve the wallpaper, downscaled to what the UI can actually show.
 
@@ -852,6 +967,16 @@ _BGM_HEADERS = {
     "Referer": "https://bangumi.lat/",
 }
 
+#: pixiv's image CDN is the strictest of the lot: the Referer **is** the
+#: access check, and the UA has to look like a browser.  ``Accept-Language``
+#: rides along because the CDN has answered differently for a bare request.
+_PIXIV_HEADERS = {
+    "User-Agent": PIXIV_UA,
+    "Referer": PIXIV_REFERER,
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,ja;q=0.8",
+}
+
 #: How long one CDN host gets: connect, then each read.  A host that cannot
 #: produce 256 kB in ten seconds is a host whose video would not play anyway,
 #: so the proxy moves on to the next one instead of waiting it out.
@@ -967,6 +1092,52 @@ def _is_bili_image_url(url: str) -> bool:
         return False
     host = (parsed.hostname or "").lower()
     return host.endswith(".hdslb.com") or host == "hdslb.com"
+
+
+#: The picture suffixes pixiv serves.  Its urls always carry one, but the
+#: fallback keeps a query-only address from landing on ``bin``.
+_PIXIV_IMAGE_EXTS = ("jpg", "jpeg", "png", "gif", "webp")
+
+
+def _pixiv_image_ext(url: str) -> str:
+    """The picture suffix of a pixiv url, ``jpg`` when it has none.
+
+    Only used as the label of the cached file.  pixiv serves the type its
+    url announces (``.png`` for a transparent work, ``.jpg`` otherwise) and
+    an ``<img>`` sniffs the bytes anyway, so the suffix never decides how
+    the picture is interpreted -- it just needs to be stable per url, so
+    the cache hit looks for the same name the write used.
+    """
+    try:
+        path = urlparse(str(url or "")).path
+    except ValueError:
+        return "jpg"
+    name = path.rsplit("/", 1)[-1].lower()
+    if "." in name:
+        candidate = name.rsplit(".", 1)[-1]
+        if candidate in _PIXIV_IMAGE_EXTS:
+            return "jpg" if candidate == "jpeg" else candidate
+    return "jpg"
+
+
+def _is_pixiv_img_url(url: str) -> bool:
+    """Whether ``url`` points at one of pixiv's image hosts.
+
+    The comparison is on the **whole** hostname, never on a suffix:
+    ``i.pximg.net.evil.com`` is a domain anyone can register, and an
+    ``endswith`` check would hand it to this proxy -- which turns the
+    loopback server into a fetcher for the entire internet.  ``hostname``
+    is also what defeats ``https://i.pximg.net@evil.com/x.jpg``, where the
+    thing before the ``@`` is userinfo and the real host is ``evil.com``.
+    """
+    try:
+        parsed = urlparse(str(url or ""))
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    return host in PIXIV_IMG_HOSTS
 
 
 def _cover_url_candidates(url: str) -> list[str]:
@@ -1261,6 +1432,19 @@ class MediaServer:
             proxied += f"&alt={quote(str(alt), safe='')}"
         return proxied
 
+    def url_for_pixiv(self, url: str) -> str | None:
+        """Proxy a pixiv image url through the loopback server.
+
+        ``i.pximg.net`` answers 403 unless the request carries the pixiv
+        site's ``Referer``, and an ``<img>`` cannot set a header -- so the
+        webview asks the loopback for the bytes.  A url on any other host
+        answers ``None``: the caller then shows nothing instead of aiming
+        the proxy at a stranger.
+        """
+        if not _is_pixiv_img_url(url):
+            return None
+        return f"{self.base_url}/pixiv?u={quote(str(url), safe='')}"
+
     def bili_failover_order(self, key: str, candidates: list[str]) -> list[str]:
         """Put the host that answered for ``key`` last time first."""
         with self._bili_hosts_lock:
@@ -1536,6 +1720,58 @@ class MediaServer:
                           mime: str = "") -> Path | None:
         """Persist a remote cover image to the cache."""
         return self._media_cache.write_cover(url, data, mime)
+
+    @property
+    def pixiv_cache_dir(self) -> Path:
+        """Where the proxied pixiv pictures live -- next to the other caches.
+
+        Its own folder, not the cover one: an original is easily tens of
+        megabytes and would push the covers the player actually draws out
+        of their budget.
+        """
+        return self._media_cache.root / PIXIV_CACHE_DIRNAME
+
+    def pixiv_cache_path(self, url: str) -> Path:
+        """The file a pixiv url is cached as: the url's sha1 plus its suffix.
+
+        Hashed and not the url itself: the address carries the artwork id,
+        the size segment and percent-encoded pieces, which is both too long
+        for a filename and full of separators.
+        """
+        digest = hashlib.sha1(str(url).encode("utf-8")).hexdigest()
+        return self.pixiv_cache_dir / f"{digest}.{_pixiv_image_ext(url)}"
+
+    def cached_pixiv_image(self, url: str) -> tuple[bytes, str] | None:
+        """Return (bytes, mime) for a cached pixiv picture, or ``None``."""
+        target = self.pixiv_cache_path(url)
+        try:
+            data = target.read_bytes()
+        except OSError:
+            return None
+        if not data:
+            return None
+        return data, _content_type_for(target)
+
+    def write_pixiv_image(self, url: str, data: bytes) -> Path | None:
+        """Persist a proxied pixiv picture.
+
+        Answers ``None`` rather than raising when the picture is too big or
+        the disk refuses: the caller already has the bytes and is about to
+        answer the webview with them, so a cache miss must not become a
+        broken image.
+        """
+        if not data or len(data) > MAX_PIXIV_CACHE_BYTES:
+            return None
+        target = self.pixiv_cache_path(url)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            part = target.with_suffix(target.suffix + ".part")
+            part.write_bytes(data)
+            part.replace(target)
+        except OSError as exc:
+            log.debug("pixiv cache write failed (%s): %s", _host_of(url), exc)
+            return None
+        return target
 
     def cache_stats(self) -> dict[str, Any]:
         """Diagnostics for the settings/about page."""

@@ -54,6 +54,8 @@
                     data-i18n="bili.tab_space"></button>
             <button class="top-tab" type="button" data-view="bili-messages" data-sections="bili"
                     data-i18n="bili.tab_messages"></button>
+            <button class="top-tab" type="button" data-view="pixiv" data-sections="pixiv"
+                    data-i18n="pixiv.title"></button>
             <button class="top-tab" type="button" data-view="bangumi" data-sections="bangumi"
                     data-i18n="bangumi.title"></button>
         </nav>
@@ -103,6 +105,12 @@
                         <span class="home-card-title" data-i18n="bangumi.title"></span>
                         <span class="home-card-desc" data-i18n="home.entry_bangumi_desc"></span>
                         <span class="home-card-count" id="home-count-bangumi"></span>
+                    </button>
+                    <button class="home-card" type="button" data-entry="pixiv" id="home-entry-pixiv">
+                        <span class="home-card-icon" data-entry="pixiv" data-icon="star" aria-hidden="true"></span>
+                        <span class="home-card-title" data-i18n="pixiv.title"></span>
+                        <span class="home-card-desc" data-i18n="home.entry_pixiv_desc"></span>
+                        <span class="home-card-count" id="home-count-pixiv"></span>
                     </button>
                     <button class="home-card" type="button" data-entry="search" id="home-entry-search">
                         <span class="home-card-icon" data-entry="search" data-icon="list" aria-hidden="true"></span>
@@ -619,6 +627,226 @@
         </section>
 
         <!-- ======================== B站下载页 ======================== -->
+        <section class="view" id="view-pixiv">
+            <div class="bili-page">
+                <div class="page-head">
+                    <button class="btn btn-icon" id="btn-pixiv-back" type="button"
+                            data-icon="back" data-i18n-title="home.back_home" aria-label="back"></button>
+                    <h1 class="page-title" id="pixiv-title" tabindex="-1" data-i18n="pixiv.title"></h1>
+                    <div class="page-actions">
+                        <button class="btn btn-icon" id="btn-pixiv-refresh" type="button"
+                                data-icon="refresh" data-i18n-title="bili.refresh" aria-label="refresh"></button>
+                    </div>
+                </div>
+
+                <div class="top-tabs filter-seg" id="pixiv-tabs" role="tablist">
+                    <button class="top-tab is-compact is-active" type="button" role="tab"
+                            data-pixiv-tab="discover" data-i18n="pixiv.tab_discover"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
+                            data-pixiv-tab="feed" data-i18n="pixiv.tab_feed"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
+                            data-pixiv-tab="search" data-i18n="pixiv.tab_search"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
+                            data-pixiv-tab="bookmarks" data-i18n="pixiv.tab_bookmarks"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
+                            data-pixiv-tab="ranking" data-i18n="pixiv.tab_ranking"></button>
+                    <button class="top-tab is-compact" type="button" role="tab"
+                            data-pixiv-tab="account" data-i18n="pixiv.tab_account"></button>
+                </div>
+
+                <!-- 发现 -->
+                <div id="pixiv-seg-discover">
+                    <p class="page-hint" data-i18n="pixiv.discover_hint"></p>
+                    <div class="bili-grid" id="pixiv-discover-grid"></div>
+                    <div class="page-state" id="pixiv-discover-state"></div>
+                </div>
+
+                <!-- 关注 -->
+                <div id="pixiv-seg-feed" hidden>
+                    <p class="page-hint" id="pixiv-feed-hint" data-i18n="pixiv.feed_hint"></p>
+                    <div class="bili-grid" id="pixiv-feed-grid"></div>
+                    <div class="page-state" id="pixiv-feed-state"></div>
+                    <button class="btn btn-secondary" type="button" id="btn-pixiv-feed-more"
+                            data-i18n="pixiv.load_more" hidden></button>
+                </div>
+
+                <!-- 搜索 -->
+                <div id="pixiv-seg-search" hidden>
+                    <div class="source-search inline-form">
+                        <div class="search-wrapper">
+                            <input type="search" id="pixiv-search-input" autocomplete="off" spellcheck="false"
+                                   data-i18n-placeholder="pixiv.search_placeholder">
+                        </div>
+                        <select id="pixiv-search-order" class="select">
+                            <option value="date_d" data-i18n="pixiv.order_new"></option>
+                            <option value="date" data-i18n="pixiv.order_old"></option>
+                        </select>
+                        <button id="btn-pixiv-search" class="btn btn-primary" type="button"
+                                data-i18n="pixiv.tab_search"></button>
+                    </div>
+                    <p class="page-hint" id="pixiv-search-hint"></p>
+                    <div class="bili-grid" id="pixiv-search-grid"></div>
+                    <div class="page-state" id="pixiv-search-state"></div>
+                    <button class="btn btn-secondary" type="button" id="btn-pixiv-search-more"
+                            data-i18n="pixiv.load_more" hidden></button>
+                </div>
+
+                <!-- 收藏 -->
+                <div id="pixiv-seg-bookmarks" hidden>
+                    <div class="inline-form">
+                        <div class="search-wrapper">
+                            <input type="search" id="pixiv-bm-tag" autocomplete="off" spellcheck="false"
+                                   data-i18n-placeholder="pixiv.bm_tag_placeholder">
+                        </div>
+                        <select id="pixiv-bm-rest" class="select">
+                            <option value="" data-i18n="pixiv.bm_all"></option>
+                            <option value="show" data-i18n="pixiv.bm_public"></option>
+                            <option value="hide" data-i18n="pixiv.bm_private"></option>
+                        </select>
+                        <button class="btn btn-primary" type="button" id="btn-pixiv-bm-refresh"
+                                data-i18n="pixiv.bm_reload"></button>
+                    </div>
+                    <p class="page-hint" id="pixiv-bm-hint"></p>
+                    <div class="bili-grid" id="pixiv-bm-grid"></div>
+                    <div class="page-state" id="pixiv-bm-state"></div>
+                    <button class="btn btn-secondary" type="button" id="btn-pixiv-bm-more"
+                            data-i18n="pixiv.load_more" hidden></button>
+                </div>
+
+                <!-- 排行 -->
+                <div id="pixiv-seg-ranking" hidden>
+                    <div class="inline-form">
+                        <select id="pixiv-rank-mode" class="select">
+                            <option value="daily" data-i18n="pixiv.rank_daily"></option>
+                            <option value="weekly" data-i18n="pixiv.rank_weekly"></option>
+                            <option value="monthly" data-i18n="pixiv.rank_monthly"></option>
+                            <option value="rookie" data-i18n="pixiv.rank_rookie"></option>
+                            <option value="original" data-i18n="pixiv.rank_original"></option>
+                            <option value="male" data-i18n="pixiv.rank_male"></option>
+                            <option value="female" data-i18n="pixiv.rank_female"></option>
+                        </select>
+                        <button class="btn btn-primary" type="button" id="btn-pixiv-rank-load"
+                                data-i18n="pixiv.rank_reload"></button>
+                    </div>
+                    <div class="bili-grid" id="pixiv-rank-grid"></div>
+                    <div class="page-state" id="pixiv-rank-state"></div>
+                    <button class="btn btn-secondary" type="button" id="btn-pixiv-rank-more"
+                            data-i18n="pixiv.load_more" hidden></button>
+                </div>
+
+                <!-- 账号 -->
+                <div id="pixiv-seg-account" hidden>
+                    <div class="pixiv-account" id="pixiv-account-card">
+                        <div class="pixiv-account-head">
+                            <img class="pixiv-avatar" id="pixiv-account-avatar" alt="" hidden>
+                            <div class="pixiv-account-text">
+                                <div class="pixiv-account-name" id="pixiv-account-name"></div>
+                                <div class="pixiv-account-sub" id="pixiv-account-sub"></div>
+                            </div>
+                        </div>
+                        <div class="pixiv-account-actions">
+                            <button class="btn btn-primary" type="button" id="btn-pixiv-login"
+                                    data-i18n="pixiv.login"></button>
+                            <button class="btn btn-secondary" type="button" id="btn-pixiv-signup"
+                                    data-i18n="pixiv.signup"></button>
+                            <button class="btn btn-secondary" type="button" id="btn-pixiv-export"
+                                    data-i18n="pixiv.export_data" hidden></button>
+                            <button class="btn btn-secondary" type="button" id="btn-pixiv-logout"
+                                    data-i18n="pixiv.logout" hidden></button>
+                        </div>
+                        <p class="page-hint" id="pixiv-login-hint" data-i18n="pixiv.login_hint"></p>
+                        <div class="pixiv-cookie-import">
+                            <input type="text" id="pixiv-cookie-input" autocomplete="off" spellcheck="false"
+                                   data-i18n-placeholder="pixiv.cookie_placeholder">
+                            <button class="btn btn-secondary" type="button" id="btn-pixiv-cookie-save"
+                                    data-i18n="pixiv.cookie_save"></button>
+                        </div>
+                    </div>
+
+                    <h2 class="section-title" data-i18n="pixiv.settings_title"></h2>
+                    <div class="pixiv-settings">
+                        <label class="bgm-toggle">
+                            <span data-i18n="pixiv.nsfw_mode"></span>
+                            <select id="pixiv-nsfw-mode" class="select">
+                                <option value="hide" data-i18n="pixiv.nsfw_hide"></option>
+                                <option value="blur" data-i18n="pixiv.nsfw_blur"></option>
+                                <option value="show" data-i18n="pixiv.nsfw_show"></option>
+                            </select>
+                        </label>
+                        <label class="bgm-toggle">
+                            <input type="checkbox" id="pixiv-include-r18">
+                            <span data-i18n="pixiv.include_r18"></span>
+                        </label>
+                        <label class="bgm-toggle">
+                            <input type="checkbox" id="pixiv-hide-ai">
+                            <span data-i18n="pixiv.hide_ai"></span>
+                        </label>
+                        <label class="bgm-toggle">
+                            <span data-i18n="pixiv.quality"></span>
+                            <select id="pixiv-quality" class="select">
+                                <option value="original" data-i18n="pixiv.quality_original"></option>
+                                <option value="regular" data-i18n="pixiv.quality_regular"></option>
+                            </select>
+                        </label>
+                        <label class="bgm-toggle">
+                            <input type="checkbox" id="pixiv-bm-private">
+                            <span data-i18n="pixiv.bookmark_private"></span>
+                        </label>
+                        <label class="bgm-toggle is-wide">
+                            <span data-i18n="pixiv.template"></span>
+                            <input type="text" id="pixiv-template" autocomplete="off" spellcheck="false">
+                        </label>
+                    </div>
+                    <p class="page-hint" data-i18n="pixiv.template_hint"></p>
+
+                    <h2 class="section-title" data-i18n="pixiv.following_title"></h2>
+                    <div class="pixiv-following" id="pixiv-following-list"></div>
+                    <div class="page-state" id="pixiv-following-state"></div>
+                </div>
+            </div>
+
+            <!-- 作品详情 -->
+            <div class="pixiv-detail" id="pixiv-detail" hidden>
+                <div class="pixiv-detail-head">
+                    <button class="btn btn-icon" id="btn-pixiv-detail-close" type="button"
+                            data-icon="close" data-i18n-title="common.close" aria-label="close"></button>
+                    <div class="pixiv-detail-title" id="pixiv-detail-title"></div>
+                    <div class="pixiv-detail-actions">
+                        <button class="btn btn-icon" id="btn-pixiv-detail-bookmark" type="button"
+                                data-icon="star" data-i18n-title="pixiv.bookmark" aria-label="bookmark"></button>
+                        <button class="btn btn-icon" id="btn-pixiv-detail-like" type="button"
+                                data-icon="heart" data-i18n-title="pixiv.like" aria-label="like"></button>
+                        <button class="btn btn-icon" id="btn-pixiv-detail-download" type="button"
+                                data-icon="download" data-i18n-title="pixiv.download" aria-label="download"></button>
+                    </div>
+                </div>
+                <div class="pixiv-detail-body">
+                    <button class="btn btn-icon pixiv-detail-nav" type="button" id="btn-pixiv-page-prev"
+                            data-icon="prev" data-i18n-title="pixiv.prev_page" aria-label="prev"></button>
+                    <div class="pixiv-stage">
+                        <div class="pixiv-curtain" id="pixiv-detail-curtain" hidden>
+                            <p data-i18n="pixiv.nsfw_warning"></p>
+                            <button class="btn btn-primary" type="button" id="btn-pixiv-detail-reveal"
+                                    data-i18n="pixiv.reveal"></button>
+                        </div>
+                        <img id="pixiv-detail-image" alt="">
+                    </div>
+                    <button class="btn btn-icon pixiv-detail-nav" type="button" id="btn-pixiv-page-next"
+                            data-icon="next" data-i18n-title="pixiv.next_page" aria-label="next"></button>
+                </div>
+                <div class="pixiv-detail-foot">
+                    <div class="pixiv-detail-meta" id="pixiv-detail-meta"></div>
+                    <div class="pixiv-detail-pager" id="pixiv-detail-pager"></div>
+                    <div class="pixiv-detail-tags" id="pixiv-detail-tags"></div>
+                    <div class="pixiv-detail-desc" id="pixiv-detail-desc"></div>
+                </div>
+                <div class="pixiv-artist-row">
+                    <div class="pixiv-artist-head" id="pixiv-detail-artist"></div>
+                    <div class="bili-grid" id="pixiv-artist-works"></div>
+                </div>
+            </div>
+        </section>
+
         <section class="view" id="view-bili-download">
             <div class="bili-page">
                 <div class="page-head">
@@ -1291,8 +1519,25 @@
                         <input type="checkbox" id="update-skip-ssl-check">
                         <span data-i18n="settings.update_skip_ssl"></span>
                     </label>
+                    <label class="option checkbox indent">
+                        <input type="checkbox" id="update-use-sdm-check">
+                        <span data-i18n="settings.update_use_sdm"></span>
+                    </label>
+                    <label class="option checkbox indent">
+                        <span data-i18n="settings.update_threads"></span>
+                        <select id="update-threads-select" class="select">
+                            <option value="4">4</option>
+                            <option value="8">8</option>
+                            <option value="16">16</option>
+                            <option value="24">24</option>
+                        </select>
+                    </label>
                     <div class="option">
                         <span id="update-status" class="muted"></span>
+                        <div class="update-progress" id="update-progress" hidden>
+                            <div class="update-progress-bar" id="update-progress-bar"></div>
+                        </div>
+                        <div class="update-progress-text" id="update-progress-text" hidden></div>
                         <div class="inline-form">
                             <button id="btn-check-update" class="btn btn-secondary" type="button"
                                     data-i18n="settings.update_check_btn"></button>
@@ -2421,6 +2666,7 @@
 <script src="bili-stream-loader.js"></script>
 <script src="bili-player.js"></script>
 <script src="bili-overlay.js"></script>
+<script src="pixiv.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -139,6 +139,8 @@ async function boot() {
         // The Bilibili account belongs in the header as well, so read it
         // right away instead of waiting for the Bilibili page to open.
         loadBiliAccount();
+        // Pixiv 的接线放在这里：翻译已经装好（t() 能用），api 也已经在了。
+        if (window.PixivUI) PixivUI.init();
         showHome();
         watchSystemTheme();
         initMediaSession();
@@ -857,6 +859,9 @@ function fillSettingsForm() {
     setChecked('update-auto-install-check', s.ui.auto_install_updates === true);
     setChecked('update-prerelease-check', s.ui.update_include_prerelease === true);
     setChecked('update-skip-ssl-check', s.ui.update_skip_ssl_verify === true);
+    setChecked('update-use-sdm-check', s.ui.update_use_sdm !== false);
+    const threads = document.getElementById('update-threads-select');
+    if (threads) threads.value = String(Number(s.ui.update_threads) || 8);
 
     // desktop lyrics
     setValue('desktop-lyrics-font-size', s.ui.desktop_lyrics_font_size || 18);
@@ -1088,6 +1093,8 @@ async function saveSettings() {
             auto_install_updates: document.getElementById('update-auto-install-check').checked,
             update_include_prerelease: document.getElementById('update-prerelease-check').checked,
             update_skip_ssl_verify: document.getElementById('update-skip-ssl-check').checked,
+            update_use_sdm: document.getElementById('update-use-sdm-check').checked,
+            update_threads: Number(document.getElementById('update-threads-select').value) || 8,
         },
         auth: {
             remember_login: document.getElementById('remember-login-check').checked,
@@ -1167,6 +1174,54 @@ function renderAppUpdate(message) {
     }
     if (install) install.hidden = appUpdate.stage !== 'downloaded';
     if (check) check.disabled = appUpdate.busy;
+    // 不是「正在下」就把进度条收起来，别让它停在半格像卡住了。
+    if (appUpdate.stage !== 'downloading') renderUpdateProgress(null);
+}
+
+/** 把「每秒多少字节」写成看得懂的样子。 */
+function formatUpdateSpeed(bytesPerSecond) {
+    const speed = Number(bytesPerSecond) || 0;
+    if (speed <= 0) return '0 KB/s';
+    if (speed >= 1024 * 1024) return (speed / (1024 * 1024)).toFixed(1) + ' MB/s';
+    return Math.round(speed / 1024) + ' KB/s';
+}
+
+/** 更新包的下载进度：一条进度条 + 一行「百分比 · 速度 · 多少兆」。 */
+function renderUpdateProgress(payload) {
+    const bar = document.getElementById('update-progress');
+    const fill = document.getElementById('update-progress-bar');
+    const text = document.getElementById('update-progress-text');
+    if (!bar || !fill || !text) return;
+    if (!payload) {
+        bar.hidden = true;
+        text.hidden = true;
+        if (fill) fill.style.width = '0%';
+        return;
+    }
+    const total = Number(payload.total) || 0;
+    const received = Number(payload.received) || 0;
+    // 服务端没给长度时只知道「下了多少」，进度条就当作不确定态（走满格再淡掉）。
+    const percent = total > 0
+        ? Math.max(0, Math.min(100, (received * 100) / total))
+        : Number(payload.percent) || 0;
+    bar.hidden = false;
+    text.hidden = false;
+    fill.style.width = percent.toFixed(1) + '%';
+    const parts = [percent.toFixed(total > 0 ? 0 : 1) + '%'];
+    if (total > 0) parts.push(formatBytes(received) + ' / ' + formatBytes(total));
+    if (payload.speed) parts.push(formatUpdateSpeed(payload.speed));
+    text.textContent = parts.join(' · ');
+}
+
+/**
+ * 后端推过来的下载进度。
+ *
+ * 频次由后端掐（四分之一秒一次）：不掐的话一个几十兆的包会推几千条，
+ * 每次都是一遍 JS 执行，界面跟着掉帧。
+ */
+function onAppUpdateProgress(payload) {
+    if (appUpdate.stage !== 'downloading') appUpdate.stage = 'downloading';
+    renderUpdateProgress(payload);
 }
 
 /** Ask GitHub whether a newer release exists. */
@@ -1220,10 +1275,14 @@ async function downloadAppUpdate() {
     if (appUpdate.busy || !appUpdate.assetUrl) return;
     if (!bridgeHas('download_app_update')) return;
     appUpdate.busy = true;
+    appUpdate.stage = 'downloading';
+    renderUpdateProgress(null);
     renderAppUpdate(t('settings.update_downloading'));
     try {
         const result = await state.api.download_app_update(appUpdate.assetUrl, appUpdate.assetName);
+        renderUpdateProgress(null);
         if (!result || !result.success) {
+            appUpdate.stage = 'available';
             renderAppUpdate(t('settings.update_download_failed', {
                 message: (result && result.message) || ''
             }));
@@ -1231,8 +1290,15 @@ async function downloadAppUpdate() {
         }
         appUpdate.assetPath = result.path || '';
         appUpdate.stage = 'downloaded';
-        renderAppUpdate(t('settings.update_downloaded'));
+        // 说清楚是谁下的：借到 SDM 就是分片并发的，退回内置就一条连接。
+        // 用户嫌慢的时候，这一句就是答案。
+        const engine = result.engine === 'sdm'
+            ? t('settings.update_via_sdm')
+            : t('settings.update_via_builtin');
+        renderAppUpdate(t('settings.update_downloaded') + ' · ' + engine);
     } catch (err) {
+        renderUpdateProgress(null);
+        appUpdate.stage = 'available';
         renderAppUpdate(t('settings.update_download_failed', { message: String(err) }));
     } finally {
         appUpdate.busy = false;
@@ -2631,6 +2697,11 @@ function showView(name) {
     }
     // The Bangumi page re-reads whichever tab it is on: the local favourites
     // and the history may have changed in another view.
+    // Pixiv 页自己管自己的六个标签：切回来时把它当前那一页刷新一遍，
+    // 不然看到的是上一次留下的旧列表。
+    if (name === 'pixiv' && window.PixivUI) {
+        PixivUI.enter();
+    }
     if (name === 'bangumi') {
         // 播放器在详情面板里，切走就停掉。
         closeBangumiPlayer();
@@ -2649,6 +2720,7 @@ function showView(name) {
 function currentSection(name) {
     if (name === 'bili' || name === 'bili-download') return 'bili';
     if (name === 'bangumi') return 'bangumi';
+    if (name === 'pixiv') return 'pixiv';
     if (name === 'home' || name === 'search') return name === 'search' ? 'search' : 'home';
     return 'netease';
 }
@@ -8336,6 +8408,12 @@ function openHomeEntry(entry, byKeyboard) {
         // session may have ended in the meantime.
         loadBiliAccount();
         focusPageTitle('bili-title');
+        return;
+    }
+    if (entry === 'pixiv') {
+        showSection('pixiv');
+        if (window.PixivUI) PixivUI.enter();
+        focusPageTitle('pixiv-title');
         return;
     }
     if (entry === 'bangumi') {

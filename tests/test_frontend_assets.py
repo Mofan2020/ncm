@@ -124,6 +124,9 @@ _JS_GLOBALS = {
     "MediaMetadata", "localStorage", "navigator", "prompt", "sessionStorage",
     "performance", "location", "history", "screen", "crypto", "indexedDB",
     "l", "panel", "ResizeObserver", "AbortController",
+    # Pixiv 的界面在 pixiv.js 里（index.html 在 app.js 之前加载它），
+    # 这个名字是那边定义、这边调用的跨文件全局。
+    "PixivUI",
 }
 
 #: Reserved words: they are not variables, so they never need a declaration.

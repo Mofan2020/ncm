@@ -194,6 +194,34 @@ class BangumiSettings:
 
 
 @dataclass
+class PixivSettings:
+    """Pixiv 的设置。
+
+    登录态不在这里（那是 ``pixiv.json``），这里只有「怎么显示、怎么存」。
+    """
+
+    #: 成人内容怎么处理：``hide``（不显示）/ ``blur``（盖住，点开看）/ ``show``。
+    #: 默认 hide —— 这是给任何人的屏幕都摆得出来的默认值，想要别的自己改。
+    nsfw_mode: str = "hide"
+    #: 搜索时是否带上 R-18（服务端过滤，会影响到「发现」以外的所有列表）。
+    #: 只在 nsfw_mode 不是 hide 时才有意义。
+    include_r18: bool = False
+    #: 隐藏 AI 生成的作品。pixiv 自己的搜索有 ``ai_type=1`` 这个参数。
+    hide_ai: bool = False
+    #: 下载画质：``original``（原图）/ ``regular``（1200px 长边的网页版）。
+    quality: str = "original"
+    #: 下载落盘的位置。空字符串表示「下载目录/Pixiv」。
+    download_dir: str = ""
+    #: 文件名模板。可用字段：{artist} {title} {id} {page} {ext}。
+    #: 模板里不许带路径分隔符，渲染时会被替换成下划线。
+    template: str = "{artist} - {title} - {id}_p{page}"
+    #: 收藏时默认存成私密（不公开给关注者）。pixiv 的收藏有公开和私密两种。
+    bookmark_private: bool = False
+    #: 列表每页多少条。pixiv 网页端是 60，这里给小一点让首屏更快。
+    page_size: int = 48
+
+
+@dataclass
 class UISettings:
     """UI-related settings."""
 
@@ -204,6 +232,11 @@ class UISettings:
     remember_window_size: bool = True
     #: File name of the chosen background image inside the config dir.
     background_image: str = ""
+    #: 更新包能不能借 SDM 下（只影响 macOS）。SDM 按分片并发下，同一个
+    #: release 包快好几倍；关掉之后一律走内置的单连接下载。
+    update_use_sdm: bool = True
+    #: 借 SDM 时开几个分片。1-32，默认 8。
+    update_threads: int = 8
     #: 0-40 px of blur and 0-80 % darkening applied over the background.
     background_blur: int = 24
     background_dim: int = 30
@@ -282,6 +315,7 @@ class AppSettings:
     local_playlists: LocalPlaylistSettings = field(default_factory=LocalPlaylistSettings)
     bili: BiliSettings = field(default_factory=BiliSettings)
     bangumi: BangumiSettings = field(default_factory=BangumiSettings)
+    pixiv: PixivSettings = field(default_factory=PixivSettings)
     debug: bool = False
 
 
@@ -538,6 +572,7 @@ class Settings:
                 local_playlists=LocalPlaylistSettings(**_filtered(LocalPlaylistSettings, raw.get("local_playlists"))),
                 bili=BiliSettings(**_filtered(BiliSettings, raw.get("bili"))),
                 bangumi=BangumiSettings(**_filtered(BangumiSettings, raw.get("bangumi"))),
+                pixiv=PixivSettings(**_filtered(PixivSettings, raw.get("pixiv"))),
                 debug=bool(raw.get("debug", False)),
             )
             self._normalize()
@@ -558,8 +593,12 @@ class Settings:
         ui.background_dim = self._clamp_range(ui.background_dim, 0, 80, 30)
         for flag in ("remember_window_size", "glass", "accent_from_background",
                      "check_updates_on_start", "auto_install_updates",
-                     "update_include_prerelease", "update_skip_ssl_verify"):
+                     "update_include_prerelease", "update_skip_ssl_verify",
+                     "update_use_sdm"):
             setattr(ui, flag, _as_bool(getattr(ui, flag)))
+        # 分片数给个上下限：0 或负数 SDM 直接不接，几百个分片对几十兆的
+        # 更新包只会把连接开销花在握手上。
+        ui.update_threads = self._clamp_range(ui.update_threads, 1, 32, 8)
         if not isinstance(ui.skipped_update_versions, list):
             ui.skipped_update_versions = []
         ui.skipped_update_versions = [
@@ -630,6 +669,26 @@ class Settings:
         bangumi.stream_patterns = _clean_string_list(bangumi.stream_patterns, limit=20)
         bangumi.active_rule = str(bangumi.active_rule or "").strip()[:80]
 
+        pixiv = self._data.pixiv
+        mode = str(pixiv.nsfw_mode or "").strip().lower()
+        pixiv.nsfw_mode = mode if mode in ("hide", "blur", "show") else "hide"
+        # **hide 就不该偷偷带 R-18。** 两个开关各管一处，任一个说 hide，
+        # 请求就按 safe 发，免得「设了隐藏但搜索里还是冒出来」。
+        if pixiv.nsfw_mode == "hide":
+            pixiv.include_r18 = False
+        quality = str(pixiv.quality or "").strip().lower()
+        pixiv.quality = quality if quality in ("original", "regular") else "original"
+        pixiv.hide_ai = _as_bool(pixiv.hide_ai)
+        pixiv.include_r18 = _as_bool(pixiv.include_r18)
+        pixiv.bookmark_private = _as_bool(pixiv.bookmark_private)
+        pixiv.download_dir = str(pixiv.download_dir or "")
+        pixiv.page_size = self._clamp_range(pixiv.page_size, 12, 60, 48)
+        template = str(pixiv.template or "").strip()
+        # 模板里混进路径分隔符会拼出子目录，或者更糟——跳出下载目录。
+        for bad in ("/", "\\", ".."):
+            template = template.replace(bad, "_")
+        pixiv.template = template[:120] or "{artist} - {title} - {id}_p{page}"
+
     @staticmethod
     def _clamp_range(value: Any, low: int, high: int, fallback: int) -> int:
         try:
@@ -656,6 +715,8 @@ class Settings:
                 "bili": asdict(self._data.bili),
                 # Bangumi 的镜像和资源站模板同理。
                 "bangumi": asdict(self._data.bangumi),
+                # Pixiv 的设置同理；少了这一段，改完重启全回默认。
+                "pixiv": asdict(self._data.pixiv),
                 "debug": self._data.debug,
             }
             try:
@@ -687,6 +748,10 @@ class Settings:
     @property
     def bili(self) -> BiliSettings:
         return self._data.bili
+
+    @property
+    def pixiv(self) -> PixivSettings:
+        return self._data.pixiv
 
     def local_playlists(self) -> LocalPlaylistSettings:
         return self._data.local_playlists
@@ -749,6 +814,14 @@ class Settings:
         for key, value in kwargs.items():
             if hasattr(self._data.bangumi, key):
                 setattr(self._data.bangumi, key, value)
+        self._normalize()
+        self.save()
+
+    def update_pixiv(self, **kwargs: Any) -> None:
+        """Store the Pixiv settings and write them out."""
+        for key, value in kwargs.items():
+            if hasattr(self._data.pixiv, key):
+                setattr(self._data.pixiv, key, value)
         self._normalize()
         self.save()
 

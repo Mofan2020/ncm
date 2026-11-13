@@ -3439,3 +3439,310 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     border-radius: 6px;
     background: var(--panel);
 }
+
+
+/* ---------------------------------------------------------------- pixiv */
+
+/* 作品详情是一整块面板，盖在页面上而不是另开窗口：来回翻作品时窗口不要
+ * 一闪一闪，而且主窗口的播放器还在响，切窗口会很吵。 */
+.pixiv-detail {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px 20px 20px;
+    background: var(--panel, #14161a);
+    z-index: 40;
+    overflow: auto;
+}
+
+.pixiv-detail-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 0 0 auto;
+}
+
+.pixiv-detail-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pixiv-detail-actions {
+    display: flex;
+    gap: 6px;
+    flex: 0 0 auto;
+}
+
+/* 收藏按钮的「已收藏」状态：图标填色，跟 B 站那边的收藏按钮一致。 */
+.pixiv-detail-actions .btn-icon.is-active {
+    color: var(--brand);
+    background: var(--brand-soft);
+}
+
+.pixiv-detail-body {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 0;
+    flex: 0 1 auto;
+}
+
+.pixiv-stage {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--sunken);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    min-height: 240px;
+    max-height: 62vh;
+}
+
+.pixiv-stage img {
+    max-width: 100%;
+    max-height: 62vh;
+    object-fit: contain;
+    display: block;
+}
+
+/* 成人内容先盖一层。**模糊而不是隐藏**：缩略图和画面都在，只是看不清，
+ * 要不要看由用户点那一下决定。 */
+.pixiv-curtain {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 12, 16, 0.72);
+    color: var(--text);
+    text-align: center;
+    padding: 20px;
+    backdrop-filter: blur(6px);
+}
+
+.pixiv-detail-nav {
+    flex: 0 0 auto;
+}
+
+.pixiv-detail-foot {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 0 0 auto;
+}
+
+.pixiv-detail-meta,
+.pixiv-detail-pager {
+    font-size: 12px;
+    color: var(--text-dim, #9aa3ad);
+}
+
+.pixiv-detail-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.pixiv-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--sunken);
+    color: var(--text-dim, #9aa3ad);
+}
+
+.pixiv-detail-desc {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-dim, #9aa3ad);
+    white-space: pre-wrap;
+    max-height: 6.5em;
+    overflow: auto;
+}
+
+.pixiv-artist-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 0 0 auto;
+    border-top: 1px solid var(--divider);
+    padding-top: 12px;
+}
+
+.pixiv-artist-head {
+    font-size: 12px;
+    color: var(--text-dim, #9aa3ad);
+}
+
+/* 盖住的缩略图：糊一层，鼠标放上去才透出来一点，不整块消失。 */
+.video-card.is-tile.is-blurred .vc-thumb img {
+    filter: blur(16px) saturate(0.8);
+    transition: filter 160ms ease;
+}
+
+.video-card.is-tile.is-blurred:hover .vc-thumb img {
+    filter: blur(9px) saturate(0.85);
+}
+
+.pixiv-nsfw-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    font-size: 10px;
+    line-height: 1;
+    padding: 3px 6px;
+    border-radius: 999px;
+    background: rgba(196, 48, 43, 0.9);
+    color: #fff;
+    letter-spacing: 0.02em;
+}
+
+.pixiv-account {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    border-radius: var(--radius-sm);
+    background: var(--sunken);
+}
+
+.pixiv-account-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.pixiv-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex: 0 0 auto;
+}
+
+.pixiv-account-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.pixiv-account-sub {
+    font-size: 12px;
+    color: var(--text-dim, #9aa3ad);
+}
+
+.pixiv-account-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.pixiv-cookie-import {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.pixiv-cookie-import input {
+    flex: 1;
+    min-width: 0;
+}
+
+.pixiv-settings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px 20px;
+    padding: 4px 0 12px;
+}
+
+.pixiv-settings .bgm-toggle.is-wide {
+    flex: 1 1 100%;
+}
+
+.pixiv-settings .bgm-toggle.is-wide input {
+    flex: 1;
+    min-width: 0;
+}
+
+.pixiv-following {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.pixiv-follow-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px;
+    border: none;
+    border-radius: var(--radius-xs);
+    background: var(--glass-soft);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
+}
+
+.pixiv-follow-row:hover {
+    background: var(--hover);
+}
+
+.pixiv-follow-action {
+    font-size: 12px;
+    color: var(--brand);
+    flex: 0 0 auto;
+}
+
+/* 列表底下的「正在加载 / 没有内容」那行字。 */
+.page-state {
+    font-size: 12px;
+    color: var(--text-dim, #9aa3ad);
+    padding: 6px 2px;
+}
+
+.page-state:empty {
+    display: none;
+}
+
+/* 详情面板用绝对定位盖在本页上，所以这一页要是一个定位容器。 */
+#view-pixiv { position: relative; }
+
+/* 更新包的下载进度：一条细条 + 一行字。宽度靠 style.width 推，别用动画，
+ * 动画跟不上真实速度的时候反而像卡住。 */
+.update-progress {
+    height: 6px;
+    margin: 8px 0 4px;
+    border-radius: 999px;
+    background: var(--sunken);
+    overflow: hidden;
+    max-width: 420px;
+}
+
+.update-progress-bar {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: var(--brand);
+    transition: width 180ms linear;
+}
+
+.update-progress-text {
+    font-size: 12px;
+    color: var(--text-dim, #9aa3ad);
+    font-variant-numeric: tabular-nums;
+}
