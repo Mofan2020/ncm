@@ -281,6 +281,9 @@
                         <button class="top-tab is-compact" type="button" role="tab"
                                 aria-selected="false" data-value="bilibili"
                                 data-i18n="search.source_bili"></button>
+                        <button class="top-tab is-compact" type="button" role="tab"
+                                aria-selected="false" data-value="pixiv"
+                                data-i18n="search.source_pixiv"></button>
                     </div>
                     <label class="sr-only" for="aggr-category" data-i18n="search.filter_category"></label>
                     <select class="filter-select" id="aggr-category">
@@ -763,42 +766,6 @@
                         </div>
                     </div>
 
-                    <h2 class="section-title" data-i18n="pixiv.settings_title"></h2>
-                    <div class="pixiv-settings">
-                        <label class="bgm-toggle">
-                            <span data-i18n="pixiv.nsfw_mode"></span>
-                            <select id="pixiv-nsfw-mode" class="select">
-                                <option value="hide" data-i18n="pixiv.nsfw_hide"></option>
-                                <option value="blur" data-i18n="pixiv.nsfw_blur"></option>
-                                <option value="show" data-i18n="pixiv.nsfw_show"></option>
-                            </select>
-                        </label>
-                        <label class="bgm-toggle">
-                            <input type="checkbox" id="pixiv-include-r18">
-                            <span data-i18n="pixiv.include_r18"></span>
-                        </label>
-                        <label class="bgm-toggle">
-                            <input type="checkbox" id="pixiv-hide-ai">
-                            <span data-i18n="pixiv.hide_ai"></span>
-                        </label>
-                        <label class="bgm-toggle">
-                            <span data-i18n="pixiv.quality"></span>
-                            <select id="pixiv-quality" class="select">
-                                <option value="original" data-i18n="pixiv.quality_original"></option>
-                                <option value="regular" data-i18n="pixiv.quality_regular"></option>
-                            </select>
-                        </label>
-                        <label class="bgm-toggle">
-                            <input type="checkbox" id="pixiv-bm-private">
-                            <span data-i18n="pixiv.bookmark_private"></span>
-                        </label>
-                        <label class="bgm-toggle is-wide">
-                            <span data-i18n="pixiv.template"></span>
-                            <input type="text" id="pixiv-template" autocomplete="off" spellcheck="false">
-                        </label>
-                    </div>
-                    <p class="page-hint" data-i18n="pixiv.template_hint"></p>
-
                     <h2 class="section-title" data-i18n="pixiv.following_title"></h2>
                     <div class="pixiv-following" id="pixiv-following-list"></div>
                     <div class="page-state" id="pixiv-following-state"></div>
@@ -810,7 +777,10 @@
                 <div class="pixiv-detail-head">
                     <button class="btn btn-icon" id="btn-pixiv-detail-close" type="button"
                             data-icon="close" data-i18n-title="common.close" aria-label="close"></button>
-                    <div class="pixiv-detail-title" id="pixiv-detail-title"></div>
+                    <div class="pixiv-detail-headings">
+                        <div class="pixiv-detail-title" id="pixiv-detail-title"></div>
+                        <div class="pixiv-detail-meta" id="pixiv-detail-meta"></div>
+                    </div>
                     <div class="pixiv-detail-actions">
                         <button class="btn btn-icon" id="btn-pixiv-detail-bookmark" type="button"
                                 data-icon="star" data-i18n-title="pixiv.bookmark" aria-label="bookmark"></button>
@@ -821,28 +791,37 @@
                     </div>
                 </div>
                 <div class="pixiv-detail-body">
-                    <button class="btn btn-icon pixiv-detail-nav" type="button" id="btn-pixiv-page-prev"
-                            data-icon="prev" data-i18n-title="pixiv.prev_page" aria-label="prev"></button>
                     <div class="pixiv-stage">
+                        <img id="pixiv-detail-image" alt="">
                         <div class="pixiv-curtain" id="pixiv-detail-curtain" hidden>
                             <p data-i18n="pixiv.nsfw_warning"></p>
                             <button class="btn btn-primary" type="button" id="btn-pixiv-detail-reveal"
                                     data-i18n="pixiv.reveal"></button>
                         </div>
-                        <img id="pixiv-detail-image" alt="">
+                        <button class="btn btn-icon pixiv-stage-nav is-prev" type="button" id="btn-pixiv-page-prev"
+                                data-icon="prev" data-i18n-title="pixiv.prev_page" aria-label="prev"></button>
+                        <button class="btn btn-icon pixiv-stage-nav is-next" type="button" id="btn-pixiv-page-next"
+                                data-icon="next" data-i18n-title="pixiv.next_page" aria-label="next"></button>
+                        <div class="pixiv-stage-pager" id="pixiv-detail-pager"></div>
                     </div>
-                    <button class="btn btn-icon pixiv-detail-nav" type="button" id="btn-pixiv-page-next"
-                            data-icon="next" data-i18n-title="pixiv.next_page" aria-label="next"></button>
+                    <aside class="pixiv-detail-side">
+                        <section class="pixiv-side-block">
+                            <h3 data-i18n="pixiv.stats_title"></h3>
+                            <dl class="pixiv-stats" id="pixiv-detail-stats"></dl>
+                        </section>
+                        <section class="pixiv-side-block">
+                            <h3 data-i18n="pixiv.tags_title"></h3>
+                            <div class="pixiv-detail-tags" id="pixiv-detail-tags"></div>
+                        </section>
+                        <section class="pixiv-side-block">
+                            <h3 data-i18n="pixiv.desc_title"></h3>
+                            <div class="pixiv-detail-desc" id="pixiv-detail-desc"></div>
+                        </section>
+                    </aside>
                 </div>
                 <div class="pixiv-detail-foot">
-                    <div class="pixiv-detail-meta" id="pixiv-detail-meta"></div>
-                    <div class="pixiv-detail-pager" id="pixiv-detail-pager"></div>
-                    <div class="pixiv-detail-tags" id="pixiv-detail-tags"></div>
-                    <div class="pixiv-detail-desc" id="pixiv-detail-desc"></div>
-                </div>
-                <div class="pixiv-artist-row">
                     <div class="pixiv-artist-head" id="pixiv-detail-artist"></div>
-                    <div class="bili-grid" id="pixiv-artist-works"></div>
+                    <div class="bili-grid pixiv-artist-grid" id="pixiv-artist-works"></div>
                 </div>
             </div>
         </section>
@@ -1432,8 +1411,40 @@
         </div>
                 </div>
             </section>
+                <section class="ac-card" id="ac-pixiv-card">
+                <header class="ac-card-head">
+                    <span class="ac-card-title" data-i18n="account.center_pixiv"></span>
+                    <span class="ac-card-state" id="ac-pixiv-state"></span>
+                </header>
+                <div class="ac-profile" id="ac-pixiv-profile" hidden>
+                    <img class="ac-face" id="ac-pixiv-face" alt="" hidden>
+                    <div class="ac-info">
+                        <div class="ac-name" id="ac-pixiv-name"></div>
+                        <div class="ac-meta" id="ac-pixiv-meta"></div>
+                    </div>
+                </div>
+                <div class="ac-actions" id="ac-pixiv-actions"></div>
+                <div class="ac-login" id="ac-pixiv-login" hidden>
+                    <p class="muted" data-i18n="pixiv.login_hint"></p>
+                    <div class="inline-form">
+                        <button class="btn btn-primary" type="button" id="btn-ac-pixiv-login"
+                                data-i18n="pixiv.login"></button>
+                        <button class="btn btn-secondary" type="button" id="btn-ac-pixiv-signup"
+                                data-i18n="pixiv.signup"></button>
+                    </div>
+                    <label class="option">
+                        <span data-i18n="pixiv.cookie_label"></span>
+                        <textarea id="ac-pixiv-cookie" rows="3" spellcheck="false"
+                                  data-i18n-placeholder="pixiv.cookie_placeholder"></textarea>
+                    </label>
+                    <p class="muted" data-i18n="pixiv.cookie_hint"></p>
+                    <button class="btn btn-secondary btn-block" type="button" id="btn-ac-pixiv-cookie"
+                            data-i18n="pixiv.cookie_save"></button>
+                    <p class="muted" id="ac-pixiv-login-hint"></p>
+                </div>
+            </section>
         </div>
-    </div>
+</div>
 </div>
 
 <!-- ============ settings modal ============ -->
@@ -1452,6 +1463,7 @@
                 <button class="tab" type="button" data-tab="download" data-i18n="settings.download"></button>
                 <button class="tab" type="button" data-tab="bili" data-i18n="bili.settings_bili"></button>
                 <button class="tab" type="button" data-tab="bangumi" data-i18n="bangumi.title"></button>
+                <button class="tab" type="button" data-tab="pixiv" data-i18n="pixiv.title"></button>
                 <button class="tab" type="button" data-tab="account" data-i18n="backup.tab"></button>
                 <button class="tab" type="button" data-tab="advanced"
                         data-i18n="settings.advanced"></button>
@@ -1880,6 +1892,61 @@
                         </div>
                     </label>
                 </div>
+            </div>
+
+            <div class="tab-panel" data-panel="pixiv">
+                <h3 class="group-title" data-i18n="pixiv.settings_browse"></h3>
+                <label class="option">
+                    <span data-i18n="pixiv.nsfw_mode"></span>
+                    <select id="pixiv-nsfw-mode">
+                        <option value="hide" data-i18n="pixiv.nsfw_hide"></option>
+                        <option value="blur" data-i18n="pixiv.nsfw_blur"></option>
+                        <option value="show" data-i18n="pixiv.nsfw_show"></option>
+                    </select>
+                </label>
+                <p class="muted" data-i18n="pixiv.nsfw_mode_hint"></p>
+                <label class="option">
+                    <span data-i18n="pixiv.include_r18"></span>
+                    <input type="checkbox" id="pixiv-include-r18">
+                </label>
+                <label class="option">
+                    <span data-i18n="pixiv.hide_ai"></span>
+                    <input type="checkbox" id="pixiv-hide-ai">
+                </label>
+                <label class="option">
+                    <span data-i18n="pixiv.page_size"></span>
+                    <input type="number" id="pixiv-page-size" class="text-input" min="12" max="96" step="12">
+                </label>
+
+                <h3 class="group-title" data-i18n="pixiv.settings_download"></h3>
+                <label class="option">
+                    <span data-i18n="pixiv.quality"></span>
+                    <select id="pixiv-quality">
+                        <option value="original" data-i18n="pixiv.quality_original"></option>
+                        <option value="regular" data-i18n="pixiv.quality_regular"></option>
+                    </select>
+                </label>
+                <label class="option">
+                    <span data-i18n="pixiv.download_dir"></span>
+                    <div class="inline-form">
+                        <input type="text" id="pixiv-download-dir" class="text-input" readonly autocomplete="off">
+                        <button id="btn-pixiv-choose-dir" class="btn btn-secondary" type="button"
+                                data-i18n="settings.choose_background"></button>
+                    </div>
+                </label>
+                <p class="muted" data-i18n="pixiv.download_dir_hint"></p>
+                <label class="option">
+                    <span data-i18n="pixiv.template"></span>
+                    <input type="text" id="pixiv-template" class="text-input" autocomplete="off" spellcheck="false">
+                </label>
+                <p class="muted" data-i18n="pixiv.template_hint"></p>
+
+                <h3 class="group-title" data-i18n="pixiv.settings_bookmark"></h3>
+                <label class="option">
+                    <span data-i18n="pixiv.bookmark_private"></span>
+                    <input type="checkbox" id="pixiv-bm-private">
+                </label>
+                <p class="muted" data-i18n="pixiv.bookmark_private_hint"></p>
             </div>
 
             <div class="tab-panel" data-panel="account">

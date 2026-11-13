@@ -207,6 +207,30 @@ const PixivUI = {
         if (template) {
             template.addEventListener('change', () => this.saveSettings({ template: template.value }));
         }
+        const pageSize = pixivEl('pixiv-page-size');
+        if (pageSize) {
+            pageSize.addEventListener('change', () => {
+                const value = Math.max(12, Math.min(96, Number(pageSize.value) || 48));
+                pageSize.value = String(value);
+                this.saveSettings({ page_size: value });
+            });
+        }
+        const chooseDir = pixivEl('btn-pixiv-choose-dir');
+        if (chooseDir) {
+            chooseDir.addEventListener('click', async () => {
+                const api = pixivApi();
+                if (!api) return;
+                try {
+                    const picked = await api.choose_directory();
+                    if (!picked) return;
+                    const box = pixivEl('pixiv-download-dir');
+                    if (box) box.value = picked;
+                    this.saveSettings({ download_dir: picked });
+                } catch (err) {
+                    pixivToast('error', String(err && err.message ? err.message : err));
+                }
+            });
+        }
 
         document.addEventListener('keydown', (event) => {
             const panel = pixivEl('pixiv-detail');
@@ -289,6 +313,8 @@ const PixivUI = {
         if (count) count.textContent = info.logged_in ? (pixivState.account.name || '') : '';
         pixivSetState('pixiv-login-hint',
             info.expired ? t('pixiv.session_expired') : t('pixiv.login_hint'));
+        // 账号中心那张卡不在这个文件里，登好 / 退出之后得让它知道。
+        document.dispatchEvent(new CustomEvent('pixiv-state-changed'));
     },
 
     renderAccount(info) {
@@ -343,6 +369,12 @@ const PixivUI = {
         if (template && document.activeElement !== template) {
             template.value = settings.template || '';
         }
+        const pageSize = pixivEl('pixiv-page-size');
+        if (pageSize && document.activeElement !== pageSize) {
+            pageSize.value = String(settings.page_size || 48);
+        }
+        const dir = pixivEl('pixiv-download-dir');
+        if (dir) dir.value = settings.download_dir || '';
     },
 
     async saveSettings(patch) {
@@ -583,7 +615,8 @@ const PixivUI = {
         pixivEl('pixiv-detail-curtain').hidden = true;
         const meta = pixivEl('pixiv-detail-meta');
         if (meta) meta.textContent = '';
-        ['pixiv-detail-tags', 'pixiv-detail-desc', 'pixiv-artist-works'].forEach((id) => {
+        ['pixiv-detail-tags', 'pixiv-detail-desc', 'pixiv-detail-stats',
+         'pixiv-artist-works'].forEach((id) => {
             const el = pixivEl(id);
             if (el) el.innerHTML = '';
         });
@@ -604,15 +637,20 @@ const PixivUI = {
     renderDetail(work) {
         const title = pixivEl('pixiv-detail-title');
         if (title) title.textContent = work.title || '';
+        // 标题下面那一行只放「这是谁的、什么时候的、多大」：数字另有一块，
+        // 混在一行里挤到换行，看起来就像没排版。
         const meta = pixivEl('pixiv-detail-meta');
         if (meta) {
+            const pages = (work.pages || []).length || work.page_count || 1;
             const parts = [];
             if (work.user_name) parts.push(work.user_name);
-            if (work.bookmark_count) parts.push(t('pixiv.meta_bookmarks', { count: work.bookmark_count }));
-            if (work.like_count) parts.push(t('pixiv.meta_likes', { count: work.like_count }));
-            if (work.view_count) parts.push(t('pixiv.meta_views', { count: work.view_count }));
+            parts.push(work.type === 2 ? t('pixiv.type_ugoira')
+                : (pages > 1 ? t('pixiv.type_manga') : t('pixiv.type_illust')));
+            if (work.create_date) parts.push(String(work.create_date).slice(0, 10));
+            if (work.width && work.height) parts.push(`${work.width} × ${work.height}`);
             meta.textContent = parts.join(' · ');
         }
+        this.renderStats(work);
         const tags = pixivEl('pixiv-detail-tags');
         if (tags) {
             tags.innerHTML = '';
@@ -643,6 +681,30 @@ const PixivUI = {
         const curtain = pixivEl('pixiv-detail-curtain');
         if (curtain) curtain.hidden = !work.nsfw || pixivState.revealed;
         this.renderDetailPage();
+    },
+
+    renderStats(work) {
+        const box = pixivEl('pixiv-detail-stats');
+        if (!box) return;
+        box.innerHTML = '';
+        const pages = (work.pages || []).length || work.page_count || 1;
+        const rows = [
+            ['pixiv.stat_bookmarks', work.bookmark_count],
+            ['pixiv.stat_likes', work.like_count],
+            ['pixiv.stat_views', work.view_count],
+            ['pixiv.stat_pages', pages]
+        ];
+        rows.forEach(([key, value]) => {
+            const cell = document.createElement('div');
+            const term = document.createElement('dt');
+            term.textContent = t(key);
+            const num = document.createElement('dd');
+            const count = Number(value) || 0;
+            num.textContent = count.toLocaleString();
+            cell.appendChild(term);
+            cell.appendChild(num);
+            box.appendChild(cell);
+        });
     },
 
     renderDetailPage() {

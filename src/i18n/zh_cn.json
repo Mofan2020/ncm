@@ -640,7 +640,8 @@
     "center_signed_out": "未登录",
     "center_login": "登录",
     "center_logout": "退出登录",
-    "center_profile": "查看资料"
+    "center_profile": "查看资料",
+    "center_pixiv": "Pixiv"
   },
   "cache": {
     "title": "本地缓存",
@@ -784,7 +785,10 @@
     "offline_title": "当前离线",
     "offline_hint": "联网后再搜索",
     "sub_bili": "{uploader} · {plays} 播放",
-    "sub_netease": "{artist} · {album}"
+    "sub_netease": "{artist} · {album}",
+    "source_pixiv": "Pixiv",
+    "sub_pixiv_bookmarks": "{count} 收藏",
+    "result_pixiv": "Pixiv {count} 张"
   },
   "bili": {
     "title": "B站",
@@ -1285,6 +1289,28 @@
     "download_done": "下载完成，共 {count} 个文件。",
     "download_unavailable": "这个版本还没接上下载。",
     "action_failed": "操作没成功。",
-    "backend_missing": "Pixiv 后端不可用。"
+    "backend_missing": "Pixiv 后端不可用。",
+    "settings_browse": "浏览与显示",
+    "settings_download": "下载",
+    "settings_bookmark": "收藏",
+    "nsfw_mode_hint": "「隐藏」整条不返回；「模糊」照样列出但盖一层，点开才看得清。",
+    "page_size": "每页数量",
+    "download_dir": "下载目录",
+    "download_dir_hint": "留空就存到系统的下载目录。",
+    "bookmark_private_hint": "新收藏默认只自己可见。",
+    "stats_title": "数据",
+    "tags_title": "标签",
+    "desc_title": "简介",
+    "stat_bookmarks": "收藏",
+    "stat_likes": "点赞",
+    "stat_views": "浏览",
+    "stat_pages": "页数",
+    "type_illust": "插画",
+    "type_manga": "漫画",
+    "type_ugoira": "动图",
+    "open_page": "打开 Pixiv 页",
+    "logout_confirm": "要退出 Pixiv 账号吗？",
+    "cookie_label": "或者直接粘贴 PHPSESSID",
+    "cookie_hint": "在浏览器里登录 pixiv 后，从开发者工具里复制 PHPSESSID 填进来。"
   }
 }

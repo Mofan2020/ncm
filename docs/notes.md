@@ -4116,3 +4116,52 @@ SDM 有自己的下载目录，命令行没有「下到这个路径」，所以�
 
 进度推到界面每 0.25 秒一次：一个几十兆的包会回几千次进度回调，每条都是一次
 `evaluate_js`，不限频界面会跟着掉帧。
+
+
+## Pixiv 进公共位置（v3.24.0）
+
+Pixiv 一开始是自带一套东西的：自己的登录框、自己的设置、自己的详情面板。
+用户的原话是「Pixiv 账号那么特殊啊？不能账号中心统一登录注册和管理啊」——
+所以这一版把它拆开塞进各处该在的位置。
+
+- **账号中心**：`app.js` 的 `accountCenter` 多一张卡，刷新走
+  `refreshPixivAccountCard()`。Pixiv 没有二维码也没有密码框（它的登录就是
+  「开一个真的 pixiv 页面让人自己登」），所以卡里只有「登录 / 注册 / 粘贴
+  PHPSESSID」三条路。登录窗口登好之后 `pixiv.js` 会
+  `dispatchEvent('pixiv-state-changed')`，卡片跟着刷——两个文件之间只有这一个
+  事件，不互相直接调用。
+- **设置**：从「Pixiv 页面里的一段」搬进设置弹窗的 `data-panel="pixiv"`。
+  **同一个设置在两个地方出现比没有设置更糟**：改一处另一处不动，用户以为开关
+  没生效。搬走的时候把页面里那份删掉了，`tests/test_pixiv_surfaces.py` 里
+  有一条数 `id="pixiv-nsfw-mode"` 出现次数。
+- **聚合搜索**：第三个来源。Pixiv 只有一页（它的搜索按相关度给一屏），所以
+  它不参与翻页，`combinedExhausted()` 把它算进「翻完了没有」，只选一个来源
+  的时候另外两个当场置成结束——不然「没有更多了」那一行永远不出现。
+- **详情页**：见下一节。
+
+## 详情页为什么会「各种元素重叠」（v3.24.0）
+
+不是运气不好，是布局方式错了。原来是 `.pixiv-detail` 一列 flex，舞台用
+`max-height: 62vh` 定高，脚注再往下堆。窗口高 760 时大概刚好，窗口一矮、
+描述一长，总高超过容器就开始滚，几块互相压。
+
+改成 grid 三行：`auto / minmax(0, 1fr) / auto`。`minmax(0, 1fr)` 是关键——写成
+`1fr` 的时候内容撑开的最小高度会把行顶高，等于没限制。中间那行再分两栏
+（舞台 + 侧栏），舞台 `img` 用 `object-fit: contain` 吃满，侧栏 `overflow-y: auto`
+自己滚，谁都不压谁。窄窗口（<900px）改成上下排，而且舞台给
+`minmax(240px, 1fr)`——给 `auto` 的话画面会被侧栏挤成一条缝，那是「重叠」的
+另一种样子。
+
+验收是量出来的，不是看出来的：1280×760 / 880×620 / 1024×520 三个尺寸下取
+`.pixiv-detail-head` / `-body` / `.pixiv-stage` / `-side` / `-foot` 的
+`getBoundingClientRect()`，断言相邻块的边界不交叠、页面不出现纵向滚动。
+
+## i18n 的顶层键不许带点（v3.24.0 踩到）
+
+加文案时用 `data.setdefault("pixiv.page_size", "每页数量")` 写在了**顶层**，生成了
+`"pixiv.page_size": "..."` 这样的扁键。`flatten_translations()` 摊平之后跟嵌套
+写法长得一模一样，键位对比全过——**但运行时 `t()` 是顺着层级找的**，找不到就
+把 `pixiv.page_size` 原样显示到界面上。
+
+`tests/test_i18n.py::test_no_dotted_keys_at_the_top_level` 就是挡这个的：顶层键
+带点直接红。加文案一律按 `data[family][key]` 写。

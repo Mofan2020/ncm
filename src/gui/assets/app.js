@@ -1859,6 +1859,10 @@ async function refreshLoginStatus() {
 const accountCenter = {
     netease: { loggedIn: false, nickname: '', level: '', vip: '', avatar: '' },
     bilibili: { loggedIn: false, nickname: '', level: '', vip: '', avatar: '' },
+    pixiv: {
+        loggedIn: false, name: '', id: '', avatar: '', premium: false,
+        following: 0, bound: false
+    },
     loginFor: ''
 };
 
@@ -1880,16 +1884,166 @@ function showAccountLogin(which) {
     accountCenter.loginFor = which || '';
     const netease = document.getElementById('ac-netease-login');
     const bili = document.getElementById('ac-bili-login');
+    const pixiv = document.getElementById('ac-pixiv-login');
     if (netease) netease.hidden = accountCenter.loginFor !== 'netease';
     if (bili) bili.hidden = accountCenter.loginFor !== 'bilibili';
+    if (pixiv) pixiv.hidden = accountCenter.loginFor !== 'pixiv';
     if (accountCenter.loginFor === 'netease') switchLoginTab('qrcode');
     if (accountCenter.loginFor === 'bilibili') switchBiliLoginTab('qr');
 }
 
 /** Read both accounts and draw the two cards. */
 async function refreshAccountCenter() {
-    await Promise.all([refreshNeteaseAccountCard(), refreshBiliAccountCard()]);
+    await Promise.all([
+        refreshNeteaseAccountCard(),
+        refreshBiliAccountCard(),
+        refreshPixivAccountCard()
+    ]);
     renderAccountCenterButton();
+}
+
+/**
+ * 账号中心里的 Pixiv 那张卡。
+ *
+ * Pixiv 的登录走的是「开一个真的 pixiv 页面让人自己登」，我们只拿回
+ * PHPSESSID；所以这里没有二维码、没有密码框，只有登录 / 粘贴 cookie 两条路。
+ */
+async function refreshPixivAccountCard() {
+    const stateEl = document.getElementById('ac-pixiv-state');
+    if (!stateEl || !state.api) return;
+    bindAccountCenterPixiv();
+    const card = accountCenter.pixiv;
+    let info = null;
+    try {
+        info = await state.api.pixiv_state();
+    } catch (err) {
+        info = null;
+    }
+    const account = (info && info.account) || {};
+    card.loggedIn = !!(info && info.logged_in);
+    card.name = account.name || '';
+    card.id = account.id || '';
+    card.avatar = account.avatar_proxy || account.avatar || '';
+    card.premium = !!account.premium;
+    card.following = Number(account.following) || 0;
+
+    stateEl.textContent = card.loggedIn
+        ? t('account.center_signed_in') : t('account.center_signed_out');
+    stateEl.className = 'ac-card-state' + (card.loggedIn ? ' is-on' : '');
+
+    const profileBox = document.getElementById('ac-pixiv-profile');
+    if (profileBox) profileBox.hidden = !card.loggedIn;
+    const face = document.getElementById('ac-pixiv-face');
+    if (face) {
+        if (card.loggedIn && card.avatar) {
+            face.src = card.avatar;
+            face.hidden = false;
+            face.addEventListener('error', () => { face.hidden = true; });
+        } else {
+            face.removeAttribute('src');
+            face.hidden = true;
+        }
+    }
+    const nameEl = document.getElementById('ac-pixiv-name');
+    if (nameEl) nameEl.textContent = card.name;
+    const metaEl = document.getElementById('ac-pixiv-meta');
+    if (metaEl) {
+        const parts = [];
+        if (card.id) parts.push('ID ' + card.id);
+        if (card.premium) parts.push(t('pixiv.premium'));
+        if (card.following) {
+            parts.push(t('pixiv.following_count', { count: card.following }));
+        }
+        metaEl.textContent = parts.join(' · ');
+    }
+
+    const actions = document.getElementById('ac-pixiv-actions');
+    if (!actions) return;
+    actions.innerHTML = '';
+    if (card.loggedIn) {
+        const open = document.createElement('button');
+        open.className = 'btn btn-sm btn-secondary';
+        open.type = 'button';
+        open.textContent = t('pixiv.open_page');
+        open.addEventListener('click', () => {
+            closeModal('account-center-modal');
+            showView('pixiv');
+        });
+        actions.appendChild(open);
+        const exportBtn = document.createElement('button');
+        exportBtn.className = 'btn btn-sm btn-secondary';
+        exportBtn.type = 'button';
+        exportBtn.textContent = t('pixiv.export_data');
+        exportBtn.addEventListener('click', async () => {
+            if (!window.PixivUI) return;
+            await PixivUI.exportData();
+        });
+        actions.appendChild(exportBtn);
+        const logout = document.createElement('button');
+        logout.className = 'btn btn-sm btn-secondary';
+        logout.type = 'button';
+        logout.textContent = t('account.center_logout');
+        logout.addEventListener('click', async () => {
+            if (!await confirmDialog('pixiv.logout_confirm')) return;
+            if (window.PixivUI) await PixivUI.logout();
+            await refreshPixivAccountCard();
+            renderAccountCenterButton();
+        });
+        actions.appendChild(logout);
+    } else {
+        const login = document.createElement('button');
+        login.className = 'btn btn-sm btn-primary';
+        login.type = 'button';
+        login.textContent = t('account.center_login');
+        login.addEventListener('click', () => showAccountLogin('pixiv'));
+        actions.appendChild(login);
+    }
+}
+
+/** 账号中心里 Pixiv 的登录按钮与 cookie 输入框，只绑一次。 */
+function bindAccountCenterPixiv() {
+    const card = accountCenter.pixiv;
+    if (card.bound) return;
+    card.bound = true;
+    const login = document.getElementById('btn-ac-pixiv-login');
+    if (login) {
+        login.addEventListener('click', () => {
+            if (window.PixivUI) PixivUI.login(false);
+        });
+    }
+    const signup = document.getElementById('btn-ac-pixiv-signup');
+    if (signup) {
+        signup.addEventListener('click', () => {
+            if (window.PixivUI) PixivUI.login(true);
+        });
+    }
+    const cookieBtn = document.getElementById('btn-ac-pixiv-cookie');
+    const cookieBox = document.getElementById('ac-pixiv-cookie');
+    if (cookieBtn && cookieBox) {
+        cookieBtn.addEventListener('click', async () => {
+            const value = (cookieBox.value || '').trim();
+            const hint = document.getElementById('ac-pixiv-login-hint');
+            if (!value) return;
+            try {
+                const result = await state.api.pixiv_login_cookie(value);
+                if (result && result.success) {
+                    cookieBox.value = '';
+                    if (hint) hint.textContent = '';
+                    await refreshPixivAccountCard();
+                    renderAccountCenterButton();
+                } else if (hint) {
+                    hint.textContent = (result && result.message) || t('pixiv.login_failed');
+                }
+            } catch (err) {
+                if (hint) hint.textContent = String(err && err.message ? err.message : err);
+            }
+        });
+    }
+    // 登录窗口那边登好之后，pixiv.js 会喊一声；卡片跟着刷。
+    document.addEventListener('pixiv-state-changed', () => {
+        refreshPixivAccountCard();
+        renderAccountCenterButton();
+    });
 }
 
 /** The NetEase card of the account center. */
@@ -2095,12 +2249,14 @@ function renderAccountCenterButton() {
     };
     if (accountCenter.netease.loggedIn) add(accountCenter.netease.avatar, false);
     if (accountCenter.bilibili.loggedIn) add(accountCenter.bilibili.avatar, true);
+    if (accountCenter.pixiv.loggedIn) add(accountCenter.pixiv.avatar, false);
     const label = document.createElement('span');
     label.textContent = t('account.center_title');
     button.appendChild(label);
     const names = [];
     if (accountCenter.netease.loggedIn) names.push(accountCenter.netease.nickname);
     if (accountCenter.bilibili.loggedIn) names.push(accountCenter.bilibili.nickname);
+    if (accountCenter.pixiv.loggedIn) names.push(accountCenter.pixiv.name);
     button.title = names.length ? names.join(' · ') : t('account.center_title');
 }
 
@@ -7506,6 +7662,8 @@ function bindStaticEvents() {
         updateLocalStatsText();
         updatePlayStatsText();
         refreshCacheStats();
+        // Pixiv 那页的设置值来自后端，不先拉一次就是一片空白。
+        if (window.PixivUI) PixivUI.refreshState();
     });
     document.getElementById('btn-theme').addEventListener('click', cycleTheme);
     // One button for both accounts now; it opens the account center.
@@ -8130,9 +8288,13 @@ const combined = {
     biliDone: false,
     // 番剧/影视（PGC）只有第一页：聚合列表里的翻页由网易云和 B站视频两半驱动。
     pgcDone: false,
+    // Pixiv 只有第一页：它的搜索是「按相关度给你一屏」，翻页对聚合列表
+    // 没意义，翻到底再往回捞图反而更难找。
+    pixivDone: false,
     neteaseError: '',
     biliError: '',
     pgcError: '',
+    pixivError: '',
     loading: false,
     requestId: 0
 };
@@ -8723,12 +8885,17 @@ function combinedRowElement(row) {
     name.textContent = row.name;
     nameLine.appendChild(name);
     const badge = document.createElement('span');
-    badge.className = row.source === 'bilibili' ? 'source-badge is-bili' : 'source-badge is-netease';
+    const badgeClass = row.source === 'bilibili' ? 'is-bili'
+        : (row.source === 'pixiv' ? 'is-pixiv' : 'is-netease');
+    badge.className = 'source-badge ' + badgeClass;
     if (row.kind === 'pgc') {
         badge.textContent = t('search.pgc_badge');
+    } else if (row.source === 'bilibili') {
+        badge.textContent = t('search.source_bili');
+    } else if (row.source === 'pixiv') {
+        badge.textContent = t('search.source_pixiv');
     } else {
-        badge.textContent = row.source === 'bilibili'
-            ? t('search.source_bili') : t('search.source_netease');
+        badge.textContent = t('search.source_netease');
     }
     nameLine.appendChild(badge);
     main.appendChild(nameLine);
@@ -8739,6 +8906,13 @@ function combinedRowElement(row) {
         const parts = [row.pgc.typeName, row.pgc.indexShow];
         if (row.pgc.score > 0) parts.push(t('search.pgc_score', { score: row.pgc.score.toFixed(1) }));
         if (row.pgc.styles.length) parts.push(row.pgc.styles.slice(0, 3).join(' / '));
+        sub.textContent = parts.filter(Boolean).join(' · ');
+    } else if (row.source === 'pixiv') {
+        // 插画的「副标题」是画师和收藏数，跟歌曲的歌手/专辑、视频的 UP 主
+        // 是三套东西，不能共用一句文案。
+        const parts = [row.artists];
+        if (row.album) parts.push(row.album);
+        if (row.plays) parts.push(t('search.sub_pixiv_bookmarks', { count: formatPlayCount(row.plays) }));
         sub.textContent = parts.filter(Boolean).join(' · ');
     } else {
         sub.textContent = row.source === 'bilibili'
@@ -8779,7 +8953,22 @@ function combinedRowElement(row) {
 }
 
 /** What happens when a result row is picked. */
+/** 打开一张插画：切到 Pixiv 页，再把详情面板盖上去。 */
+function openPixivWork(pid) {
+    const id = String(pid || '');
+    if (!id) return;
+    if (typeof showView === 'function') showView('pixiv');
+    if (window.PixivUI && typeof PixivUI.openDetail === 'function') {
+        PixivUI.openDetail(id);
+    }
+}
+
 function openCombinedRow(row) {
+    if (row.source === 'pixiv') {
+        // 搜到的是图，播放器没意义：直接开详情，能收藏能下载。
+        openPixivWork(row.id);
+        return;
+    }
     if (row.kind === 'pgc') {
         // 番剧没有 bvid，播不了画面也就没有意义：先开选集，选哪集播哪集。
         openBiliBangumiEpisodes({
@@ -8910,13 +9099,16 @@ function combinedVisibleRows() {
     });
     const netease = rows.filter((row) => row.source === 'netease');
     const bili = rows.filter((row) => row.source === 'bilibili');
+    const pixiv = rows.filter((row) => row.source === 'pixiv');
     sortCombinedRows(netease);
     sortCombinedRows(bili);
+    sortCombinedRows(pixiv);
     const merged = [];
-    const count = Math.max(netease.length, bili.length);
+    const count = Math.max(netease.length, bili.length, pixiv.length);
     for (let i = 0; i < count; i += 1) {
         if (netease[i]) merged.push(netease[i]);
         if (bili[i]) merged.push(bili[i]);
+        if (pixiv[i]) merged.push(pixiv[i]);
     }
     return merged.slice(0, COMBINED_MAX_ROWS);
 }
@@ -8947,6 +9139,9 @@ function updateCombinedMeta(rows) {
     });
     let text = t('search.result_count', { count: rows.length }) + ' · '
         + t('search.result_split', { netease: neteaseCount, bili: biliCount });
+    let pixivCount = 0;
+    rows.forEach((row) => { if (row.source === 'pixiv') pixivCount += 1; });
+    if (pixivCount) text += ' · ' + t('search.result_pixiv', { count: pixivCount });
     if (combined.neteaseError || combined.biliError) {
         // One source failed: the other one still counts, the broken one is named.
         const okSource = combined.neteaseError ? t('search.source_bili') : t('search.source_netease');
@@ -9012,6 +9207,57 @@ function updateCombinedState(rows) {
 }
 
 /** Draw the merged list. */
+/** 所有来源都翻到底了没有。 */
+function combinedExhausted() {
+    return combined.neteaseDone && combined.biliDone
+        && combined.pgcDone && combined.pixivDone;
+}
+
+/** Ask Pixiv for its one page of the search. */
+async function loadCombinedPixiv(requestId) {
+    if (combined.pixivDone) return;
+    try {
+        if (!bridgeHas('pixiv_search')) {
+            combined.pixivError = t('error.unknown');
+            combined.pixivDone = true;
+            return;
+        }
+        const result = await state.api.pixiv_search(combined.keyword, 1);
+        if (requestId !== combined.requestId) return;
+        if (!result || result.success === false || result.error) {
+            combined.pixivError = (result && (result.error || result.message))
+                || t('error.network');
+            combined.pixivDone = true;
+            return;
+        }
+        const works = result.works || (result.items || []);
+        works.forEach((work) => combined.rows.push(pixivAggrRow(work)));
+        combined.pixivDone = true;
+    } catch (err) {
+        if (requestId !== combined.requestId) return;
+        combined.pixivError = t('error.network');
+        combined.pixivDone = true;
+    }
+}
+
+/** One Pixiv work as a row of the combined list. */
+function pixivAggrRow(work) {
+    const item = work || {};
+    return {
+        source: 'pixiv',
+        kind: 'illust',
+        id: String(item.id || ''),
+        name: item.title || '',
+        artists: item.user_name || '',
+        album: (item.tags || []).slice(0, 2).join(' / '),
+        cover: item.thumb_proxy || item.thumb || item.regular_proxy || item.regular || '',
+        durationMs: 0,
+        plays: Number(item.bookmark_count) || 0,
+        nsfw: !!item.nsfw,
+        pixiv: item
+    };
+}
+
 function renderCombinedRows() {
     const list = document.getElementById('search-results');
     if (!list) return;
@@ -9032,7 +9278,7 @@ function renderCombinedRows() {
     const more = document.getElementById('btn-aggr-more');
     const end = document.getElementById('aggr-end');
     if (more) {
-        const exhausted = combined.neteaseDone && combined.biliDone && combined.pgcDone;
+        const exhausted = combinedExhausted();
         more.hidden = exhausted || combined.loading;
         more.textContent = combined.loading ? t('common.loading') : t('search.load_more');
         more.disabled = combined.loading;
@@ -9040,7 +9286,7 @@ function renderCombinedRows() {
     if (end) {
         // The button gives way to a line of text: "no more" or "too many".
         // It only appears when there is a list to look at.
-        const exhausted = combined.neteaseDone && combined.biliDone && combined.pgcDone;
+        const exhausted = combinedExhausted();
         const capped = rows.length >= COMBINED_MAX_ROWS;
         end.hidden = combined.loading || !rows.length || (!exhausted && !capped);
         end.textContent = capped ? t('search.cap_hint') : t('search.no_more');
@@ -9175,6 +9421,9 @@ async function loadCombinedPage() {
         wanted.push(loadCombinedBili(requestId));
         wanted.push(loadCombinedPgc(requestId));
     }
+    if (combined.source === 'all' || combined.source === 'pixiv') {
+        wanted.push(loadCombinedPixiv(requestId));
+    }
     await Promise.all(wanted);
     if (requestId !== combined.requestId) return;
     combined.loading = false;
@@ -9204,15 +9453,26 @@ async function renderCombinedSearch(keyword, filters) {
     combined.neteaseDone = false;
     combined.biliDone = false;
     combined.pgcDone = false;
+    combined.pixivDone = false;
     combined.neteaseError = '';
     combined.biliError = '';
     combined.pgcError = '';
+    combined.pixivError = '';
     // A source that is filtered out is finished by definition: without this
     // the "no more" line would never show when only one source is asked.
     if (combined.source === 'bilibili') combined.neteaseDone = true;
     if (combined.source === 'netease') {
         combined.biliDone = true;
         combined.pgcDone = true;
+    }
+    // Pixiv 跟网易云、B 站是三个独立来源：只问一个的时候，另外两个当场算
+    // 「结束」，不然「没有更多了」那一行永远不出现。
+    if (combined.source === 'pixiv') {
+        combined.neteaseDone = true;
+        combined.biliDone = true;
+        combined.pgcDone = true;
+    } else if (combined.source !== 'all') {
+        combined.pixivDone = true;
     }
     updateFilterSelects();
     updateFilterChips();

@@ -2522,6 +2522,8 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .source-badge.is-netease { background: var(--brand-soft); color: var(--brand); }
 .source-badge.is-bili { background: var(--bili-soft); color: var(--bili); }
+/* Pixiv 用它的品牌蓝：三家混在一起的时候，颜色是最快的分辨方式。 */
+.source-badge.is-pixiv { background: rgba(0, 150, 250, 0.16); color: #4aa8ff; }
 .result-end { text-align: center; padding: 14px 0; font-size: 12px; color: var(--text-3); }
 .inline-error {
     display: flex; align-items: center; gap: 8px; padding: 8px 12px;
@@ -3443,33 +3445,49 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 
 /* ---------------------------------------------------------------- pixiv */
 
-/* 作品详情是一整块面板，盖在页面上而不是另开窗口：来回翻作品时窗口不要
- * 一闪一闪，而且主窗口的播放器还在响，切窗口会很吵。 */
+/* 作品详情盖在整页上，分三行：头、两栏主体、底部的作者作品。
+ *
+ * **用 grid，不用一列 flex 堆。** 以前是 flex 里拿 vh 卡舞台高度，
+ * 窗口一矮、描述一长，几块就叠在一起——用户说的「元素重叠」就是它。
+ * grid + minmax(0, 1fr) 把剩下的高度全给中间那块，舞台自己缩、侧栏
+ * 自己滚，谁也不压谁。 */
 .pixiv-detail {
     position: absolute;
     inset: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 16px 20px 20px;
-    background: var(--panel, #14161a);
     z-index: 40;
-    overflow: auto;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    background: var(--panel, #14161a);
 }
 
 .pixiv-detail-head {
     display: flex;
     align-items: center;
     gap: 12px;
-    flex: 0 0 auto;
+    padding: 14px 20px 10px;
+    border-bottom: 1px solid var(--divider);
+}
+
+.pixiv-detail-headings {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
 }
 
 .pixiv-detail-title {
-    flex: 1;
-    min-width: 0;
     font-size: 15px;
     font-weight: 600;
     color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pixiv-detail-meta {
+    font-size: 12px;
+    color: var(--text-dim, #9aa3ad);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3488,33 +3506,59 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 .pixiv-detail-body {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 14px;
     min-height: 0;
-    flex: 0 1 auto;
+    padding: 14px 20px;
 }
 
 .pixiv-stage {
     position: relative;
-    flex: 1;
-    min-width: 0;
     display: flex;
     align-items: center;
     justify-content: center;
+    min-width: 0;
+    min-height: 0;
     background: var(--sunken);
     border-radius: var(--radius-sm);
     overflow: hidden;
-    min-height: 240px;
-    max-height: 62vh;
 }
 
 .pixiv-stage img {
-    max-width: 100%;
-    max-height: 62vh;
+    width: 100%;
+    height: 100%;
     object-fit: contain;
     display: block;
 }
+
+/* 翻页按钮浮在画面上，不再占一列：占一列的时候窄窗口会把图挤成一条。 */
+.pixiv-stage-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    opacity: 0.85;
+}
+
+.pixiv-stage-nav.is-prev { left: 10px; }
+.pixiv-stage-nav.is-next { right: 10px; }
+.pixiv-stage-nav:hover { opacity: 1; }
+
+/* 页码浮在画面底部中间，空的时候整块不占位。 */
+.pixiv-stage-pager {
+    position: absolute;
+    left: 50%;
+    bottom: 10px;
+    transform: translateX(-50%);
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: rgba(10, 12, 16, 0.62);
+    color: #fff;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.pixiv-stage-pager:empty { display: none; }
 
 /* 成人内容先盖一层。**模糊而不是隐藏**：缩略图和画面都在，只是看不清，
  * 要不要看由用户点那一下决定。 */
@@ -3533,21 +3577,46 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     backdrop-filter: blur(6px);
 }
 
-.pixiv-detail-nav {
-    flex: 0 0 auto;
-}
-
-.pixiv-detail-foot {
+.pixiv-detail-side {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    flex: 0 0 auto;
+    gap: 16px;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 2px;
 }
 
-.pixiv-detail-meta,
-.pixiv-detail-pager {
+.pixiv-side-block h3 {
+    margin: 0 0 6px;
     font-size: 12px;
+    font-weight: 600;
     color: var(--text-dim, #9aa3ad);
+    letter-spacing: 0.04em;
+}
+
+.pixiv-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 8px;
+    margin: 0;
+}
+
+.pixiv-stats > div {
+    background: var(--sunken);
+    border-radius: var(--radius-sm);
+    padding: 7px 10px;
+}
+
+.pixiv-stats dt {
+    font-size: 11px;
+    color: var(--text-dim, #9aa3ad);
+}
+
+.pixiv-stats dd {
+    margin: 2px 0 0;
+    font-size: 14px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
 }
 
 .pixiv-detail-tags {
@@ -3569,22 +3638,35 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     line-height: 1.6;
     color: var(--text-dim, #9aa3ad);
     white-space: pre-wrap;
-    max-height: 6.5em;
-    overflow: auto;
+    word-break: break-word;
 }
 
-.pixiv-artist-row {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    flex: 0 0 auto;
+.pixiv-detail-foot {
     border-top: 1px solid var(--divider);
-    padding-top: 12px;
+    padding: 10px 20px 16px;
+    /* 底部是「作者的其他作品」，是配菜：超过一行就自己滚，不能把画面挤没。 */
+    max-height: 28vh;
+    overflow-y: auto;
 }
 
 .pixiv-artist-head {
     font-size: 12px;
     color: var(--text-dim, #9aa3ad);
+    margin-bottom: 8px;
+}
+
+/* 窄窗口：侧栏挪到图下面，横着排，别把画面挤成竖条。 */
+@media (max-width: 900px) {
+    .pixiv-detail-body {
+        grid-template-columns: minmax(0, 1fr);
+        /* 竖着排的时候，画面至少留半屏：给侧栏「auto」的话，窗口一矮
+         * 画面就被压成一条缝——这正是「重叠」的另一种样子。 */
+        grid-template-rows: minmax(240px, 1fr) auto;
+    }
+
+    .pixiv-detail-side {
+        max-height: 26vh;
+    }
 }
 
 /* 盖住的缩略图：糊一层，鼠标放上去才透出来一点，不整块消失。 */

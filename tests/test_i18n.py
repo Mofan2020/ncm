@@ -26,6 +26,19 @@ def test_languages_registered():
         assert code in LANGUAGE_NAMES, f"{code} is missing a display name"
 
 
+def test_no_dotted_keys_at_the_top_level():
+    """键名里的点只能是「层级」，不能是字面量。
+
+    顶层写成 ``"pixiv.page_size": "每页数量"`` 的时候，``flatten_translations``
+    摊平后跟嵌套写法长得一模一样，键位对比全过——但运行时 ``t()`` 是顺着
+    层级找的，找不到就原样把 ``pixiv.page_size`` 显示到界面上。这类错误
+    只能靠「顶层键不许带点」这条来挡。
+    """
+    for code in _codes():
+        stray = sorted(key for key in _load(code) if "." in key)
+        assert not stray, f"{code} has dotted top-level keys: {stray}"
+
+
 def test_no_missing_keys_between_languages():
     reference = set(flatten_translations(_load(FALLBACK_LANGUAGE)))
     for code in _codes():

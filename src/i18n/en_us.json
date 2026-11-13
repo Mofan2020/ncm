@@ -640,7 +640,8 @@
     "center_signed_out": "Not signed in",
     "center_login": "Sign in",
     "center_logout": "Sign out",
-    "center_profile": "View profile"
+    "center_profile": "View profile",
+    "center_pixiv": "Pixiv"
   },
   "cache": {
     "title": "Local cache",
@@ -784,7 +785,10 @@
     "offline_title": "You are offline",
     "offline_hint": "Search again once you are back online",
     "sub_bili": "{uploader} · {plays} plays",
-    "sub_netease": "{artist} · {album}"
+    "sub_netease": "{artist} · {album}",
+    "source_pixiv": "Pixiv",
+    "sub_pixiv_bookmarks": "{count} bookmarks",
+    "result_pixiv": "Pixiv {count}"
   },
   "bili": {
     "title": "Bilibili",
@@ -1285,6 +1289,28 @@
     "download_done": "Downloaded {count} files.",
     "download_unavailable": "Downloading is not wired up in this build.",
     "action_failed": "That did not work.",
-    "backend_missing": "The Pixiv backend is unavailable."
+    "backend_missing": "The Pixiv backend is unavailable.",
+    "settings_browse": "Browsing",
+    "settings_download": "Downloads",
+    "settings_bookmark": "Bookmarks",
+    "nsfw_mode_hint": "“Hide” drops them entirely; “Blur” keeps them listed behind a veil you can reveal.",
+    "page_size": "Items per page",
+    "download_dir": "Download folder",
+    "download_dir_hint": "Empty means the system download folder.",
+    "bookmark_private_hint": "New bookmarks are private by default.",
+    "stats_title": "Stats",
+    "tags_title": "Tags",
+    "desc_title": "Description",
+    "stat_bookmarks": "Bookmarks",
+    "stat_likes": "Likes",
+    "stat_views": "Views",
+    "stat_pages": "Pages",
+    "type_illust": "Illustration",
+    "type_manga": "Manga",
+    "type_ugoira": "Ugoira",
+    "open_page": "Open Pixiv",
+    "logout_confirm": "Log out of Pixiv?",
+    "cookie_label": "Or paste PHPSESSID",
+    "cookie_hint": "Sign in to pixiv in a browser, then copy PHPSESSID from the developer tools."
   }
 }
