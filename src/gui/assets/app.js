@@ -1524,6 +1524,8 @@ async function exportAccountBackup() {
         // be counted on its own, or a Bilibili-only export would look empty.
         const biliFolders = result.bilibili_folders || 0;
         const biliVideos = result.bilibili_videos || 0;
+        const pixivMarks = result.pixiv_bookmarks || 0;
+        const pixivUsers = result.pixiv_following || 0;
         const hasBili = result.bilibili !== false && (biliFolders || biliVideos
             || result.bilibili === true);
         const hasNetease = result.netease !== false;
@@ -1551,6 +1553,14 @@ async function exportAccountBackup() {
                     videos: biliVideos,
                 }));
         }
+        // 只登录了 Pixiv 的时候，得有个地方把文件路径说出来。
+        const hasPixiv = result.pixiv === true;
+        if (hasPixiv) {
+            const counts = {bookmarks: pixivMarks, following: pixivUsers};
+            segments.push((hasNetease || hasBili)
+                ? t('backup.export_pixiv', counts)
+                : t('backup.export_pixiv_only', {path: result.path || '', ...counts}));
+        }
         setBackupStatus(segments.join(' · '));
         setBackupProgress(0, 0);
         const short = [];
@@ -1567,6 +1577,9 @@ async function exportAccountBackup() {
                     folders: biliFolders,
                     videos: biliVideos,
                 }));
+        }
+        if (hasPixiv) {
+            short.push(t('backup.export_pixiv', {bookmarks: pixivMarks, following: pixivUsers}));
         }
         showToast('success', short.join(' · '), 6000);
     } catch (err) {
@@ -1650,6 +1663,7 @@ function renderBackupConflicts(plan) {
         summary.textContent = lines.join(' · ');
     }
     renderBackupBilibili(plan.bilibili || {});
+    renderBackupPixiv(plan.pixiv || {});
     (plan.skipped || []).forEach((item) => {
         const row = document.createElement('div');
         row.className = 'folder-row';
@@ -1737,6 +1751,41 @@ function renderBackupBilibili(bili) {
     });
 }
 
+/**
+ * The Pixiv part of the backup file.
+ *
+ * 跟 B 站那块是同一个道理：文件里可能有这一节，而现在没登录 Pixiv。
+ * 用户得知道是「会恢复」还是「先跳过」——不然导入完发现收藏没回来，
+ * 只会以为坏了。
+ */
+function renderBackupPixiv(pixiv) {
+    const block = document.getElementById('backup-pixiv-block');
+    const summary = document.getElementById('backup-pixiv-summary');
+    if (!block) return;
+    const total = (Number(pixiv && pixiv.bookmarks && pixiv.bookmarks.total) || 0)
+        + (Number(pixiv && pixiv.following && pixiv.following.total) || 0);
+    // 老备份文件里没有这一节：什么都不说，别凭空多一块空面板。
+    if (!pixiv || !pixiv.present || !total) {
+        block.hidden = true;
+        if (summary) summary.textContent = '';
+        return;
+    }
+    block.hidden = false;
+    const marks = Number(pixiv.bookmarks && pixiv.bookmarks.total) || 0;
+    const users = Number(pixiv.following && pixiv.following.total) || 0;
+    const lines = [t('backup.pixiv_summary', {bookmarks: marks, following: users})];
+    const account = (pixiv && pixiv.account) || {};
+    if (account.name) lines.push(t('backup.pixiv_account', {name: account.name}));
+    // 后端给的 message 是给人看的一句话（比如「Pixiv 未登录，已跳过」），
+    // 有就直接用，别自己再编一套。
+    if (pixiv.available) {
+        lines.push(t('backup.pixiv_restore'));
+    } else {
+        lines.push(pixiv.message || t('backup.pixiv_skip'));
+    }
+    if (summary) summary.textContent = lines.join(' · ');
+}
+
 /** Collect the user's decisions and hand them to the backend. */
 async function applyBackupConflicts() {
     if (!state.api || !state.api.apply_account_backup) return;
@@ -1778,23 +1827,30 @@ async function applyBackupConflicts() {
             local: localRecordCount(result.local_restored || {}),
             failed: result.failed || 0,
         });
-        setBackupStatus(status);
+        // Pixiv 也是另一本账：收藏在云端、关注是画师，跟歌和视频不是一回事。
+        // 每一节都往同一行后面接，而不是各写各的——各写各的最后只剩最后一节。
+        const extras = [];
+        const pixiv = result.pixiv || {};
+        if (pixiv.bookmarks_added || pixiv.followed) {
+            extras.push(t('backup.import_pixiv', {
+                bookmarks: pixiv.bookmarks_added || 0,
+                followed: pixiv.followed || 0,
+            }));
+        }
+        if (bili.folders_created || bili.videos_added) {
+            extras.push(t('backup.import_bili', {
+                folders: bili.folders_created || 0,
+                videos: bili.videos_added || 0,
+            }));
+        }
+        const full = extras.length ? `${status} · ${extras.join(' · ')}` : status;
+        setBackupStatus(full);
         setBackupProgress(0, 0);
         const short = t('backup.import_done_short', {
             songs: result.songs_liked || 0,
             playlists: result.playlists_created || 0,
         });
-        // The Bilibili half is counted on its own: it is a different account.
-        if (bili.folders_created || bili.videos_added) {
-            const biliText = t('backup.import_bili', {
-                folders: bili.folders_created || 0,
-                videos: bili.videos_added || 0,
-            });
-            setBackupStatus(`${status} · ${biliText}`);
-            showToast('success', `${short} · ${biliText}`, 6000);
-        } else {
-            showToast('success', short, 6000);
-        }
+        showToast('success', extras.length ? `${short} · ${extras.join(' · ')}` : short, 6000);
     } catch (err) {
         console.error(err);
         showToast('error', t('backup.import_failed'));

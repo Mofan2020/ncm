@@ -176,3 +176,65 @@ def test_the_new_surface_keys_exist_in_both_languages() -> None:
         flat = _flatten(data)
         missing = [key for key in needed if key not in flat]
         assert not missing, f"{lang} 缺文案：{missing}"
+
+
+# ---------------------------------------------------------------- 备份
+
+def test_backup_export_gate_counts_all_three_accounts() -> None:
+    """一个账号都没登录才拒绝导出；任意一个登录都放行。
+
+    这条闸门以前是「没登录网易云就不让导出」，Pixiv 登录了也导不出东西。
+    """
+    bridge = (ROOT / "src" / "gui" / "bridge.py").read_text(encoding="utf-8")
+    assert "_pixiv_signed_in" in bridge
+    # **每一处**「三个账号一个都没有」的判断都要带上 Pixiv：导出和导入各有一
+    # 处，只改一处的写法（比如导出改了、导入没改）照样是错的。
+    gates = re.findall(r"if not \(([^)]*signed_in[^)]*)\)", bridge)
+    # 导出和导入各有一处。少一处就说明那处被改成了别的写法，比如又退回「只看
+    # 网易云」——只查「找到的那几处都对」是抓不到的，因为被改坏的那处根本匹配
+    # 不上正则，会自己消失。
+    assert len(gates) >= 2, f"「一个账号都没登录」的闸门只剩 {len(gates)} 处"
+    for condition in gates:
+        for name in ("netease_signed_in", "bili_signed_in", "pixiv_signed_in"):
+            assert name in condition, f"闸门 {condition!r} 里没有 {name}"
+
+
+def test_backup_payload_carries_the_pixiv_section() -> None:
+    bridge = (ROOT / "src" / "gui" / "bridge.py").read_text(encoding="utf-8")
+    assert 'payload["pixiv"]' in bridge
+    assert "export_pixiv_data" in bridge
+    # 读失败只能让这一节空掉，不能把整份备份带下水
+    export = re.search(r'payload\["pixiv"\][\s\S]{0,600}?except Exception', bridge)
+    assert export, "pixiv 一节缺少 try/except"
+
+
+def test_backup_dialog_shows_the_pixiv_part() -> None:
+    html = _asset("index.html")
+    assert 'id="backup-pixiv-block"' in html
+    assert 'id="backup-pixiv-summary"' in html
+    app = _asset("app.js")
+    assert "function renderBackupPixiv" in app
+    # 弹窗画的时候必须被调用，否则那块永远藏着
+    conflicts = re.search(r"function renderBackupConflicts[\s\S]*?\n\}", app)
+    assert conflicts and "renderBackupPixiv" in conflicts.group(0)
+
+
+def test_import_result_mentions_pixiv_without_swallowing_bilibili() -> None:
+    """两边的数字要接在同一行里。
+
+    各写各的话，后写的那一句会把前一句盖掉——用户只会看到最后恢复的那一节。
+    """
+    app = _asset("app.js")
+    apply_fn = re.search(r"async function applyBackupConflicts[\s\S]*?\n\}", app)
+    assert apply_fn
+    body = apply_fn.group(0)
+    assert "backup.import_pixiv" in body
+    assert "extras.push" in body, "两节应当拼进同一个数组再 join"
+    assert "extras.join(' · ')" in body
+
+
+def test_the_export_gate_message_mentions_all_three() -> None:
+    for lang in ("zh_cn", "en_us"):
+        data = json.loads((I18N / f"{lang}.json").read_text(encoding="utf-8"))
+        text = data["backup"]["login_required"]
+        assert "Pixiv" in text, f"{lang} 的登录提示还只说了网易云"

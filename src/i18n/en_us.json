@@ -700,7 +700,7 @@
     "phase_favorites": "Reading the favourites",
     "phase_playlists": "Reading the playlist list",
     "phase_songs": "Reading the playlist songs",
-    "login_required": "Sign in to your NetEase account first",
+    "login_required": "Sign in to at least one account (NetEase / Bilibili / Pixiv) to export",
     "invalid_file": "This is not a valid backup file",
     "read_failed": "Could not read the backup file",
     "write_failed": "Could not write the backup file",
@@ -718,7 +718,15 @@
     "cookie_exported": "Cookie exported:",
     "cookie_copied": "Cookie copied to the clipboard",
     "cookie_copy_manual": "The clipboard is not available, the cookie is shown below, copy it by hand",
-    "cookie_failed": "Could not export the cookie"
+    "cookie_failed": "Could not export the cookie",
+    "pixiv_title": "Pixiv account data",
+    "pixiv_summary": "The file holds {bookmarks} Pixiv bookmarks and {following} followed artists",
+    "pixiv_account": "Pixiv account: {name}",
+    "pixiv_restore": "Signed in to Pixiv, this part is restored too",
+    "pixiv_skip": "Pixiv is not signed in, this part is skipped (import again after signing in)",
+    "import_pixiv": "Pixiv: {bookmarks} bookmarks, {followed} artists followed",
+    "export_pixiv": "Pixiv {bookmarks} bookmarks, {following} artists",
+    "export_pixiv_only": "Saved to {path} (Pixiv: {bookmarks} bookmarks, {following} artists)"
   },
   "home": {
     "title": "Choose a section",

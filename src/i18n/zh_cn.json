@@ -700,7 +700,7 @@
     "phase_favorites": "读取云端收藏",
     "phase_playlists": "读取歌单列表",
     "phase_songs": "读取歌单歌曲",
-    "login_required": "请先登录网易云账号",
+    "login_required": "至少要登录一个账号（网易云 / B 站 / Pixiv）才能导出备份",
     "invalid_file": "这不是有效的备份文件",
     "read_failed": "读取备份文件失败",
     "write_failed": "写入备份文件失败",
@@ -718,7 +718,15 @@
     "cookie_exported": "Cookie 已导出：",
     "cookie_copied": "Cookie 已复制到剪贴板",
     "cookie_copy_manual": "剪贴板用不了，Cookie 显示在下面，手动复制",
-    "cookie_failed": "Cookie 导出失败"
+    "cookie_failed": "Cookie 导出失败",
+    "pixiv_title": "Pixiv 账号数据",
+    "pixiv_summary": "备份里有 {bookmarks} 个 Pixiv 收藏、{following} 位关注的画师",
+    "pixiv_account": "Pixiv 账号：{name}",
+    "pixiv_restore": "已登录 Pixiv，这部分会一起恢复",
+    "pixiv_skip": "没有登录 Pixiv，这部分会跳过（登录后再导入一次即可）",
+    "import_pixiv": "Pixiv：收藏 {bookmarks} 个、关注 {followed} 位画师",
+    "export_pixiv": "Pixiv {bookmarks} 个收藏、{following} 位画师",
+    "export_pixiv_only": "备份已保存到 {path}（Pixiv {bookmarks} 个收藏、{following} 位画师）"
   },
   "home": {
     "title": "选择分区",

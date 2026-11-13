@@ -584,13 +584,16 @@ class GuiBridge:
         先弹原生保存对话框让用户选位置，再去云端把数据拉下来写进去。云端
         读不到的部分退到本地缓存，导出的文件里会标明每一节的来源。
 
-        **网易云和 B站登录任意一个就能导出**：只登录了 B站时，文件里是
-        B站那一半的数据；两边都登录了就都写进去。
+        **有一个账号登录就能导出**：网易云、B站、Pixiv 只登录了其中一个时，
+        文件里就是那一个的数据；登了几个就写几节。一个都没登录才拒绝。
         """
         user = self.login_manager.user_info
         netease_signed_in = bool(user and user.user_id)
-        bili_signed_in = bool(self._bili_signed_in())
-        if not netease_signed_in and not bili_signed_in:
+        bili_signed_in = self._bili_signed_in()
+        pixiv_info = self._pixiv_account_info()
+        pixiv_signed_in = bool(pixiv_info.get("logged_in"))
+        if not (netease_signed_in or bili_signed_in or pixiv_signed_in):
+            # 拒绝导出也走返回值，不抛异常：前端只认 success / error_key。
             return {"success": False, "error_key": "backup.login_required"}
         nickname = (user.nickname if netease_signed_in else "") or ""
         path = self._choose_backup_save_path(nickname or "SkycMedia")
@@ -613,7 +616,7 @@ class GuiBridge:
                 return {"success": False, "error_key": "backup.export_failed",
                         "message": str(exc)}
         else:
-            # 只登录了 B站：文件里也要有格式标识和版本号，导入的时候才认得。
+            # 没登录网易云：文件里也要有格式标识和版本号，导入的时候才认得。
             payload = {
                 "format": backup_core.BACKUP_FORMAT,
                 "version": backup_core.BACKUP_VERSION,
@@ -652,6 +655,18 @@ class GuiBridge:
             self.logger.warning("bangumi backup export failed: %s", exc)
             payload.setdefault("errors", []).append(
                 {"section": "bangumi", "message": str(exc)})
+        if pixiv_signed_in:
+            # Pixiv 的收藏和关注在云端，读失败也只是一节空数据。
+            try:
+                payload["pixiv"] = backup_core.export_pixiv_data(
+                    self.pixiv.client,
+                    account=pixiv_info,
+                    progress=self._on_backup_progress,
+                )
+            except Exception as exc:
+                self.logger.warning("pixiv backup export failed: %s", exc)
+                payload.setdefault("errors", []).append(
+                    {"section": "pixiv", "message": str(exc)})
         try:
             backup_core.write_backup_file(path, payload)
         except OSError as exc:
@@ -662,6 +677,8 @@ class GuiBridge:
         bili_section = payload.get("bilibili") or {}
         bili_folders = bili_section.get("folders") or []
         bangumi_section = payload.get("bangumi") or {}
+        pixiv_section = payload.get("pixiv") or {}
+        pixiv_counts = pixiv_section.get("counts") or {}
         return {
             "success": True,
             "path": str(path),
@@ -683,8 +700,12 @@ class GuiBridge:
                                    for item in bili_folders),
             "bangumi_favorites": len(bangumi_section.get("favorites") or []),
             "bangumi_history": len(bangumi_section.get("history") or []),
+            "pixiv_bookmarks": int(pixiv_counts.get("bookmarks") or 0),
+            "pixiv_following": int(pixiv_counts.get("following") or 0),
+            "pixiv_history": int(pixiv_counts.get("history") or 0),
             "netease": netease_signed_in,
             "bilibili": bili_signed_in,
+            "pixiv": pixiv_signed_in,
             "errors": payload.get("errors", []),
         }
 
@@ -698,18 +719,33 @@ class GuiBridge:
         except Exception:  # pragma: no cover - the session does not raise
             return False
 
+    def _pixiv_account_info(self) -> dict[str, Any]:
+        """Pixiv 会话里的账号信息；没登录或者会话坏了都当没登录。"""
+        try:
+            info = self.pixiv.session.account_info()
+        except Exception as exc:  # noqa: BLE001 - 没登录不该让整次导出去世
+            self.logger.debug("cannot read the pixiv session: %s", exc)
+            return {}
+        return dict(info) if isinstance(info, dict) else {}
+
+    def _pixiv_signed_in(self) -> bool:
+        """Pixiv 登录了吗。"""
+        return bool(self._pixiv_account_info().get("logged_in"))
+
     def import_account_backup(self, file_path: str) -> dict[str, Any]:
         """读一个 ``.ncmbk`` 文件，算出导入要做的事。
 
         这一步**不写任何东西**：先把冲突清单交给用户确认，拿到决定之后才
         调 :meth:`apply_account_backup` 真正写入。
 
-        备份里有没有 B站那一节都能导入：没有就只恢复网易云的部分，有的话
-        登录了 B站就一起恢复，没登录就跳过并说明。
+        备份里有没有 B站 / Pixiv 那一节都能导入：没有就只恢复别的部分，
+        有的话登录了对应账号就一起恢复，没登录就跳过并说明。
         """
         user = self.login_manager.user_info
         netease_signed_in = bool(user and user.user_id)
-        if not netease_signed_in and not self._bili_signed_in():
+        bili_signed_in = self._bili_signed_in()
+        pixiv_signed_in = self._pixiv_signed_in()
+        if not (netease_signed_in or bili_signed_in or pixiv_signed_in):
             # 备份里只有 Bangumi 那一节的话，其实不需要登录任何账号——
             # 那是纯本地的数据。先把文件读出来看一眼再决定。
             try:
@@ -717,11 +753,11 @@ class GuiBridge:
             except (OSError, backup_core.BackupError) as exc:
                 return {"success": False, "error_key": "backup.read_failed",
                         "message": str(exc)}
-            bangumi_only = bool(peek.get("bangumi")) and not any(
+            local_only = bool(peek.get("bangumi")) and not any(
                 peek.get(key) for key in
                 ("account", "liked_song_ids", "playlists", "followed_artists",
-                 "bilibili"))
-            if not bangumi_only:
+                 "bilibili", "pixiv"))
+            if not local_only:
                 return {"success": False, "error_key": "backup.login_required"}
         try:
             payload = backup_core.read_backup_file(file_path)
@@ -734,7 +770,8 @@ class GuiBridge:
         try:
             plan = backup_core.plan_import(
                 self.api, payload, uid=user.user_id if netease_signed_in else "",
-                bili=self.bilibili.client if self._bili_signed_in() else None,
+                bili=self.bilibili.client if bili_signed_in else None,
+                pixiv=self.pixiv.client if pixiv_signed_in else None,
             )
         except Exception as exc:
             self.logger.warning("cannot plan the account backup import: %s", exc)
@@ -748,6 +785,7 @@ class GuiBridge:
             "conflicts": plan.get("conflicts", []),
             "bilibili": plan.get("bilibili", {}),
             "bangumi": plan.get("bangumi", {}),
+            "pixiv": plan.get("pixiv", {}),
             "skipped": [{"id": item.get("id"), "name": item.get("name"),
                          "reason": item.get("reason")}
                         for item in plan.get("playlists", [])
@@ -771,6 +809,7 @@ class GuiBridge:
                 progress=self._on_backup_progress,
                 local=self.library,
                 bili=self.bilibili.client if self._bili_signed_in() else None,
+                pixiv=self.pixiv.client if self._pixiv_signed_in() else None,
                 store=self.bangumi.store,
             )
         except Exception as exc:
@@ -800,6 +839,7 @@ class GuiBridge:
             "local_restored": result.get("local_restored", {}),
             "bilibili": result.get("bilibili", {}),
             "bangumi": result.get("bangumi", {}),
+            "pixiv": result.get("pixiv", {}),
             "errors": result.get("errors", []),
         }
 

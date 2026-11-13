@@ -28,8 +28,14 @@
       "subscribed_djradios": [{"id": "1227859651", "name": "..."}],
       "liked_mvs": [{"id": "14557498", "name": "..."}],
       "play_record": [{"song_id": "30352891", "name": "...", "play_count": 25}],
-      "local_state": {"play_counts": {...}, "favorites": [...], "recent": [...]}
+      "local_state": {"play_counts": {...}, "favorites": [...], "recent": [...]},
+      "bilibili": {"account": {...}, "folders": [...]},
+      "bangumi": {"favorites": [...], "history": [...]},
+      "pixiv": {"account": {...}, "bookmarks": [...], "following": [...], "history": []}
     }
+
+``bilibili`` / ``bangumi`` / ``pixiv`` 这三节各自独立：备份里没有就跳过，
+某一节读失败也不让整次导出失败。
 
 模块不碰 GUI，也不直接发网络请求：数据从 :class:`NeteaseAPI` 的公开方法读，
 写操作也只用它的公开方法，所以测试可以拿假 API 对象跑（``tests/test_account_backup.py``）。
@@ -56,6 +62,9 @@ __all__ = [
     "apply_import",
     "default_backup_name",
     "export_account_data",
+    "export_bilibili_data",
+    "export_bangumi_data",
+    "export_pixiv_data",
     "plan_import",
     "read_backup_file",
     "write_backup_file",
@@ -74,7 +83,8 @@ BACKUP_FORMAT = "ncm-account-backup"
 #: ``play_record``（云端的听歌排行，带播放次数）。2 版的文件照样能读。
 #:
 #: 4 增加了 ``bilibili`` 一节（B站账号和收藏夹）。3 版的文件照样能读：
-#: 读不到这一节就当没有，别的部分照常导入。
+#: 读不到这一节就当没有，别的部分照常导入。``pixiv`` 一节加在 4 里——
+#: 它同样可以缺，缺了就跳过，所以不再单独升版本号。
 BACKUP_VERSION = 4
 
 #: 备份文件的后缀。
@@ -125,6 +135,7 @@ PHASE_RECORD = "record"
 PHASE_LOCAL = "local"
 PHASE_BILI = "bilibili"
 PHASE_BANGUMI = "bangumi"
+PHASE_PIXIV = "pixiv"
 
 #: 导出 B站收藏夹时，一个收藏夹最多翻多少页。
 BILI_FOLDER_MAX_PAGES = 20
@@ -145,6 +156,16 @@ SAVED_PAGE = 100
 
 #: 这些收藏最多翻多少页。
 SAVED_MAX_PAGES = 20
+
+#: 导出 Pixiv 时一页读多少个收藏。接口最多给 48 个。
+PIXIV_BOOKMARK_PAGE = 48
+
+#: 导出 Pixiv 时一页读多少个关注的画师。
+PIXIV_FOLLOW_PAGE = 24
+
+#: Pixiv 的收藏 / 关注最多翻多少页。30 页收藏约 1440 条，再多就不该让导出
+#: 卡在那儿等十分钟了。
+PIXIV_MAX_PAGES = 30
 
 
 class BackupError(Exception):
@@ -701,6 +722,202 @@ def export_bangumi_data(
     }
 
 
+def export_pixiv_data(
+    pixiv: Any,
+    *,
+    account: dict[str, Any] | None = None,
+    history: Any = None,
+    progress: Callable[[str, int, int], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    bookmark_pages: int = PIXIV_MAX_PAGES,
+    follow_pages: int = PIXIV_MAX_PAGES,
+) -> dict[str, Any]:
+    """把 Pixiv 那一半的账号数据抓下来。
+
+    ``pixiv`` 是 :class:`~src.core.pixiv.PixivClient`（或任何长得一样的假
+    对象），只需要 ``bookmarks`` / ``following`` 两个读方法。``account`` 是
+    ``session.account_info()`` 给的账号资料，``history`` 是本机记的浏览历史
+    （现在没有这样的存储，传空就是空）。
+
+    读不到就返回空的一节，**不让整次导出失败**：网易云、B站那几半边照样
+    能写进文件。
+
+    返回的这一节长这样：
+
+    .. code-block:: json
+
+        {
+          "account": {"id": "42", "name": "星", "account": "skyc", "avatar": "..."},
+          "bookmarks": [{"id": "1", "title": "...", "user_id": "7",
+                         "user_name": "...", "thumb": "...", "private": false,
+                         "bookmarked_at": ""}],
+          "following": [{"id": "7", "name": "...", "avatar": "..."}],
+          "history": [],
+          "counts": {"bookmarks": 1, "public": 1, "private": 0,
+                     "following": 1, "history": 0},
+          "errors": []
+        }
+    """
+    errors: list[dict[str, str]] = []
+
+    def report(phase: str, current: int, total: int) -> None:
+        if progress is not None:
+            progress(phase, current, total)
+
+    info = dict(account or {})
+    account_section = {
+        "id": str(info.get("id") or ""),
+        "name": str(info.get("name") or ""),
+        "account": str(info.get("account") or ""),
+        "avatar": str(info.get("avatar") or ""),
+        "premium": bool(info.get("premium")),
+        "following": int(info.get("following") or 0),
+    }
+
+    bookmarks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    public_count = 0
+    private_count = 0
+    #: 接口自报的总条数，拿来做进度条；接口不给就跟着已读到的走。
+    hint = 0
+    # 公开和私密是两条列表，各翻各的。只翻 ``rest=""`` 拿到的是混合结果，
+    # 分不出哪条是私密收藏，恢复时可见性就会丢。
+    for rest in ("show", "hide"):
+        offset = 0
+        for _ in range(max(1, int(bookmark_pages))):
+            try:
+                body = pixiv.bookmarks(
+                    offset=offset, limit=PIXIV_BOOKMARK_PAGE, rest=rest) or {}
+            except Exception as exc:  # noqa: BLE001 - 读不出来也要导出别的
+                errors.append({"section": f"pixiv_bookmarks:{rest}",
+                               "message": str(exc)})
+                break
+            if body.get("error"):
+                errors.append({"section": f"pixiv_bookmarks:{rest}",
+                               "message": str(body["error"])})
+                break
+            try:
+                hint = max(hint, int(body.get("total") or 0))
+            except (TypeError, ValueError):
+                pass
+            works = [work for work in (body.get("works") or [])
+                     if isinstance(work, dict)]
+            for work in works:
+                entry = _pixiv_bookmark_entry(work, rest == "hide")
+                if not entry or entry["id"] in seen:
+                    continue
+                seen.add(entry["id"])
+                if entry["private"]:
+                    private_count += 1
+                else:
+                    public_count += 1
+                bookmarks.append(entry)
+            report(PHASE_PIXIV, len(bookmarks), max(hint, len(bookmarks)))
+            if not works or not body.get("has_more"):
+                break
+            offset += len(works)
+            sleep(PLAYLIST_PAUSE)
+
+    following: list[dict[str, Any]] = []
+    seen_users: set[str] = set()
+    offset = 0
+    for _ in range(max(1, int(follow_pages))):
+        try:
+            body = pixiv.following(offset=offset, limit=PIXIV_FOLLOW_PAGE) or {}
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"section": "pixiv_following", "message": str(exc)})
+            break
+        if body.get("error"):
+            errors.append({"section": "pixiv_following",
+                           "message": str(body["error"])})
+            break
+        users = [user for user in (body.get("users") or [])
+                 if isinstance(user, dict)]
+        for user in users:
+            entry = _pixiv_following_entry(user)
+            if not entry or entry["id"] in seen_users:
+                continue
+            seen_users.add(entry["id"])
+            following.append(entry)
+        report(PHASE_PIXIV, len(bookmarks) + len(following),
+               len(bookmarks) + len(following))
+        if not users or not body.get("has_more"):
+            break
+        offset += len(users)
+        sleep(PLAYLIST_PAUSE)
+
+    history_entries = _pixiv_history(history)
+    report(PHASE_PIXIV, 1, 1)
+    return {
+        "account": account_section,
+        "bookmarks": bookmarks,
+        "following": following,
+        "history": history_entries,
+        "counts": {
+            "bookmarks": len(bookmarks),
+            "public": public_count,
+            "private": private_count,
+            "following": len(following),
+            "history": len(history_entries),
+        },
+        "errors": errors,
+    }
+
+
+def _pixiv_bookmark_entry(work: dict[str, Any], private: bool) -> dict[str, Any] | None:
+    """一条收藏：作品 id、标题、画师、缩略图、可见性。
+
+    收藏时间只有客户端给的时候才有（现在的 ``bookmarks`` 接口不返回），
+    没有就留空串。
+    """
+    pid = str(work.get("id") or "").strip()
+    if not pid:
+        return None
+    return {
+        "id": pid,
+        "title": str(work.get("title") or ""),
+        "user_id": str(work.get("user_id") or ""),
+        "user_name": str(work.get("user_name") or ""),
+        "thumb": str(work.get("thumb") or ""),
+        "private": bool(private or work.get("private")),
+        "bookmarked_at": str(work.get("bookmarked_at")
+                             or work.get("bookmark_time") or ""),
+    }
+
+
+def _pixiv_following_entry(user: dict[str, Any]) -> dict[str, Any] | None:
+    """一个关注的画师：id、名字、头像。"""
+    raw_id = user.get("id")
+    uid = str(raw_id).strip() if raw_id is not None else ""
+    if not uid:
+        return None
+    return {
+        "id": uid,
+        "name": str(user.get("name") or ""),
+        "avatar": str(user.get("avatar") or ""),
+    }
+
+
+def _pixiv_history(history: Any) -> list[dict[str, Any]]:
+    """本机记的浏览历史。没有这样的存储时就是空列表。"""
+    rows: list[dict[str, Any]] = []
+    for item in (history or []):
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("id") or "").strip()
+        if not pid:
+            continue
+        rows.append({
+            "id": pid,
+            "title": str(item.get("title") or ""),
+            "user_id": str(item.get("user_id") or ""),
+            "user_name": str(item.get("user_name") or ""),
+            "thumb": str(item.get("thumb") or ""),
+            "viewed_at": str(item.get("viewed_at") or ""),
+        })
+    return rows
+
+
 def _local_state(local: Any) -> dict[str, Any]:
     """整理本机那部分状态：播放次数、收藏、最近播放。
 
@@ -942,6 +1159,84 @@ def _apply_saved(items: Any, action: Callable[[str], str], *, section: str,
     return done, failed
 
 
+def _apply_pixiv(items: Any, action: Callable[[dict[str, Any]], str], *,
+                 section: str, done_offset: int, total: int,
+                 progress: Callable[[str, int, int], None],
+                 sleep: Callable[[float], None], batch_pause: float,
+                 errors: list[dict[str, str]]) -> tuple[int, int]:
+    """逐个收藏 / 关注，返回（成功的个数，失败的个数）。
+
+    限流不算失败，隔几秒再试一次；会话没了就停下，后面的也写不上。
+    每一条都上报一次进度，界面才动得起来。
+    """
+    entries = [item for item in (items or []) if isinstance(item, dict)]
+    done = 0
+    failed = 0
+    for index, item in enumerate(entries):
+        progress(section, done_offset + index, total)
+        outcome = action(item)
+        if outcome == "rate_limited":
+            sleep(BATCH_PAUSE)
+            outcome = action(item)
+        if outcome == "ok":
+            done += 1
+        else:
+            failed += 1
+            errors.append({"section": section,
+                           "message": f"{item.get('id')}: {outcome}"})
+            if outcome == "not_logged_in":
+                break
+        if index + 1 < len(entries):
+            sleep(batch_pause)
+    return done, failed
+
+
+def _pixiv_bookmark(pixiv: Any, item: dict[str, Any]) -> str:
+    """收藏一个作品，返回状态串。"""
+    pid = str(item.get("id") or "").strip()
+    if not pid:
+        return "failed"
+    try:
+        result = pixiv.bookmark_add(pid, private=bool(item.get("private")))
+    except Exception as exc:
+        return f"failed: {exc}"
+    return _pixiv_outcome(result)
+
+
+def _pixiv_follow(pixiv: Any, uid: str) -> str:
+    """关注一个画师，返回状态串。"""
+    uid = str(uid or "").strip()
+    if not uid:
+        return "failed"
+    try:
+        result = pixiv.follow(uid)
+    except Exception as exc:
+        return f"failed: {exc}"
+    return _pixiv_outcome(result)
+
+
+def _pixiv_outcome(result: Any) -> str:
+    """把 Pixiv 写接口的返回归一成 ok / rate_limited / not_logged_in / failed。
+
+    客户端给的是 ``{"ok": bool, "message": str}``。要把「太频繁」和「没登录」
+    分开：前者等一会儿还能成，后者再试也没用。
+    """
+    if isinstance(result, dict):
+        if result.get("ok"):
+            return "ok"
+        message = str(result.get("message") or "")
+    else:
+        message = str(result or "")
+    if not message:
+        return "failed"
+    text = message.lower()
+    if "频繁" in message or "rate" in text or "429" in text:
+        return "rate_limited"
+    if "登录" in message or "cookie" in text or "401" in text:
+        return "not_logged_in"
+    return f"failed: {message}"
+
+
 def _read_cloud_profile(api: Any, uid: str) -> dict[str, Any] | None:
     """从云端读账号资料（注册时间之类的字段在本地会话里没有）。"""
     detail = api.get_user_detail(uid)
@@ -1125,6 +1420,7 @@ def read_backup_file(path: str | os.PathLike[str]) -> dict[str, Any]:
 
 def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
                 bili: Any = None,
+                pixiv: Any = None,
                 sleep: Callable[[float], None] = time.sleep,
                 attempts: int = DEFAULT_ATTEMPTS,
                 retry_delay: float = DEFAULT_RETRY_DELAY) -> dict[str, Any]:
@@ -1133,6 +1429,9 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
     返回的 ``conflicts`` 是需要用户拍板的同名歌单；``playlists`` 里每一项
     带上 ``action``，说明这一条打算怎么处理。写入要等
     :func:`apply_import` 拿到用户的决定之后才发生。
+
+    ``bili`` / ``pixiv`` 是当前登录的客户端，没登录就传 ``None``：对应的
+    那一节只报「跳过」，不影响别的部分。
     """
     uid = str(uid or "").strip()
     # 没有登录网易云的时候不去碰它的接口：备份文件里可能只有 B站那一半，
@@ -1232,6 +1531,9 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
     # -- B站收藏夹 ------------------------------------------------------------
     bili_plan = _bili_plan(payload, bili)
 
+    # -- Pixiv 收藏和关注 -----------------------------------------------------
+    pixiv_plan = _pixiv_plan(payload, pixiv)
+
     return {
         "ok": True,
         "netease_available": netease_alive,
@@ -1265,6 +1567,10 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
             "local_play_counts": len(local_state["play_counts"]),
             "local_favorites": len(local_state["favorites"]),
             "local_recent": len(local_state["recent"]),
+            "pixiv_bookmarks_total": pixiv_plan["bookmarks"]["total"],
+            "pixiv_bookmarks_to_add": len(pixiv_plan["bookmarks"]["to_add"]),
+            "pixiv_following_total": pixiv_plan["following"]["total"],
+            "pixiv_following_to_add": len(pixiv_plan["following"]["to_add"]),
         },
         "favorites": {"to_add": to_add, "present": already},
         "playlists": plan_playlists,
@@ -1278,12 +1584,15 @@ def plan_import(api: Any, payload: dict[str, Any], *, uid: str,
         "local_state": local_state,
         "bilibili": bili_plan,
         "bangumi": _bangumi_plan(payload),
+        "pixiv": pixiv_plan,
         "warnings": ([{"section": "playlists", "message": playlists_error}]
                      if playlists_error else [])
         + ([{"section": "favorites", "message": liked_error}]
            if liked_error else [])
         + ([{"section": PHASE_BILI, "message": bili_plan["message"]}]
-           if bili_plan.get("message") else []),
+           if bili_plan.get("message") else [])
+        + ([{"section": PHASE_PIXIV, "message": pixiv_plan["message"]}]
+           if pixiv_plan.get("message") else []),
     }
 
 
@@ -1393,6 +1702,168 @@ def _bili_plan(payload: dict[str, Any], bili: Any) -> dict[str, Any]:
     }
 
 
+def _pixiv_plan(payload: dict[str, Any], pixiv: Any) -> dict[str, Any]:
+    """备份文件里的 Pixiv 收藏和关注，以及能不能恢复它们。
+
+    三种情况：
+    * 备份里没有这一节（老文件）——整段跳过，什么都不报。
+    * 有这一节但当前没登录 Pixiv——``message`` 写明「Pixiv 未登录，已跳过」，
+      数量照样报出来，**不让整个导入失败**。
+    * 两边都在——算出要补哪些、已经有哪些。
+    """
+    data = payload.get("pixiv")
+    if not isinstance(data, dict):
+        return {
+            "present": False,
+            "signed_in": False,
+            "available": False,
+            "message": "",
+            "account": {},
+            "bookmarks": {"total": 0, "to_add": [], "already": 0},
+            "following": {"total": 0, "to_add": [], "already": 0},
+            "history_count": 0,
+            "warnings": [],
+        }
+
+    bookmarks = _payload_pixiv_bookmarks(data)
+    following = _payload_pixiv_followings(data)
+    history_count = len([item for item in (data.get("history") or [])
+                         if isinstance(item, dict)])
+    signed_in = pixiv is not None
+    plan: dict[str, Any] = {
+        "present": True,
+        "signed_in": signed_in,
+        "available": bool(bookmarks or following) and signed_in,
+        "message": "",
+        "account": data.get("account") if isinstance(data.get("account"), dict) else {},
+        "bookmarks": {"total": len(bookmarks), "to_add": [], "already": 0},
+        "following": {"total": len(following), "to_add": [], "already": 0},
+        "history_count": history_count,
+        "warnings": [],
+    }
+    if not signed_in:
+        if bookmarks or following:
+            # 一句人话：导入结果里要能直接看到「这部分没恢复」，而不是
+            # 一堆报错或者悄悄丢掉。
+            plan["message"] = "Pixiv 未登录，已跳过"
+        return plan
+
+    current_bookmarks, bookmark_warnings = _pixiv_current_bookmark_ids(pixiv)
+    current_following, follow_warnings = _pixiv_current_following_ids(pixiv)
+    plan["warnings"] = bookmark_warnings + follow_warnings
+    to_add_bookmarks = [item for item in bookmarks
+                        if item["id"] not in current_bookmarks]
+    to_add_following = [item for item in following
+                        if item["id"] not in current_following]
+    plan["bookmarks"] = {
+        "total": len(bookmarks),
+        "to_add": to_add_bookmarks,
+        "already": len(bookmarks) - len(to_add_bookmarks),
+    }
+    plan["following"] = {
+        "total": len(following),
+        "to_add": to_add_following,
+        "already": len(following) - len(to_add_following),
+    }
+    return plan
+
+
+def _payload_pixiv_bookmarks(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """备份里记着的 Pixiv 收藏。"""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in (data.get("bookmarks") or []):
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("id") or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        rows.append({
+            "id": pid,
+            "title": str(item.get("title") or ""),
+            "private": bool(item.get("private")),
+        })
+    return rows
+
+
+def _payload_pixiv_followings(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """备份里记着的 Pixiv 关注。"""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in (data.get("following") or []):
+        if not isinstance(item, dict):
+            continue
+        raw_id = item.get("id")
+        uid = str(raw_id).strip() if raw_id is not None else ""
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        rows.append({"id": uid, "name": str(item.get("name") or "")})
+    return rows
+
+
+def _pixiv_current_bookmark_ids(pixiv: Any) -> tuple[set[str], list[dict[str, str]]]:
+    """当前账号已经收藏的作品 id。
+
+    读不到就当一条都没有：多收藏一次没有坏处，少收藏一个才是真的丢了。
+    """
+    ids: set[str] = set()
+    warnings: list[dict[str, str]] = []
+    for rest in ("show", "hide"):
+        offset = 0
+        for _ in range(max(1, PIXIV_MAX_PAGES)):
+            try:
+                body = pixiv.bookmarks(
+                    offset=offset, limit=PIXIV_BOOKMARK_PAGE, rest=rest) or {}
+            except Exception as exc:  # noqa: BLE001
+                warnings.append({"section": f"pixiv_bookmarks:{rest}",
+                                 "message": str(exc)})
+                return ids, warnings
+            if body.get("error"):
+                warnings.append({"section": f"pixiv_bookmarks:{rest}",
+                                 "message": str(body["error"])})
+                return ids, warnings
+            works = [work for work in (body.get("works") or [])
+                     if isinstance(work, dict)]
+            for work in works:
+                pid = str(work.get("id") or "").strip()
+                if pid:
+                    ids.add(pid)
+            if not works or not body.get("has_more"):
+                break
+            offset += len(works)
+    return ids, warnings
+
+
+def _pixiv_current_following_ids(pixiv: Any) -> tuple[set[str], list[dict[str, str]]]:
+    """当前账号已经关注的画师 id。"""
+    ids: set[str] = set()
+    warnings: list[dict[str, str]] = []
+    offset = 0
+    for _ in range(max(1, PIXIV_MAX_PAGES)):
+        try:
+            body = pixiv.following(offset=offset, limit=PIXIV_FOLLOW_PAGE) or {}
+        except Exception as exc:  # noqa: BLE001
+            warnings.append({"section": "pixiv_following", "message": str(exc)})
+            return ids, warnings
+        if body.get("error"):
+            warnings.append({"section": "pixiv_following",
+                             "message": str(body["error"])})
+            return ids, warnings
+        users = [user for user in (body.get("users") or [])
+                 if isinstance(user, dict)]
+        for user in users:
+            raw_id = user.get("id")
+            uid = str(raw_id).strip() if raw_id is not None else ""
+            if uid:
+                ids.add(uid)
+        if not users or not body.get("has_more"):
+            break
+        offset += len(users)
+    return ids, warnings
+
+
 def _backup_artists(payload: dict[str, Any]) -> list[dict[str, str]]:
     """备份文件里记着的关注歌手。"""
     artists: list[dict[str, str]] = []
@@ -1460,6 +1931,7 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
                  batch_pause: float = BATCH_PAUSE,
                  local: Any = None,
                  bili: Any = None,
+                 pixiv: Any = None,
                  store: Any = None) -> dict[str, Any]:
     """按用户的决定把备份并进当前账号。
 
@@ -1473,6 +1945,9 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
     ``store`` 是本机的 :class:`~src.core.bangumi_store.BangumiStore`。
     Bangumi 的收藏和观看历史写回它，**不碰服务器**——那部分数据本来就
     只存在本地。
+
+    ``pixiv`` 是当前登录的 :class:`~src.core.pixiv.PixivClient`。没登录就
+    传 ``None``：Pixiv 那一节只计进 ``skipped``，别的部分照常写。
 
     返回一份结果：加了多少歌、关注了多少歌手、建了几个歌单、跳过多少、
     失败多少。
@@ -1502,6 +1977,8 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
             "skipped_detail": [],
             "local_restored": {"play_counts": 0, "favorites": 0, "recent": 0},
             "bilibili": {"folders_created": 0, "videos_added": 0, "skipped": 0},
+            "pixiv": {"bookmarks_added": 0, "bookmarks_skipped": 0,
+                      "followed": 0, "skipped": 0},
             "errors": [{"section": "conflicts",
                         "message": "decisions missing: " + ", ".join(missing)}],
         }
@@ -1747,6 +2224,39 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
     elif bili_folders:
         bili_result["skipped"] = len(bili_folders)
 
+    # -- Pixiv 收藏和关注 -----------------------------------------------------
+    # 备份里没有这一节、或者当前没登录 Pixiv，整段跳过：别的部分照样算数。
+    pixiv_result = {"bookmarks_added": 0, "bookmarks_skipped": 0,
+                    "followed": 0, "skipped": 0}
+    pixiv_plan = plan.get("pixiv") or {}
+    pixiv_mark_plan = pixiv_plan.get("bookmarks") or {}
+    pixiv_user_plan = pixiv_plan.get("following") or {}
+    pixiv_bookmarks = [item for item in (pixiv_mark_plan.get("to_add") or [])
+                       if isinstance(item, dict)]
+    pixiv_users = [item for item in (pixiv_user_plan.get("to_add") or [])
+                   if isinstance(item, dict)]
+    if pixiv_plan.get("available") and pixiv is not None:
+        pixiv_total = len(pixiv_bookmarks) + len(pixiv_users)
+        report(PHASE_PIXIV, 0, pixiv_total)
+        bookmarks_added, bookmarks_failed = _apply_pixiv(
+            pixiv_bookmarks, lambda item: _pixiv_bookmark(pixiv, item),
+            section=PHASE_PIXIV, done_offset=0, total=pixiv_total,
+            progress=report, sleep=sleep, batch_pause=batch_pause, errors=errors)
+        followed, follow_failed = _apply_pixiv(
+            pixiv_users, lambda item: _pixiv_follow(pixiv, str(item.get("id") or "")),
+            section=PHASE_PIXIV, done_offset=len(pixiv_bookmarks),
+            total=pixiv_total, progress=report, sleep=sleep,
+            batch_pause=batch_pause, errors=errors)
+        pixiv_result["bookmarks_added"] = bookmarks_added
+        pixiv_result["followed"] = followed
+        pixiv_result["bookmarks_skipped"] = int(pixiv_mark_plan.get("already") or 0)
+        failed += bookmarks_failed + follow_failed
+        report(PHASE_PIXIV, pixiv_total, pixiv_total)
+    elif pixiv_plan.get("present"):
+        # 有这一节但没登录：记成跳过，不记成失败。
+        pixiv_result["skipped"] = (int(pixiv_mark_plan.get("total") or 0)
+                                   + int(pixiv_user_plan.get("total") or 0))
+
     # -- Bangumi 本地收藏和观看历史 -------------------------------------------
     # 没有账号，所以没有「当前没登录」的条件：备份里有就写回本地。
     # 纯本地操作，不发一个请求。
@@ -1781,6 +2291,7 @@ def apply_import(api: Any, payload: dict[str, Any], plan: dict[str, Any],
         "local_restored": local_restored,
         "bilibili": bili_result,
         "bangumi": bangumi_result,
+        "pixiv": pixiv_result,
         "errors": errors,
     }
 
