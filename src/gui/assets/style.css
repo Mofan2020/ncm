@@ -1017,6 +1017,39 @@ input[type="range"]::-webkit-slider-thumb {
     box-shadow: 0 30px 70px rgba(0, 0, 0, .38), inset 0 1px 0 var(--glass-edge);
 }
 .modal-box-sm { width: min(420px, 94vw); }
+/* 设置弹窗按窗口宽度走。
+ *
+ * 它是所有弹窗里内容最多的一页：七个页签、每行都有说明、还有下载目录那种
+ * 输入框加按钮的组合。固定 600px 的时候，屏幕明明很宽，字却挤成两行。
+ * 页面跟着窗口长，上限 1180px 就是「再宽也没必要」的那条线。 */
+#settings-modal .modal-box {
+    width: clamp(620px, 82vw, 1180px);
+    max-width: 94vw;
+    max-height: 90vh;
+}
+
+/* 勾选框跟着左边对齐。
+ * 设置项是「说明在上、控件在下」的竖排，勾选框按默认尺寸居中，落在下一行
+ * 中间，跟旁边的下拉框不是一个基线。 */
+#settings-modal .option > input[type="checkbox"] {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--brand);
+}
+
+/* 带勾选框的那一行改成横排：说明在左、勾选框在右。
+ *
+ * 竖排的话勾选框会落到下一行，右边一大片空白，一屏能看的项立刻少一半——
+ * 设置页现在项多，这一条能省下不少高度。`:has()` 不认的环境（老 WebKit）
+ * 会整条忽略，退回竖排，不会坏。 */
+#settings-modal .option:has(> input[type="checkbox"]) {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
 .modal-head {
     display: flex; align-items: center; justify-content: space-between;
     padding: 14px 16px; border-bottom: 1px solid var(--divider);

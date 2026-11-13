@@ -353,6 +353,55 @@ class PixivClient:
         return self._cookie
 
     @staticmethod
+    def _cookie_triples(item: Any) -> list[tuple[str, str, str]]:
+        """把 pywebview 给的一个「cookie」拆成 (名字, 值, 域名)。
+
+        **它给的不是字典。** ``webview.create_cookie()`` 返回的是
+        ``SimpleCookie``——「cookie 名字 → Morsel」的映射，而且 SimpleCookie
+        是 ``dict`` 的子类。按 ``item.get("name")`` 去取永远拿到 None，
+        于是每一个 cookie 都被当成「没有名字」扔掉：窗口里明明登好了，
+        程序一个 cookie 都读不到。这就是「登录成功但拿不到 cookie」。
+
+        三种形状都认：SimpleCookie（现在这种）、``{name, value, ...}``
+        字典（老版本 / 别的后端）、带 ``.name`` 属性的对象。
+        """
+        found: list[tuple[str, str, str]] = []
+        items: Any = getattr(item, "items", None)
+        if callable(items):
+            try:
+                pairs: list[tuple[Any, Any]] = list(items())
+            except Exception:  # noqa: BLE001 - 形状不对就往下试
+                pairs = []
+            # SimpleCookie：key 是 cookie 名字，值是 Morsel（.key/.value/['domain']）
+            if pairs and all(hasattr(value, "key") for _, value in pairs):
+                for key, morsel in pairs:
+                    name = str(getattr(morsel, "key", "") or key or "").strip()
+                    value = str(getattr(morsel, "value", "") or "")
+                    domain = ""
+                    try:
+                        domain = str(morsel["domain"] or "")
+                    except Exception:  # noqa: BLE001 - 没有 domain 就当没有
+                        domain = ""
+                    found.append((name, value, domain))
+                return found
+            # 普通字典：{name, value, domain}
+            if isinstance(item, dict) and "name" in item:
+                found.append((
+                    str(item.get("name") or "").strip(),
+                    str(item.get("value") or ""),
+                    str(item.get("domain") or ""),
+                ))
+                return found
+        # 带属性的对象
+        if hasattr(item, "name"):
+            found.append((
+                str(getattr(item, "name", "") or "").strip(),
+                str(getattr(item, "value", "") or ""),
+                str(getattr(item, "domain", "") or ""),
+            ))
+        return found
+
+    @staticmethod
     def cookie_from_webview(cookies: Any) -> str:
         """Build the cookie string out of what ``webview.get_cookies()`` gives.
 
@@ -365,24 +414,18 @@ class PixivClient:
         pairs: list[str] = []
         seen: set[str] = set()
         for item in cookies or []:
-            if not isinstance(item, dict):
-                # pywebview also accepts a Cookie object; it exposes .name/.value
-                name = getattr(item, "name", "")
-                value = getattr(item, "value", "")
-                domain = getattr(item, "domain", "") or ""
-            else:
-                name = item.get("name", "")
-                value = item.get("value", "")
-                domain = item.get("domain", "") or ""
-            name = str(name or "").strip()
-            if not name or name in seen:
-                continue
-            if domain and "pixiv.net" not in str(domain):
-                continue
-            if name not in _WANTED_COOKIES:
-                continue
-            seen.add(name)
-            pairs.append(f"{name}={value}")
+            for name, value, domain in PixivClient._cookie_triples(item):
+                name = str(name or "").strip()
+                if not name or name in seen:
+                    continue
+                # 域名过滤只挡「明确不是 pixiv」的：有些后端不给 domain，
+                # 那时候名字白名单已经是足够严的筛子了。
+                if domain and "pixiv.net" not in str(domain):
+                    continue
+                if name not in _WANTED_COOKIES:
+                    continue
+                seen.add(name)
+                pairs.append(f"{name}={value}")
         # PHPSESSID first: it is the one that matters if anything truncates.
         pairs.sort(key=lambda pair: 0 if pair.startswith("PHPSESSID=") else 1)
         return "; ".join(pairs)

@@ -45,6 +45,7 @@ PIXIV_SIGNUP_URL = (
 
 #: 多久看一次登录窗口的 cookie。太快没意义（登录是个几秒的手动过程），
 #: 太慢用户会以为按了没反应。
+COOKIE_READ_TIMEOUT = 6.0
 COOKIE_POLL_SECONDS = 1.5
 
 #: 十分钟还没登完就把窗口关掉：留在那儿只会被忘记，下次开机突然冒出来。
@@ -79,6 +80,8 @@ class PixivBridge:
         self._login_message = ""
         self._login_window: Any = None
         self._login_thread: threading.Thread | None = None
+        # 读 cookie 的那个子线程：上一次没回来就不再叠一个。
+        self._cookie_reader: threading.Thread | None = None
         self._login_cancel = threading.Event()
 
     # ------------------------------------------------------------ 依赖（延迟）
@@ -354,21 +357,43 @@ class PixivBridge:
         except Exception:  # noqa: BLE001
             return True
 
-    @staticmethod
-    def _read_window_cookie(window: Any) -> str:
+    def _read_window_cookie(self, window: Any) -> str:
         """从 webview 自己的 cookie store 里读。
 
         ``get_cookies()`` 走的是系统那一层（WKWebView 的
         ``WKHTTPCookieStore`` / WebView2 的 ``CookieManager``），所以
         **HttpOnly 的 PHPSESSID 也在里面**——用 ``document.cookie`` 是永远
         拿不到的。
+
+        **读要有上限。** 两个后端的实现都是「往主线程丢一个活，然后等一个
+        信号量」：主线程那边没应答（窗口正在关、事件循环卡住），这一句就
+        永远不返回，等待线程卡死在这里，登录窗口开着也永远拿不到 cookie，
+        界面只会一直显示「等待登录」。所以读放在子线程里，超时就放弃这一
+        轮；上一次还没回来就不再叠一个上去。
         """
-        try:
-            cookies = window.get_cookies()
-        except Exception as exc:  # noqa: BLE001 - a platform quirk, keep waiting
-            log.debug("cannot read cookies from the login window: %s", exc)
+        if self._cookie_reader is not None and self._cookie_reader.is_alive():
             return ""
-        return PixivClient.cookie_from_webview(cookies)
+        slot: dict[str, Any] = {}
+
+        def grab() -> None:
+            try:
+                slot["cookies"] = window.get_cookies()
+            except Exception as exc:  # noqa: BLE001 - a platform quirk, keep waiting
+                slot["error"] = exc
+
+        reader = threading.Thread(target=grab, name="pixiv-cookie-read", daemon=True)
+        self._cookie_reader = reader
+        reader.start()
+        reader.join(COOKIE_READ_TIMEOUT)
+        if reader.is_alive():
+            log.warning(
+                "reading cookies from the login window did not answer within %.0fs",
+                COOKIE_READ_TIMEOUT)
+            return ""
+        if "error" in slot:
+            log.debug("cannot read cookies from the login window: %s", slot["error"])
+            return ""
+        return PixivClient.cookie_from_webview(slot.get("cookies") or [])
 
     def _finish_login(self, state: str, message: str,
                       account: dict[str, Any] | None = None) -> None:
