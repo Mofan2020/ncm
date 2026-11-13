@@ -175,12 +175,18 @@ def test_normalize_keeps_what_the_tiles_need() -> None:
 
 # ------------------------------------------------ 过期的 cookie 会把公开接口一起带死
 
+#: 假装服务器回了 HTML 登录墙：`json()` 解析失败，和真实情况一致。
+_HTML = object()
+
+
 class _StubResponse:
     def __init__(self, status: int, body: object) -> None:
         self.status_code = status
         self._body = body
 
     def json(self):  # noqa: ANN201
+        if self._body is _HTML:
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
         return self._body
 
 
@@ -243,3 +249,35 @@ def test_a_fresh_cookie_puts_it_back() -> None:
     assert client.session_expired is False
     assert client.signed_in is True
     assert client.cookie_string() == "PHPSESSID=alive"
+
+
+def test_a_non_json_answer_with_a_dead_cookie_is_retried_as_a_guest() -> None:
+    """死 cookie 不只回 401。
+
+    老路线（``/ranking.php``）遇到失效会话会给 **200 的 HTML 登录墙**，解析
+    JSON 直接失败。以前那一步是「服务器回的不是 JSON」直接返回——排行榜于是
+    一直空着，界面还写着「没有作品」。现在跟 401 一样：摘 cookie，游客重来。
+    """
+    session = _StubSession([
+        (200, _HTML),                                            # 带着死 cookie
+        (200, {"contents": [{"illust_id": "1", "title": "t",
+                             "url": "https://i.pximg.net/x.jpg",
+                             "user_id": "1", "user_name": "u"}]}),
+    ])
+    client = PixivClient(session=session)
+    client.apply_cookie("PHPSESSID=deadbeef")
+
+    out = client.ranking(mode="daily")
+
+    assert [work["id"] for work in out["works"]] == ["1"]
+    assert client.session_expired is True
+    assert session.seen[0]["cookie"], "第一次应该带着 cookie"
+    assert session.seen[1]["cookie"] == "", "重试时必须把 cookie 摘掉"
+
+
+def test_a_non_json_answer_without_a_cookie_is_still_an_error() -> None:
+    session = _StubSession([(200, _HTML)])
+    client = PixivClient(session=session)
+    out = client.ranking(mode="daily")
+    assert out["works"] == []
+    assert "JSON" in client.last_error

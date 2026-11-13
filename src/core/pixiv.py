@@ -37,6 +37,7 @@ import re
 import threading
 import time
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -629,6 +630,16 @@ class PixivClient:
                     try:
                         return response.json(), ""
                     except ValueError:
+                        # **死 cookie 不只是 401。** 老路线（`/ranking.php`）
+                        # 遇到失效会话会回 200 的 HTML 登录墙，解析 JSON 直接
+                        # 失败——于是排行榜空着，界面上却说「没有作品」。跟
+                        # 401 同样处理：摘掉 cookie，当游客再来一次。
+                        if self._cookie and not self.session_expired and not write:
+                            self.drop_expired_cookie()
+                            log.info("pixiv: the answer was not JSON, retrying as a guest")
+                            return self._request(method, path, params=params,
+                                                 json_body=json_body, form=form,
+                                                 write=write, _allow_guest=False)
                         return None, "服务器回的不是 JSON。"
                 if response.status_code in (429, 500, 502, 503, 504):
                     last = f"服务器回了 {response.status_code}，稍后再试。"
@@ -952,6 +963,53 @@ class PixivClient:
         return {"works": works,
                 "has_more": not bool(page_info.get("isLastPage"))}
 
+    #: 排行榜里**真的能用**的档位和内容。
+    #:
+    #: 实测（2026-11-13，游客）：daily / weekly / monthly / rookie 各 50 条；
+    #: original / male / female / day / week 全是 404，novel 也 404。
+    #: 界面上就不该出现选不出东西的选项。
+    RANKING_MODES = ("daily", "weekly", "monthly", "rookie")
+    RANKING_CONTENTS = ("illust", "manga")
+
+    @staticmethod
+    def ranking_date(value: str = "") -> str:
+        """把日期夹到「东京时间的昨天或更早」。
+
+        pixiv 用 JST 出榜单，今天和未来都是 404——用户随手选今天就会得到一片
+        空白，还会以为是程序坏了。这里直接退到昨天（或者把非法值退到昨天），
+        返回真正会用的那个 ``YYYYMMDD``。
+        """
+        text = str(value or "").strip().replace("-", "")
+        if not (len(text) == 8 and text.isdigit()):
+            # 没指定就让 pixiv 自己挑最近一期——它比我们更清楚哪天出榜了。
+            return ""
+        tokyo = datetime.now(timezone(timedelta(hours=9)))
+        latest = (tokyo - timedelta(days=1)).strftime("%Y%m%d")
+        return min(text, latest)
+
+    def related(self, pid: str, *, limit: int = 18) -> list[dict[str, Any]]:
+        """同一个作品的相关推荐。
+
+        ``/ajax/illust/{id}/related`` 是 404；能用的是
+        ``/ajax/illust/{id}/recommend/init``，而且**不带 ``limit`` 会 400**。
+        游客也拿得到（实测 4 条），登录后给得更多。
+        """
+        pid = str(pid or "").strip()
+        if not pid:
+            return []
+        body = self._ajax(f"/ajax/illust/{pid}/recommend/init",
+                          {"limit": max(1, int(limit)), "lang": "zh"})
+        if not isinstance(body, dict):
+            return []
+        works = []
+        for raw in body.get("illusts") or []:
+            if not isinstance(raw, dict):
+                continue
+            work = normalize_work(raw)
+            if work.get("id"):
+                works.append(work)
+        return works
+
     def ranking(self, *, mode: str = "daily", content: str = "illust",
                 page: int = 1, date: str = "") -> dict[str, Any]:
         """The public ranking.
@@ -960,17 +1018,35 @@ class PixivClient:
         ``date`` has to be earlier than today (Tokyo time) or pixiv answers
         the current day anyway.
         """
+        if mode not in self.RANKING_MODES:
+            mode = "daily"
+        if content not in self.RANKING_CONTENTS:
+            content = "illust"
         params: dict[str, Any] = {
             "format": "json", "mode": mode, "content": content,
             "p": max(1, int(page)),
         }
-        if date:
-            params["date"] = str(date)
+        wanted = self.ranking_date(date)
+        if wanted:
+            params["date"] = wanted
         self.last_error = ""
         payload, error = self._request("GET", "/ranking.php", params=params)
+        note = ""
+        if "date" in params and (error or not (payload or {}).get("contents")):
+            # 那一天还没有榜（pixiv 的日榜要等到第二天才出），或者日子太早。
+            # 退回最近一期，并且把退回的是哪一天说出来——不然用户会以为是
+            # 自己选错了日期，或者干脆以为排行榜坏了。
+            latest_params = dict(params)
+            latest_params.pop("date", None)
+            fallback, fallback_error = self._request("GET", "/ranking.php",
+                                                     params=latest_params)
+            if not fallback_error and isinstance(fallback, dict) and fallback.get("contents"):
+                payload = fallback
+                error = ""
+                note = "那天还没有榜单，显示的是最近一期。"
         if error or not isinstance(payload, dict):
             self.last_error = error or "排行榜读取失败。"
-            return {"works": [], "has_more": False}
+            return {"works": [], "has_more": False, "note": note}
         works = []
         for item in payload.get("contents") or []:
             if not isinstance(item, dict):
@@ -996,7 +1072,10 @@ class PixivClient:
         next_page = payload.get("next")
         return {"works": works,
                 "has_more": bool(next_page) and str(next_page) != "0",
-                "date": str(payload.get("date") or "")}
+                "date": str(payload.get("date") or ""),
+                "mode": mode,
+                "content": content,
+                "note": note}
 
     def discovery(self, *, mode: str = "safe", limit: int = 60) -> list[dict[str, Any]]:
         """发现页：三个来源依次试，失败的原因全留下。

@@ -2842,8 +2842,11 @@ class GuiBridge:
         return self.pixiv.search(word, page=page, order=order, kind=kind)
 
     def pixiv_ranking(self, mode: str = "daily", page: int = 1,
-                      content: str = "illust") -> dict[str, Any]:
-        return self.pixiv.ranking(mode=mode, page=page, content=content)
+                      content: str = "illust", date: str = "") -> dict[str, Any]:
+        return self.pixiv.ranking(mode=mode, page=page, content=content, date=date)
+
+    def pixiv_related(self, pid: str = "") -> dict[str, Any]:
+        return self.pixiv.related(pid=pid)
 
     def pixiv_feed(self, page: int = 1) -> dict[str, Any]:
         return self.pixiv.feed(page=page)

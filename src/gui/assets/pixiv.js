@@ -188,6 +188,21 @@ const PixivUI = {
         if (rankLoad) rankLoad.addEventListener('click', () => this.loadRanking(true));
         const rankMore = pixivEl('btn-pixiv-rank-more');
         if (rankMore) rankMore.addEventListener('click', () => this.loadRanking(false));
+        // 换档位/换内容/换日期都直接重拉：让人再点一次「刷新」是多余的一步。
+        ['pixiv-rank-mode', 'pixiv-rank-content', 'pixiv-rank-date'].forEach((id) => {
+            const el = pixivEl(id);
+            if (el) el.addEventListener('change', () => this.loadRanking(true));
+        });
+        const rankDate = pixivEl('pixiv-rank-date');
+        if (rankDate) {
+            // 今天和未来都没有榜单（pixiv 第二天才出），日期框直接把上限卡住，
+            // 免得选完看到一片空白。
+            // 东京时间的昨天：epoch 加 9 小时，再按 UTC 取日期字段，不受本机
+            // 时区影响（pixiv 按 JST 出榜）。
+            const tokyo = new Date(Date.now() + 9 * 3600 * 1000);
+            tokyo.setUTCDate(tokyo.getUTCDate() - 1);
+            rankDate.max = tokyo.toISOString().slice(0, 10);
+        }
 
         const login = pixivEl('btn-pixiv-login');
         if (login) login.addEventListener('click', () => this.login(false));
@@ -567,10 +582,16 @@ const PixivUI = {
         if (!api) return;
         const modeEl = pixivEl('pixiv-rank-mode');
         const mode = modeEl ? modeEl.value : 'daily';
+        const contentEl = pixivEl('pixiv-rank-content');
+        const content = contentEl ? contentEl.value : 'illust';
+        const dateEl = pixivEl('pixiv-rank-date');
+        // 日期留空 = 「最近一期」，让 pixiv 自己说他出到哪天了。选了今天或以
+        // 后的日期后端会夹回昨天，这里不用重复判断。
+        const date = dateEl ? String(dateEl.value || '').replace(/-/g, '') : '';
         const page = reset ? 1 : (pixivState.ranking.page + 1);
         pixivSetState('pixiv-rank-state', t('common.loading'));
         try {
-            const result = await api.pixiv_ranking(mode, page);
+            const result = await api.pixiv_ranking(mode, page, content, date);
             const works = (result && result.works) || [];
             pixivState.ranking.mode = mode;
             pixivState.ranking.page = page;
@@ -585,6 +606,12 @@ const PixivUI = {
             }
             const more = pixivEl('btn-pixiv-rank-more');
             if (more) more.hidden = !pixivState.ranking.hasMore;
+            // 「那天还没有榜单，这是最近一期」这类话要说给用户听，否则他
+            // 选了日期看到日期不对，只会以为是程序出错。
+            const note = (result && result.note) || '';
+            if (note && pixivState.ranking.works.length) {
+                pixivSetState('pixiv-rank-state', note);
+            }
         } catch (err) {
             pixivSetState('pixiv-rank-state', String(err && err.message ? err.message : err));
         }
@@ -649,7 +676,7 @@ const PixivUI = {
         const meta = pixivEl('pixiv-detail-meta');
         if (meta) meta.textContent = '';
         ['pixiv-detail-tags', 'pixiv-detail-desc', 'pixiv-detail-stats',
-         'pixiv-artist-works'].forEach((id) => {
+         'pixiv-artist-works', 'pixiv-related-grid', 'pixiv-related-state'].forEach((id) => {
             const el = pixivEl(id);
             if (el) el.innerHTML = '';
         });
@@ -662,6 +689,8 @@ const PixivUI = {
             pixivState.detail = work;
             pixivState.detailPage = 0;
             this.renderDetail(work);
+            // 相关作品单独请求：它慢一点不该拖住整个详情页。
+            this.loadRelated(work.id);
         } catch (err) {
             pixivSetState('pixiv-detail-title', String(err && err.message ? err.message : err));
         }
@@ -714,6 +743,28 @@ const PixivUI = {
         const curtain = pixivEl('pixiv-detail-curtain');
         if (curtain) curtain.hidden = !work.nsfw || pixivState.revealed;
         this.renderDetailPage();
+    },
+
+    /// 相关作品。pixiv 的 `/related` 是 404，能用的是 `/recommend/init`，
+    /// 游客也拿得到（实测 4 条），登录后更多。
+    async loadRelated(pid) {
+        const api = pixivApi();
+        const grid = pixivEl('pixiv-related-grid');
+        const state = pixivEl('pixiv-related-state');
+        if (!api || !grid || !state) return;
+        const wanted = String(pid || '');
+        try {
+            const result = await api.pixiv_related(wanted);
+            // 请求期间用户可能已经翻到别的作品了：那样就别把旧的结果画上去。
+            if (!pixivState.detail || String(pixivState.detail.id) !== wanted) return;
+            const works = (result && result.works) || [];
+            grid.innerHTML = '';
+            works.forEach((work) => grid.appendChild(pixivTile(work)));
+            state.textContent = works.length ? '' : ((result && result.error) || '');
+        } catch (err) {
+            if (!pixivState.detail || String(pixivState.detail.id) !== wanted) return;
+            state.textContent = String(err && err.message ? err.message : err);
+        }
     },
 
     renderStats(work) {

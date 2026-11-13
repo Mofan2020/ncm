@@ -720,14 +720,18 @@
                 <div id="pixiv-seg-ranking" hidden>
                     <div class="inline-form">
                         <select id="pixiv-rank-mode" class="select">
+                            <!-- 只放真的出榜的档位：original / male / female 那几条
+                                 路线全是 404，放上去只会让人选了看见一片空白。 -->
                             <option value="daily" data-i18n="pixiv.rank_daily"></option>
                             <option value="weekly" data-i18n="pixiv.rank_weekly"></option>
                             <option value="monthly" data-i18n="pixiv.rank_monthly"></option>
                             <option value="rookie" data-i18n="pixiv.rank_rookie"></option>
-                            <option value="original" data-i18n="pixiv.rank_original"></option>
-                            <option value="male" data-i18n="pixiv.rank_male"></option>
-                            <option value="female" data-i18n="pixiv.rank_female"></option>
                         </select>
+                        <select id="pixiv-rank-content" class="select">
+                            <option value="illust" data-i18n="pixiv.rank_content_illust"></option>
+                            <option value="manga" data-i18n="pixiv.rank_content_manga"></option>
+                        </select>
+                        <input type="date" id="pixiv-rank-date" class="input" />
                         <button class="btn btn-primary" type="button" id="btn-pixiv-rank-load"
                                 data-i18n="pixiv.rank_reload"></button>
                     </div>
@@ -822,6 +826,9 @@
                 <div class="pixiv-detail-foot">
                     <div class="pixiv-artist-head" id="pixiv-detail-artist"></div>
                     <div class="bili-grid pixiv-artist-grid" id="pixiv-artist-works"></div>
+                    <div class="pixiv-artist-head" id="pixiv-related-head" data-i18n="pixiv.related"></div>
+                    <div class="bili-grid pixiv-artist-grid" id="pixiv-related-grid"></div>
+                    <div class="page-state" id="pixiv-related-state"></div>
                 </div>
             </div>
         </section>

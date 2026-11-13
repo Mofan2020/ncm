@@ -61,6 +61,7 @@ _TTL = {
     "user": 1800.0,
     "userworks": 1800.0,
     "ranking": 900.0,
+    "related": 1800.0,
     "discovery": 900.0,
 }
 
@@ -595,11 +596,21 @@ class PixivBridge:
         }
 
     def ranking(self, mode: str = "daily", page: int = 1,
-                content: str = "illust") -> dict[str, Any]:
-        key = f"{mode}|{content}|{page}"
-        raw = self._cached("ranking", key,
-                           lambda: self.client.ranking(mode=mode, content=content,
-                                                       page=page))
+                content: str = "illust", date: str = "") -> dict[str, Any]:
+        """排行榜。``date`` 留空就是「最近一期」，pixiv 自己决定是哪天。
+
+        档位和内容都先过一遍白名单：客户端上写着 original / male / female
+        这几个选项时，选了只会得到一片空白（那几条路线全是 404）。
+        """
+        if mode not in PixivClient.RANKING_MODES:
+            mode = "daily"
+        if content not in PixivClient.RANKING_CONTENTS:
+            content = "illust"
+        key = f"{mode}|{content}|{page}|{date}"
+        raw = self._cached(
+            "ranking", key,
+            lambda: self.client.ranking(mode=mode, content=content,
+                                        page=page, date=date))
         works = self._proxy(self._filter(raw.get("works") or []))
         error = str(raw.get("error") or "")
         if not works and not error:
@@ -609,7 +620,22 @@ class PixivBridge:
             "has_more": bool(raw.get("has_more")),
             "date": str(raw.get("date") or ""),
             "page": int(page),
+            "mode": mode,
+            "content": content,
+            "note": str(raw.get("note") or ""),
             "error": error,
+        }
+
+    def related(self, pid: str = "") -> dict[str, Any]:
+        """这个作品的相关推荐。空结果不算错误，但要能说出为什么是空的。"""
+        pid = str(pid or "").strip()
+        if not pid:
+            return {"works": [], "error": "缺少作品 id。"}
+        raw = self._cached("related", pid, lambda: self.client.related(pid))
+        works = self._proxy(self._filter(raw or []))
+        return {
+            "works": works,
+            "error": "" if works else "这部作品没有相关推荐。",
         }
 
     def feed(self, page: int = 1) -> dict[str, Any]:
