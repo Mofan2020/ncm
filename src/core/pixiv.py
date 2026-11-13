@@ -467,9 +467,9 @@ class PixivClient:
         if not state:
             self._self = {}
             if self._cookie:
-                # 读不出登录态基本就是 cookie 死了。别让它继续跟着每个请求
-                # 走——公开接口会被它一起带下水。
-                self.drop_expired_cookie()
+                # 只报告，不动 cookie：这一层分不清「cookie 死了」和「pixiv
+                # 刚好回了一张维护页」。真死了的话下一次请求会 401，那条路
+                # 才是摘 cookie 的地方。
                 self.last_error = "无法读取登录状态，可能是 cookie 已失效。"
             return {}
         token = str((state.get("api") or {}).get("token") or "")
@@ -480,7 +480,6 @@ class PixivClient:
         if not isinstance(self_raw, dict):
             self._self = {}
             if self._cookie:
-                self.drop_expired_cookie()
                 self.last_error = "登录状态已失效，请重新登录。"
             return {}
         account = {

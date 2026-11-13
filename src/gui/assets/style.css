@@ -1043,8 +1043,13 @@ input[type="range"]::-webkit-slider-thumb {
  *
  * 竖排的话勾选框会落到下一行，右边一大片空白，一屏能看的项立刻少一半——
  * 设置页现在项多，这一条能省下不少高度。`:has()` 不认的环境（老 WebKit）
- * 会整条忽略，退回竖排，不会坏。 */
-#settings-modal .option:has(> input[type="checkbox"]) {
+ * 会整条忽略，退回竖排，不会坏。
+ *
+ * **只认「勾选框排在最后」的行。** `.option.checkbox` 那种是勾选框在前、
+ * 说明在后的横排，它们本来就是「框在左、字紧跟着」。要是也套上
+ * `justify-content: space-between`，框会被顶到最左边、字被推到最右边，
+ * 一整列看下来就是「文字全跑右边、勾选框全在左边」。 */
+#settings-modal .option:has(> input[type="checkbox"]:last-child) {
     flex-direction: row;
     align-items: center;
     justify-content: space-between;

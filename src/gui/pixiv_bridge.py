@@ -333,17 +333,28 @@ class PixivBridge:
         ``get_cookies()`` 只是读本地 cookie store，很便宜，但
         ``refresh_self()`` 是一次真实的网络请求，每秒一次就是在刷人家的
         首页。
+
+        **窗口是不是被关掉，只能靠 ``events.closed``。** 以前是看
+        ``window.native`` 是不是 None，可那扇窗刚建出来时 ``native`` 本来就
+        是 None（pywebview 在 start() 之后才把原生对象挂上去），于是这个线程
+        第一拍就判定「用户把窗口关了」，直接以 cancelled 结束——窗口挂在屏幕
+        上没人管，cookie 永远不会被取，界面上一直写着未登录。这就是「登录完
+        了窗口不关、关了自己也不算登录」的全部原因。
         """
         deadline = time.monotonic() + LOGIN_TIMEOUT_SECONDS
         last_cookie = ""
-        while not self._login_cancel.is_set():
+        closed = threading.Event()
+        try:
+            window.events.closed += lambda: closed.set()
+        except Exception:  # noqa: BLE001 - older/newer pywebview differ
+            log.debug("pixiv login: this webview has no closed event", exc_info=True)
+
+        # closed 事件是主信号；_window_gone 兜底那些不发 closed 的后端。
+        while (not self._login_cancel.is_set() and not closed.is_set()
+               and not self._window_gone(window)):
             if time.monotonic() > deadline:
                 self._finish_login("failed", "登录窗口开了十分钟还没登完，已关闭。")
                 self._close_login_window()
-                return
-            if self._window_gone(window):
-                # 用户自己关掉了窗口：不算失败，只是不想登了。
-                self._finish_login("cancelled", "")
                 return
             time.sleep(COOKIE_POLL_SECONDS)
             cookie = self._read_window_cookie(window)
@@ -352,31 +363,68 @@ class PixivBridge:
             if cookie == last_cookie:
                 continue
             last_cookie = cookie
-            self._session.save(cookie, {})
-            info = self.session.account_info(refresh=True)
-            if info.get("id"):
-                self._session.save(cookie, info)
-                account = {
-                    "id": str(info.get("id") or ""),
-                    "name": str(info.get("name") or ""),
-                    "account": str(info.get("account") or ""),
-                    "avatar": str(info.get("avatar") or ""),
-                    "premium": bool(info.get("premium")),
-                }
+            account = self._adopt_cookie(cookie)
+            if account is not None:
                 self._finish_login("ok", "", account=account)
                 self._close_login_window()
                 return
             # 有 cookie 但读不到身份：多半是刚登完还没跳转完，继续等。
             log.info("pixiv login: cookie seen, identity not readable yet (%s)",
-                     info.get("error") or "")
+                     self.session.client.last_error or "")
+
+        if self._login_cancel.is_set():
+            self._finish_login("cancelled", "")
+            return
+
+        # 用户自己把窗口关了。**关窗之前登没登成，得再看一眼**：很多人是
+        # 看着页面已经进了自己的主页才关窗的，这时候 cookie 是好的，只是
+        # 我们还来不及轮询到。
+        self._final_login_check(window, last_cookie)
+
+    def _final_login_check(self, window: Any, last_cookie: str) -> None:
+        """窗口已经关了之后再看一眼 cookie。
+
+        关窗那一刻 cookie store 里通常已经是对的（用户是看着页面进去了才关
+        的），只是轮询还没轮到。这一眼决定「登录成功」还是「用户不想登了」。
+        """
+        cookie = self._read_window_cookie(window) or last_cookie
+        account = self._adopt_cookie(cookie) if cookie else None
+        if account is not None:
+            self._finish_login("ok", "", account=account)
+            return
         self._finish_login("cancelled", "")
+
+    def _adopt_cookie(self, cookie: str) -> dict[str, Any] | None:
+        """把一串 cookie 装进会话，读得出身份就返回账号信息。"""
+        if not cookie or "PHPSESSID=" not in cookie:
+            return None
+        self._session.save(cookie, {})
+        info = self.session.account_info(refresh=True)
+        if not info.get("id"):
+            return None
+        self._session.save(cookie, info)
+        return {
+            "id": str(info.get("id") or ""),
+            "name": str(info.get("name") or ""),
+            "account": str(info.get("account") or ""),
+            "avatar": str(info.get("avatar") or ""),
+            "premium": bool(info.get("premium")),
+        }
 
     @staticmethod
     def _window_gone(window: Any) -> bool:
+        """窗口还活着吗。
+
+        ``native`` 是 None **不代表窗口没了**：窗口刚建出来、原生对象还没挂上
+        去的时候它就是 None。这里只把「有原生对象但已经没了」当成关掉。
+        """
         try:
-            return not bool(getattr(window, "native", True))
+            native = getattr(window, "native", None)
+            if native is None:
+                return False
+            return not bool(native)
         except Exception:  # noqa: BLE001
-            return True
+            return False
 
     def _read_window_cookie(self, window: Any) -> str:
         """从 webview 自己的 cookie store 里读。
