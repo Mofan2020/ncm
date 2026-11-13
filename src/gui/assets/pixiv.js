@@ -114,6 +114,29 @@ function pixivTile(work, options) {
 }
 
 /** 把一批作品画进一个网格。 */
+/**
+ * 空状态：写明原因，再给一个重试。
+ *
+ * 「没有作品」是最没用的一句话——是没登录、网络不通、还是接口改了，用户
+ * 看不出来，我也看不出来。原因照原样写出来。
+ */
+function pixivSetStateWithRetry(id, message, retry) {
+    const el = pixivEl(id);
+    if (!el) return;
+    el.textContent = '';
+    const text = document.createElement('span');
+    text.textContent = message || '';
+    el.appendChild(text);
+    if (typeof retry === 'function') {
+        const button = document.createElement('button');
+        button.className = 'btn btn-sm btn-secondary';
+        button.type = 'button';
+        button.textContent = t('common.retry');
+        button.addEventListener('click', retry);
+        el.appendChild(button);
+    }
+}
+
 function pixivRenderGrid(gridId, stateId, works, emptyKey) {
     const grid = pixivEl(gridId);
     if (!grid) return;
@@ -405,27 +428,32 @@ const PixivUI = {
     async loadDiscover() {
         const api = pixivApi();
         if (!api) return;
+        if (typeof api.pixiv_home !== 'function') {
+            pixivSetState('pixiv-discover-state', t('pixiv.backend_missing'));
+            return;
+        }
         pixivSetState('pixiv-discover-state', t('common.loading'));
         try {
             const home = await api.pixiv_home();
-            pixivState.discover = (home && home.discover) || [];
+            const works = (home && home.discover) || [];
+            pixivState.discover = works;
             if (home && home.feed && home.feed.length) pixivState.feed.works = home.feed;
-            const grid = pixivEl('pixiv-discover-state');
-            if (!pixivState.discover.length) {
-                pixivSetState('pixiv-discover-state', t('pixiv.discover_empty'));
-            } else if (grid) {
-                grid.textContent = '';
-            }
             const element = pixivEl('pixiv-discover-grid');
             if (element) {
                 element.innerHTML = '';
-                pixivState.discover.forEach((work) => element.appendChild(pixivTile(work)));
+                works.forEach((work) => element.appendChild(pixivTile(work)));
             }
-            if (!pixivState.discover.length) {
-                pixivSetState('pixiv-discover-state', t('pixiv.discover_empty'));
+            // 有作品也可以带话（比如取不到推荐流、兜底成排行榜），照样写出来。
+            const note = (home && home.discover_error) || '';
+            if (!works.length) {
+                pixivSetStateWithRetry('pixiv-discover-state',
+                    note || t('pixiv.discover_empty'), () => this.loadDiscover());
+            } else {
+                pixivSetState('pixiv-discover-state', note);
             }
         } catch (err) {
-            pixivSetState('pixiv-discover-state', String(err && err.message ? err.message : err));
+            pixivSetStateWithRetry('pixiv-discover-state',
+                String(err && err.message ? err.message : err), () => this.loadDiscover());
         }
     },
 
@@ -550,6 +578,11 @@ const PixivUI = {
             pixivState.ranking.works = reset ? works : pixivState.ranking.works.concat(works);
             pixivRenderGrid('pixiv-rank-grid', 'pixiv-rank-state',
                 pixivState.ranking.works, 'pixiv.ranking_empty');
+            const rankError = (result && result.error) || '';
+            if (!pixivState.ranking.works.length && rankError) {
+                pixivSetStateWithRetry('pixiv-rank-state', rankError,
+                    () => this.loadRanking(true));
+            }
             const more = pixivEl('btn-pixiv-rank-more');
             if (more) more.hidden = !pixivState.ranking.hasMore;
         } catch (err) {

@@ -312,6 +312,10 @@ class PixivClient:
         self.timeout = timeout
         self.last_error = ""
         self._cookie = ""
+        # 这个 cookie 已经被 pixiv 判死（401/403）。**存的那份留着**——账号页
+        # 要能说「已失效，请重新登录」；只是不再随请求发出去，否则连公开
+        # 接口都会一起 401，发现页、搜索、排行榜全部拿不到东西。
+        self.session_expired = False
         self._csrf = ""
         self._self: dict[str, Any] = {}
         self._lock = threading.RLock()
@@ -334,19 +338,35 @@ class PixivClient:
         :meth:`refresh_self` can answer that, and the caller is expected not
         to call it on every render.
         """
-        return bool(self._cookie) and "PHPSESSID=" in self._cookie
+        return (bool(self._cookie) and "PHPSESSID=" in self._cookie
+                and not self.session_expired)
 
     def apply_cookie(self, cookie: str) -> None:
         """Install a cookie string (``k=v; k=v``) and forget cached state."""
         cookie = str(cookie or "").strip()
         with self._lock:
             self._cookie = cookie
+            self.session_expired = False
             self._csrf = ""
             self._self = {}
             if cookie:
                 self.session.headers["Cookie"] = cookie
             else:
                 self.session.headers.pop("Cookie", None)
+
+    def drop_expired_cookie(self) -> None:
+        """不再把这个 cookie 发出去，但把它留着给界面看。
+
+        pixiv 对一个失效的 ``PHPSESSID`` 不只拒绝写操作：推荐流、搜索、排行榜
+        这些**公开接口**也一起回 401。带着死 cookie 就等于把整个 Pixiv 关掉，
+        而界面上只看到「没有作品」——连原因都没有。摘掉之后退化成游客，这些
+        接口本来就能用。
+        """
+        with self._lock:
+            self.session_expired = True
+            self._csrf = ""
+            self._self = {}
+            self.session.headers.pop("Cookie", None)
 
     def cookie_string(self) -> str:
         """The cookie as stored -- what the settings file keeps."""
@@ -447,6 +467,9 @@ class PixivClient:
         if not state:
             self._self = {}
             if self._cookie:
+                # 读不出登录态基本就是 cookie 死了。别让它继续跟着每个请求
+                # 走——公开接口会被它一起带下水。
+                self.drop_expired_cookie()
                 self.last_error = "无法读取登录状态，可能是 cookie 已失效。"
             return {}
         token = str((state.get("api") or {}).get("token") or "")
@@ -457,6 +480,7 @@ class PixivClient:
         if not isinstance(self_raw, dict):
             self._self = {}
             if self._cookie:
+                self.drop_expired_cookie()
                 self.last_error = "登录状态已失效，请重新登录。"
             return {}
         account = {
@@ -566,7 +590,8 @@ class PixivClient:
                  params: Any = None,
                  json_body: Any = None,
                  form: dict[str, Any] | None = None,
-                 write: bool = False) -> tuple[Any, str]:
+                 write: bool = False,
+                 _allow_guest: bool = True) -> tuple[Any, str]:
         """One request, with the retry that pixiv's 429/5xx deserves.
 
         A 429 or a 5xx is worth two more tries with a growing gap; a 4xx is
@@ -609,6 +634,16 @@ class PixivClient:
                 if response.status_code in (429, 500, 502, 503, 504):
                     last = f"服务器回了 {response.status_code}，稍后再试。"
                 elif response.status_code in (401, 403):
+                    # **过期的 cookie 会把公开接口也一起弄死。** 摘掉它，同一
+                    # 个请求当游客再来一次：读接口本身就允许匿名，退一步至少
+                    # 让发现页有东西看，同时把「已失效」留给账号页去说。
+                    if self._cookie and not self.session_expired and not write:
+                        self.drop_expired_cookie()
+                        log.info("pixiv: the session cookie was rejected, "
+                                 "carrying on as a guest")
+                        return self._request(method, path, params=params,
+                                             json_body=json_body, form=form,
+                                             write=write, _allow_guest=False)
                     return None, "登录已失效，请重新登录。"
                 else:
                     return None, f"服务器回了 {response.status_code}。"
@@ -965,24 +1000,56 @@ class PixivClient:
                 "date": str(payload.get("date") or "")}
 
     def discovery(self, *, mode: str = "safe", limit: int = 60) -> list[dict[str, Any]]:
-        """The "discover" feed.
+        """发现页：三个来源依次试，失败的原因全留下。
 
-        The new route needs a session; the legacy one clamps to 18 results.
-        Falling back is not a failure -- on a first run there is no session
-        yet, and the home screen still has to show something.
+        1. ``/ajax/discovery/artworks`` —— 新的推荐流，**要会话**，游客回 400。
+        2. ``/ajax/illust/discovery`` —— 老接口，游客能用，最多 18 条。
+        3. ``/ranking.php?mode=daily`` —— 排行榜本来就是公开的，最后的兜底。
+
+        **失败不能被吞掉。** 以前两个接口都拿不到就返回空列表，界面只能说
+        「没有作品」，分不清是没登录、网络不通还是接口改了。现在每次尝试的
+        错误都攒进 ``last_error``，界面能照原样显示出来。
         """
+        self.last_error = ""
+        problems: list[str] = []
+
         body = self._ajax("/ajax/discovery/artworks",
                           {"mode": mode, "limit": max(1, min(60, int(limit))),
                            "lang": "zh"})
         thumbs: list[Any] = []
         if isinstance(body, dict):
             thumbs = ((body.get("thumbnails") or {}).get("illust") or [])
-        if not thumbs:
-            body = self._ajax("/ajax/illust/discovery", {"mode": mode, "max": 18})
-            if isinstance(body, dict):
-                thumbs = body.get("illusts") or []
-        works = [normalize_work(item) for item in thumbs]
-        return [work for work in works if work.get("id")]
+        works = [w for w in (normalize_work(item) for item in thumbs) if w.get("id")]
+        if works:
+            return works
+        problems.append("推荐流：" + (self.last_error or "没有返回作品"))
+
+        body = self._ajax("/ajax/illust/discovery", {"mode": mode, "max": 18})
+        if isinstance(body, dict):
+            thumbs = body.get("illusts") or []
+        works = [w for w in (normalize_work(item) for item in thumbs) if w.get("id")]
+        if works:
+            return works
+        problems.append("发现老接口：" + (self.last_error or "没有返回作品"))
+
+        # 排行榜是公开的，游客也能看。拿来兜底比一片空白强得多，但要在数据
+        # 上标一句，界面才能说清楚「这是排行榜的内容」。
+        ranking = self.ranking(mode="daily", content="illust", page=1)
+        works = []
+        for item in ranking.get("works") or []:
+            if not item.get("id"):
+                continue
+            works.append({
+                **item,
+                "page_count": 1,
+                "from_ranking": True,
+            })
+        if works:
+            self.last_error = "推荐流没取到（" + "；".join(problems) + "），下面是排行榜。"
+            return works
+        problems.append("排行榜：" + (self.last_error or "没有返回作品"))
+        self.last_error = "；".join(problems)
+        return []
 
     # ---------------------------------------------------------------- writes
 

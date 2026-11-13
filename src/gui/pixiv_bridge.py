@@ -52,6 +52,8 @@ COOKIE_POLL_SECONDS = 1.5
 LOGIN_TIMEOUT_SECONDS = 600.0
 
 #: 缓存寿命（秒）。收藏和关注流不在表里——它们不缓存。
+_CACHE_NS = "pixiv2"   # 换一代就把旧的空结果清空了，不用等 TTL
+
 _TTL = {
     "search": 600.0,
     "illust": 3600.0,
@@ -119,28 +121,47 @@ class PixivBridge:
             log.debug("cannot push %s to the interface", name)
 
     # ------------------------------------------------------------------ 缓存
-    def _cached(self, kind: str, key: str, maker: Callable[[], Any]) -> Any:
-        """读缓存，没有就现取并写回。
+    @staticmethod
+    def _worth_caching(value: Any) -> bool:
+        """这份结果配不配进缓存。
 
-        空结果**也缓存**：搜到一个不存在的词时，每次敲同一串都会再打
-        一次空搜索，而 pixiv 对空结果一样计次。
+        **失败和空都不进。** 一次 400/404 或者一次网络抖动把空列表写进缓存，
+        那个页签就会一直空到 TTL 到期（最长一小时），而界面上什么原因都看
+        不到——用户看到的是「发现了但作品就是不出来」。宁可多打一次接口。
         """
+        if value is None:
+            return False
+        if isinstance(value, dict):
+            if value.get("error"):
+                return False
+            for key in ("works", "illusts", "items", "users", "thumbnails"):
+                if key in value:
+                    return bool(value.get(key))
+            return bool(value)
+        if isinstance(value, list | tuple):
+            return bool(value)
+        return True
+
+    def _cached(self, kind: str, key: str, maker: Callable[[], Any]) -> Any:
+        """读缓存，没有就现取；**只有拿到内容才写回**。"""
         try:
-            hit = self.cache.get(f"pixiv-{kind}", key)
+            hit = self.cache.get(f"{_CACHE_NS}-{kind}", key)
         except Exception:  # noqa: BLE001 - the cache is optional
             hit = None
         if hit is not None:
             return hit
         value = maker()
+        if not self._worth_caching(value):
+            return value
         try:
-            self.cache.set(f"pixiv-{kind}", key, value, _TTL.get(kind, 600.0))
+            self.cache.set(f"{_CACHE_NS}-{kind}", key, value, _TTL.get(kind, 600.0))
         except Exception:  # noqa: BLE001
             pass
         return value
 
     def _drop(self, kind: str, key: str) -> None:
         try:
-            self.cache.discard(f"pixiv-{kind}", key)
+            self.cache.discard(f"{_CACHE_NS}-{kind}", key)
         except Exception:  # noqa: BLE001
             pass
 
@@ -471,22 +492,37 @@ class PixivBridge:
         """账号变了：收藏、关注流这些跟着账号走的东西全部作废。"""
         for kind in ("userworks",):
             try:
-                self.cache.discard_prefix(f"pixiv-{kind}", "")
+                self.cache.discard_prefix(f"{_CACHE_NS}-{kind}", "")
             except Exception:  # noqa: BLE001 - older caches have no prefix drop
                 pass
 
     # ------------------------------------------------------------------ 读
     def home(self) -> dict[str, Any]:
-        """首页：推荐流。登录了就再给一条关注流的第一页。"""
-        works = self._proxy(self._filter(
-            self._cached("discovery", "home", self.client.discovery)))
+        """首页：推荐流。登录了就再给一条关注流的第一页。
+
+        ``discover_error`` 是给界面看的：发现页空着的时候，得能说清是「没
+        登录」「网络不通」还是「接口改了」，而不是只写一句「没有作品」。
+        """
+        held: dict[str, str] = {}
+
+        def fetch() -> list[dict[str, Any]]:
+            works = self.client.discovery()
+            # 有作品但带话（比如兜底成排行榜）也要把话留下。
+            held["error"] = str(getattr(self.client, "last_error", "") or "")
+            return works
+
+        works = self._proxy(self._filter(self._cached("discovery", "home", fetch)))
+        discover_error = held.get("error", "")
+        if not works and not discover_error:
+            discover_error = "发现页没有返回作品。"
         feed: list[dict[str, Any]] = []
         feed_error = ""
         if self.session.is_logged_in:
             body = self.client.feed(page=1, mode=self._search_mode())
             feed = self._proxy(self._filter(body.get("works") or []))
             feed_error = str(body.get("error") or "")
-        return {"discover": works, "feed": feed, "feed_error": feed_error,
+        return {"discover": works, "discover_error": discover_error,
+                "feed": feed, "feed_error": feed_error,
                 "logged_in": self.session.is_logged_in}
 
     def search(self, word: str = "", page: int = 1, order: str = "date_d",
@@ -516,11 +552,16 @@ class PixivBridge:
         raw = self._cached("ranking", key,
                            lambda: self.client.ranking(mode=mode, content=content,
                                                        page=page))
+        works = self._proxy(self._filter(raw.get("works") or []))
+        error = str(raw.get("error") or "")
+        if not works and not error:
+            error = "排行榜没有返回作品。"
         return {
-            "works": self._proxy(self._filter(raw.get("works") or [])),
+            "works": works,
             "has_more": bool(raw.get("has_more")),
             "date": str(raw.get("date") or ""),
             "page": int(page),
+            "error": error,
         }
 
     def feed(self, page: int = 1) -> dict[str, Any]:
