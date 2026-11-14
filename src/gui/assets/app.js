@@ -8760,6 +8760,9 @@ function combinedCategoryLabel() {
     if (combined.category === 'song') return t('search.category_song');
     if (combined.category === 'playlist') return t('search.category_playlist');
     if (combined.category === 'video') return t('search.category_video');
+    if (combined.category === 'artist') return t('search.category_artist');
+    if (combined.category === 'album') return t('search.category_album');
+    if (combined.category === 'user') return t('search.category_user');
     return t('search.category_all');
 }
 
@@ -9031,10 +9034,63 @@ function openPixivWork(pid) {
     }
 }
 
+/** The playlists of a user found in the search. */
+async function openUserPlaylists(user) {
+    const uid = String((user && user.id) || '');
+    if (!uid) return;
+    const title = document.getElementById('user-playlists-title');
+    const body = document.getElementById('user-playlists-body');
+    if (title) title.textContent = (user && user.name) || '';
+    if (body) body.innerHTML = '';
+    openModal('user-playlists-modal');
+    if (!bridgeHas('get_user_playlists')) {
+        if (body) body.textContent = t('search.user_playlists_failed');
+        return;
+    }
+    try {
+        const result = await state.api.get_user_playlists(uid, 30, 0);
+        if (!result || !result.success) {
+            if (body) body.textContent = bridgeFailure(result, 'error.network');
+            return;
+        }
+        const playlists = result.playlists || [];
+        if (!playlists.length) {
+            const empty = document.createElement('p');
+            empty.className = 'empty';
+            empty.textContent = t('search.user_playlists_empty');
+            body.appendChild(empty);
+            return;
+        }
+        const fragment = document.createDocumentFragment();
+        playlists.forEach((playlist) => {
+            const row = document.createElement('div');
+            row.className = 'playlist-row';
+            row.textContent = playlist.name || '';
+            row.addEventListener('click', () => openPlaylist(playlist, true));
+            fragment.appendChild(row);
+        });
+        body.appendChild(fragment);
+    } catch (err) {
+        if (body) body.textContent = t('search.user_playlists_failed');
+    }
+}
+
 function openCombinedRow(row) {
     if (row.source === 'pixiv') {
         // 搜到的是图，播放器没意义：直接开详情，能收藏能下载。
         openPixivWork(row.id);
+        return;
+    }
+    if (row.kind === 'artist') {
+        openArtistDetail(row.track || { id: row.id, name: row.name });
+        return;
+    }
+    if (row.kind === 'album') {
+        openAlbumDetail(row.track || { id: row.id, name: row.name });
+        return;
+    }
+    if (row.kind === 'user') {
+        openUserPlaylists(row.track || { id: row.id, name: row.name });
         return;
     }
     if (row.kind === 'pgc') {
@@ -9116,6 +9172,56 @@ function neteasePlaylistRow(playlist) {
     };
 }
 
+/** An artist row of the NetEase source. */
+function neteaseArtistRow(artist) {
+    return {
+        source: 'netease',
+        kind: 'artist',
+        id: artist.id || '',
+        name: artist.name || '',
+        artists: artist.description || '',
+        album: '',
+        cover: artist.cover_url || '',
+        durationMs: 0,
+        // An artist carries the number of its songs, not a play count.
+        plays: Number(artist.music_size) || 0,
+        track: artist
+    };
+}
+
+/** An album row of the NetEase source. */
+function neteaseAlbumRow(album) {
+    return {
+        source: 'netease',
+        kind: 'album',
+        id: album.id || '',
+        name: album.name || '',
+        artists: album.artist || album.artists || '',
+        album: '',
+        cover: album.cover_url || '',
+        durationMs: 0,
+        plays: Number(album.play_count) || 0,
+        track: album
+    };
+}
+
+/** A user row of the NetEase source. */
+function neteaseUserRow(user) {
+    return {
+        source: 'netease',
+        kind: 'user',
+        id: user.id || '',
+        name: user.name || '',
+        artists: user.description || '',
+        album: '',
+        cover: user.avatar_url || '',
+        durationMs: 0,
+        // A user carries the number of its playlists.
+        plays: Number(user.playlist_count) || 0,
+        track: user
+    };
+}
+
 /** A video row of the Bilibili source. */
 function biliTrackRow(track) {
     return {
@@ -9160,6 +9266,9 @@ function combinedVisibleRows() {
         if (category === 'song' && row.kind !== 'song') return false;
         if (category === 'playlist' && row.kind !== 'playlist') return false;
         if (category === 'video' && row.kind !== 'video') return false;
+        if (category === 'artist' && row.kind !== 'artist') return false;
+        if (category === 'album' && row.kind !== 'album') return false;
+        if (category === 'user' && row.kind !== 'user') return false;
         // 番剧/影视只在「全部」里出现：挑了「歌曲」「视频」这些类别还塞进来
         // 就变成了不受筛选影响的东西。
         if (row.kind === 'pgc' && category !== 'all') return false;
@@ -9380,10 +9489,30 @@ async function loadCombinedNetease(requestId) {
         const results = result.results || {};
         const songs = results.songs || [];
         const playlists = results.playlists || [];
+        const artists = results.artists || [];
+        const albums = results.albums || [];
+        const users = results.users || [];
         songs.forEach((song) => combined.rows.push(neteaseSongRow(song)));
         playlists.forEach((playlist) => combined.rows.push(neteasePlaylistRow(playlist)));
-        combined.neteaseOffset += songs.length;
-        if (!songs.length) combined.neteaseDone = true;
+        artists.forEach((artist) => combined.rows.push(neteaseArtistRow(artist)));
+        albums.forEach((album) => combined.rows.push(neteaseAlbumRow(album)));
+        users.forEach((user) => combined.rows.push(neteaseUserRow(user)));
+        // The page turns on the songs, but a search without songs still has
+        // playlists (or users) to show -- the offset has to move on or the
+        // same page comes back forever.
+        const got = Math.max(songs.length, playlists.length, artists.length,
+            albums.length, users.length);
+        combined.neteaseOffset += got;
+        if (!got) combined.neteaseDone = true;
+        // A kind that failed on its own is not the end of the search: the
+        // other kinds are still on screen.  Only when nothing came back at
+        // all does the reason matter.
+        const failed = Object.keys(result.errors || {});
+        if (failed.length && !got) {
+            combined.neteaseError = String((result.errors || {})[failed[0]])
+                || t('error.network');
+            combined.neteaseDone = true;
+        }
     } catch (err) {
         if (requestId !== combined.requestId) return;
         combined.neteaseError = t('error.network');

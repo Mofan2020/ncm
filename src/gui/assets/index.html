@@ -291,6 +291,9 @@
                         <option value="song" data-i18n="search.category_song"></option>
                         <option value="playlist" data-i18n="search.category_playlist"></option>
                         <option value="video" data-i18n="search.category_video"></option>
+                        <option value="artist" data-i18n="search.category_artist"></option>
+                        <option value="album" data-i18n="search.category_album"></option>
+                        <option value="user" data-i18n="search.category_user"></option>
                     </select>
                     <label class="sr-only" for="aggr-sort" data-i18n="search.filter_sort"></label>
                     <select class="filter-select" id="aggr-sort">
@@ -1457,6 +1460,17 @@
 </div>
 
 <!-- ============ settings modal ============ -->
+<div class="modal" id="user-playlists-modal" hidden>
+    <div class="modal-backdrop" data-close="user-playlists-modal"></div>
+    <div class="modal-box glass" role="dialog" aria-modal="true">
+        <header class="modal-head">
+            <h2 id="user-playlists-title"></h2>
+            <button class="btn btn-icon" type="button" data-close="user-playlists-modal"
+                    data-icon="close"></button>
+        </header>
+        <div class="modal-body" id="user-playlists-body"></div>
+    </div>
+</div>
 <div class="modal" id="settings-modal" hidden>
     <div class="modal-backdrop" data-close="settings-modal"></div>
     <div class="modal-box glass" role="dialog" aria-modal="true">

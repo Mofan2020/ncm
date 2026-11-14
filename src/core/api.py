@@ -1536,20 +1536,30 @@ class NeteaseAPI:
 
         Each kind is its own ``cloudsearch`` call.  Passing one type id for
         "everything" does not work -- see ``SEARCH_TYPES``.
+
+        **一类失败不许把别的类一起带走。** 以前任何一类抛异常，整个调用就
+        抛了，界面于是「搜索失败」，连最要命的那一屏单曲也一起没了。现在
+        每类各自 try：坏掉的那类只是空的，原因记在 ``errors`` 里。
         """
         keyword = str(keyword or "").strip()
         merged: dict[str, Any] = {name: [] for name in self.SEARCH_TYPES}
+        merged["errors"] = {}
         if not keyword:
             return merged
 
-        wanted = tuple(kinds) if kinds else ("songs", "artists", "albums", "playlists")
+        wanted = tuple(kinds) if kinds else (
+            "songs", "playlists", "artists", "albums", "users")
         for name in wanted:
             type_id = self.SEARCH_TYPES.get(name)
             if type_id is None:
                 continue
             payload = {"s": keyword, "type": type_id, "limit": limit,
                        "offset": offset, "total": "true"}
-            result = self._eapi(SEARCH_MULTI_ENDPOINT, payload) or {}
+            try:
+                result = self._eapi(SEARCH_MULTI_ENDPOINT, payload) or {}
+            except Exception as exc:  # noqa: BLE001 - 一类坏了不影响别的类
+                merged["errors"][name] = str(exc)
+                continue
             res = result.get("result") or {}
             # Users come back under a different key than the type name.
             key = "userprofiles" if name == "users" else name

@@ -2145,6 +2145,8 @@ class GuiBridge:
             "cover_url": album.get("picUrl") or album.get("coverImgUrl") or "",
             "publish_time": album.get("publishTime") or 0,
             "size": album.get("size") or 0,
+            # The artist is what the row shows under the album name.
+            "artist": (album.get("artist") or {}).get("name") or "",
         }
 
     def get_recommend_playlists(self) -> dict[str, Any]:
@@ -2255,8 +2257,36 @@ class GuiBridge:
                 "playlists": [self._playlist_payload(p) for p in (result.get("playlists") or [])],
                 "artists": [self._artist_payload(a) for a in (result.get("artists") or [])],
                 "albums": [self._album_payload_mini(a) for a in (result.get("albums") or [])],
+                "users": [self._user_payload(u) for u in (result.get("users") or [])],
                 "mvs": [self._mv_payload(m) for m in (result.get("mvs") or [])],
             },
+            # 哪一类没搜到、为什么，界面要能说出来。
+            "errors": result.get("errors") or {},
+        }
+
+    def _user_payload(self, user: dict[str, Any]) -> dict[str, Any]:
+        """一个网易云用户。"""
+        profile = user.get("profile") or {}
+        return {
+            "id": str(user.get("userId") or profile.get("userId") or ""),
+            "name": profile.get("nickname") or user.get("nickname") or "",
+            "avatar_url": profile.get("avatarUrl") or user.get("avatarUrl") or "",
+            "description": profile.get("signature") or user.get("signature") or "",
+            "playlist_count": int(user.get("playlistCount") or 0),
+            "followed": bool(user.get("followed")),
+        }
+
+    def get_user_playlists(self, uid: str, limit: int = 30,
+                           offset: int = 0) -> dict[str, Any]:
+        """某个用户的歌单。搜索结果里的用户点进去看的就是它。"""
+        uid = str(uid or "").strip()
+        if not uid:
+            return {"success": False, "error_key": "error.unknown", "playlists": []}
+        page = self.api.get_user_playlists(uid, limit=limit, offset=offset)
+        return {
+            "success": True,
+            "playlists": [self._playlist_payload(p) for p in (page.get("playlists") or [])],
+            "more": bool(page.get("more")),
         }
 
     # -- bilibili source -------------------------------------------------------
