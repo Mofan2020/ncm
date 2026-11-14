@@ -1124,9 +1124,21 @@ async function saveSettings() {
             resource_sites: bangumiSettingsState.sites,
         },
         debug: document.getElementById('debug-check').checked,
+        // Pixiv 也归设置弹窗管：不然用户在弹窗里改完 Pixiv 的开关，
+        // 点「保存」什么也没发生（Pixiv 页签以前不在这个列表里）。
+        pixiv: {
+            nsfw_mode: (document.getElementById('pixiv-nsfw-mode') || {}).value || 'hide',
+            include_r18: !!((document.getElementById('pixiv-include-r18') || {}).checked),
+            hide_ai: !!((document.getElementById('pixiv-hide-ai') || {}).checked),
+            quality: (document.getElementById('pixiv-quality') || {}).value || 'original',
+            bookmark_private: !!((document.getElementById('pixiv-bm-private') || {}).checked),
+            template: (document.getElementById('pixiv-template') || {}).value || '',
+            page_size: Math.max(12, Math.min(96, parseInt(
+                (document.getElementById('pixiv-page-size') || {}).value, 10) || 48)),
+        },
     };
 
-    for (const category of ['download', 'playback', 'ui', 'auth', 'bili', 'bangumi']) {
+    for (const category of ['download', 'playback', 'ui', 'auth', 'bili', 'bangumi', 'pixiv']) {
         const result = await state.api.update_settings(category, payload[category]);
         if (result && result.success) state.settings = result.settings;
     }

@@ -178,6 +178,11 @@ const PixivUI = {
         if (moreSearch) moreSearch.addEventListener('click', () => this.runSearch(false));
         const feedMore = pixivEl('btn-pixiv-feed-more');
         if (feedMore) feedMore.addEventListener('click', () => this.loadFeed(false));
+        // 发现页的「更多」：pixiv 的推荐流没有分页，只能再要一批新的。
+        const discoverMore = pixivEl('btn-pixiv-discover-more');
+        if (discoverMore) {
+            discoverMore.addEventListener('click', () => this.loadMoreDiscover());
+        }
 
         const bmRefresh = pixivEl('btn-pixiv-bm-refresh');
         if (bmRefresh) bmRefresh.addEventListener('click', () => this.loadBookmarks(true));
@@ -252,6 +257,13 @@ const PixivUI = {
                 pageSize.value = String(value);
                 this.saveSettings({ page_size: value });
             });
+        }
+        // 「改完立刻存」只在控件真的失焦时才发生：设置弹窗关掉的那一下
+        // 不一定触发 change，光靠它用户会以为没存上。所以再给一个明确的
+        // 保存按钮，把整页的值一次存掉。
+        const settingsSave = pixivEl('btn-pixiv-settings-save');
+        if (settingsSave) {
+            settingsSave.addEventListener('click', () => this.saveAllSettings());
         }
         const chooseDir = pixivEl('btn-pixiv-choose-dir');
         if (chooseDir) {
@@ -415,6 +427,31 @@ const PixivUI = {
         if (dir) dir.value = settings.download_dir || '';
     },
 
+    /** 把设置页里所有控件的值一次存掉。 */
+    async saveAllSettings() {
+        const patch = {};
+        const nsfw = pixivEl('pixiv-nsfw-mode');
+        if (nsfw) patch.nsfw_mode = nsfw.value;
+        const r18 = pixivEl('pixiv-include-r18');
+        if (r18) patch.include_r18 = r18.checked;
+        const hideAi = pixivEl('pixiv-hide-ai');
+        if (hideAi) patch.hide_ai = hideAi.checked;
+        const quality = pixivEl('pixiv-quality');
+        if (quality) patch.quality = quality.value;
+        const bmPrivate = pixivEl('pixiv-bm-private');
+        if (bmPrivate) patch.bookmark_private = bmPrivate.checked;
+        const template = pixivEl('pixiv-template');
+        if (template) patch.template = template.value;
+        const pageSize = pixivEl('pixiv-page-size');
+        if (pageSize) {
+            patch.page_size = Math.max(12, Math.min(96, Number(pageSize.value) || 48));
+            pageSize.value = String(patch.page_size);
+        }
+        if (!Object.keys(patch).length) return;
+        await this.saveSettings(patch);
+        pixivToast('success', t('common.save'));
+    },
+
     async saveSettings(patch) {
         const api = pixivApi();
         if (!api) return;
@@ -469,6 +506,37 @@ const PixivUI = {
         } catch (err) {
             pixivSetStateWithRetry('pixiv-discover-state',
                 String(err && err.message ? err.message : err), () => this.loadDiscover());
+        }
+    },
+
+    /** 发现页的「更多」：再要一批新的推荐，把已经显示过的挑掉。 */
+    async loadMoreDiscover() {
+        const api = pixivApi();
+        if (!api) return;
+        if (typeof api.pixiv_discover_more !== 'function') {
+            pixivSetState('pixiv-discover-state', t('pixiv.backend_missing'));
+            return;
+        }
+        const button = pixivEl('btn-pixiv-discover-more');
+        if (button) button.disabled = true;
+        try {
+            const shown = pixivState.discover.map((work) => String(work.id || ''));
+            const result = await api.pixiv_discover_more(shown);
+            const works = (result && result.works) || [];
+            if (!works.length) {
+                pixivSetState('pixiv-discover-state',
+                    (result && result.error) || t('pixiv.discover_empty'));
+                return;
+            }
+            pixivState.discover = pixivState.discover.concat(works);
+            const grid = pixivEl('pixiv-discover-grid');
+            if (grid) works.forEach((work) => grid.appendChild(pixivTile(work)));
+            pixivSetState('pixiv-discover-state', '');
+        } catch (err) {
+            pixivSetState('pixiv-discover-state',
+                String(err && err.message ? err.message : err));
+        } finally {
+            if (button) button.disabled = false;
         }
     },
 

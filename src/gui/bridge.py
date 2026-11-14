@@ -374,6 +374,13 @@ class GuiBridge:
                 # 主机、间隔、目录都可能变了：把客户端和下载器扔掉重建，
                 # 否则改完设置还是按旧的来。
                 self.bangumi.reload()
+            elif category == "pixiv":
+                # Pixiv 的开关以前不在设置弹窗的保存列表里，用户在弹窗里
+                # 改完点「保存」什么也没存上。现在归它了。
+                self.pixiv.update_settings(self._clean(data, {
+                    "nsfw_mode", "include_r18", "hide_ai", "quality",
+                    "download_dir", "template", "bookmark_private",
+                    "page_size"}))
             elif category == "ui":
                 self.settings.update_ui(**self._clean(data, {
                     "language", "theme", "remember_window_size", "background_image",
@@ -2857,6 +2864,9 @@ class GuiBridge:
 
     def pixiv_following(self, offset: int = 0) -> dict[str, Any]:
         return self.pixiv.following(offset=offset)
+
+    def pixiv_discover_more(self, shown_ids: list[str] | None = None) -> dict[str, Any]:
+        return self.pixiv.discover_more(shown_ids=shown_ids)
 
     def pixiv_user(self, uid: str = "") -> dict[str, Any]:
         return self.pixiv.user(uid)

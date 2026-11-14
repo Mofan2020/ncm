@@ -574,6 +574,22 @@ class PixivBridge:
                 "feed": feed, "feed_error": feed_error,
                 "logged_in": self.session.is_logged_in}
 
+    def discover_more(self, shown_ids: list[str] | None = None) -> dict[str, Any]:
+        """发现页的「更多」。
+
+        **pixiv 的推荐流没有分页。** 同一个地址每次都给一批新的随机推荐，
+        ``offset`` 会被直接忽略（实测 offset=30 和第一页一模一样，两页 id
+        完全相同）。所以「更多」只能是再要一批，然后把已经显示过的挑掉
+        ——不然用户按了「更多」，看到的还是那几十张。
+        """
+        seen = {str(item) for item in (shown_ids or []) if str(item)}
+        # 接口自己把 limit 封在 60，一次要满这个数，才有足够的“新”作品。
+        works = self.client.discovery(limit=60)
+        fresh = [work for work in works if str(work.get("id") or "") not in seen]
+        return {"works": self._proxy(self._filter(fresh)),
+                "shown": len(seen) + len(fresh),
+                "error": str(getattr(self.client, "last_error", "") or "")}
+
     def search(self, word: str = "", page: int = 1, order: str = "date_d",
                kind: str = "artworks") -> dict[str, Any]:
         word = str(word or "").strip()

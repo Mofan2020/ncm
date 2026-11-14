@@ -921,20 +921,37 @@ class PixivClient:
             "has_more": params["offset"] + len(works) < total,
         }
 
-    def following(self, *, uid: str = "", offset: int = 0, limit: int = 24,
-                  rest: str = "show") -> dict[str, Any]:
-        """The accounts someone follows."""
+    def following(self, *, uid: str = "", offset: int = 0,
+                  limit: int = 24) -> dict[str, Any]:
+        """The accounts someone follows.
+
+        **这条路线只认 ``rest=show``。** 换成别的值是 400；没有会话也是
+        400（不是 401）。以前界面上就挂一句「服务器回了 400」，谁也看
+        不懂——其实是登录过期了，这里直接说人话。
+
+        回答里那两个标志跟直觉是反的：``following`` 才是「我关注了对方」，
+        ``followed`` 是「对方也关注了我」（互关）。
+        """
         target = str(uid or self._self.get("id") or "").strip()
+        if not target and self.signed_in:
+            # 刚启动时还不知道自己的 id：问一次，别直接说「没登录」。
+            self.refresh_self()
+            target = str(self._self.get("id") or "").strip()
         if not target:
             self.last_error = "先登录才能看关注列表。"
             return {"users": [], "total": 0, "has_more": False}
         params = {"offset": max(0, int(offset)),
                   "limit": max(1, min(100, int(limit))),
-                  "rest": rest, "lang": "zh"}
+                  "rest": "show", "lang": "zh"}
         body = self._ajax(f"/ajax/user/{target}/following", params)
         if not isinstance(body, dict):
-            return {"users": [], "total": 0, "has_more": False,
-                    "error": self.last_error}
+            if self.signed_in:
+                # 带着死 cookie 去问，pixiv 对这条路线回 400 而不是 401。
+                self.drop_expired_cookie()
+                error = "登录已失效，请重新登录。"
+            else:
+                error = "先登录才能看关注列表。"
+            return {"users": [], "total": 0, "has_more": False, "error": error}
         users = []
         for item in body.get("users") or []:
             if not isinstance(item, dict):
@@ -943,8 +960,9 @@ class PixivClient:
                 "id": str(item.get("userId") or ""),
                 "name": str(item.get("userName") or ""),
                 "avatar": str(item.get("profileImageUrl") or ""),
-                "comment": str(item.get("comment") or ""),
-                "followed": bool(item.get("isFollowed")),
+                "comment": str(item.get("userComment") or item.get("comment") or ""),
+                "followed": bool(item.get("following") or item.get("isFollowed")),
+                "follows_me": bool(item.get("followed") or item.get("isMyFollower")),
             })
         total = _as_int(body.get("total"), 0)
         return {"users": users, "total": total,
