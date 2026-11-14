@@ -567,7 +567,7 @@ class PixivBridge:
         feed: list[dict[str, Any]] = []
         feed_error = ""
         if self.session.is_logged_in:
-            body = self.client.feed(page=1, mode=self._search_mode())
+            body = self.client.feed(page=1)
             feed = self._proxy(self._filter(body.get("works") or []))
             feed_error = str(body.get("error") or "")
         return {"discover": works, "discover_error": discover_error,
@@ -655,7 +655,7 @@ class PixivBridge:
         }
 
     def feed(self, page: int = 1) -> dict[str, Any]:
-        body = self.client.feed(page=page, mode=self._search_mode())
+        body = self.client.feed(page=page)
         return {"works": self._proxy(self._filter(body.get("works") or [])),
                 "has_more": bool(body.get("has_more")),
                 "page": int(page),

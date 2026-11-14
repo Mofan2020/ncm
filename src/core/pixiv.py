@@ -968,10 +968,19 @@ class PixivClient:
         return {"users": users, "total": total,
                 "has_more": params["offset"] + len(users) < total}
 
-    def feed(self, *, page: int = 1, mode: str = "all") -> dict[str, Any]:
-        """New works from the accounts you follow."""
+    def feed(self, *, page: int = 1) -> dict[str, Any]:
+        """New works from the accounts you follow.
+
+        **这条路线不认 ``mode=safe``。** ``/ajax/follow_latest/illust`` 只
+        接受 ``all``、``r18``，或者干脆不带 ``mode``；带 ``safe`` 直接回
+        400「不正确的请求」。原来的代码把界面上的成人内容设置映射成
+        ``safe`` 传过去，于是**默认设置（隐藏 R-18）下关注页永远是空的**，
+        界面只能说一句「服务器回了 400」——看着像登录坏了。
+
+        成人内容本来就由 ``_filter`` 在本地过一遍，服务端这层不必再传。
+        """
         body = self._ajax("/ajax/follow_latest/illust",
-                          {"p": max(1, int(page)), "mode": mode, "lang": "zh"})
+                          {"p": max(1, int(page)), "lang": "zh"})
         if not isinstance(body, dict):
             return {"works": [], "has_more": False, "error": self.last_error}
         thumbs = (body.get("thumbnails") or {}).get("illust") or []

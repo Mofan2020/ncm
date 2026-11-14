@@ -115,10 +115,22 @@ def test_the_detail_panel_closes_on_escape():
     assert "closeDetail()" in PIXIV_JS
 
 
-def test_a_like_asks_before_it_is_sent():
-    """点赞不能撤销，所以必须先确认；这句 confirm 被删掉就是悄悄写账号。"""
-    assert "pixiv.like_confirm" in PIXIV_JS
-    assert "window.confirm" in PIXIV_JS
+def test_a_like_does_not_open_a_confirm_box():
+    """点赞不再弹确认框。
+
+    用户原话：「点赞时也不要向用户确认是否点赞，弹窗确认很麻烦」。
+    一个「点赞」按钮弹一次确认，比按错一次还费事；状态改由按钮本身说。
+    """
+    assert "window.confirm" not in PIXIV_JS
+    assert "pixiv.like_confirm" not in PIXIV_JS
+
+
+def test_a_liked_heart_is_marked_on_the_button():
+    """点过赞心要变红——靠颜色说状态，不靠一闪而过的提示。"""
+    assert "work.is_liked = true" in PIXIV_JS
+    assert "classList.toggle('is-active', !!work.is_liked)" in PIXIV_JS
+    css = (ASSETS / "style.css").read_text(encoding="utf-8")
+    assert "#btn-pixiv-detail-like.is-active" in css
 
 
 def test_the_description_is_reduced_to_text():

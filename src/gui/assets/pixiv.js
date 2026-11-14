@@ -887,6 +887,9 @@ const PixivUI = {
             bookmark.classList.toggle('is-active', !!work.bookmarked);
             bookmark.title = work.bookmarked ? t('pixiv.unbookmark') : t('pixiv.bookmark');
         }
+        // 点过赞的心是红的：状态就写在按钮上，别指望用户记住一闪而过的提示。
+        const like = pixivEl('btn-pixiv-detail-like');
+        if (like) like.classList.toggle('is-active', !!work.is_liked);
     },
 
     stepPage(delta) {
@@ -949,10 +952,11 @@ const PixivUI = {
             this.setTab('account');
             return;
         }
-        // 点赞在 pixiv 那边**不能撤销**，所以先问一句。这不是「多一步」，
-        // 是唯一一次能让用户改主意的机会。
-        if (typeof window.confirm === 'function'
-            && !window.confirm(t('pixiv.like_confirm'))) {
+        // **不再弹确认框。** pixiv 的赞不能撤销，但一个「点赞」按钮弹一次
+        // 确认，点起来比翻页还累；状态改成心变红之后，按没按错一眼就看得见，
+        // 确认框反而成了噪音。
+        if (work.is_liked) {
+            pixivToast('info', t('pixiv.like_already'));
             return;
         }
         try {
@@ -961,6 +965,8 @@ const PixivUI = {
                 pixivToast('error', (result && result.message) || t('pixiv.action_failed'));
                 return;
             }
+            work.is_liked = true;
+            this.renderDetailPage();
             pixivToast('success', result.already
                 ? t('pixiv.like_already') : t('pixiv.like_done'));
         } catch (err) {

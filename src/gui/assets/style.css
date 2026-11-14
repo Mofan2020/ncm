@@ -3543,6 +3543,12 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     background: var(--brand-soft);
 }
 
+/* 点赞：心已经红了就别再用品牌色，那个跟收藏分不开。 */
+.pixiv-detail-actions #btn-pixiv-detail-like.is-active {
+    color: #f43f5e;
+    background: rgba(244, 63, 94, 0.14);
+}
+
 .pixiv-detail-body {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 300px;
