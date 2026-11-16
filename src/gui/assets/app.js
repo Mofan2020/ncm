@@ -859,9 +859,26 @@ function fillSettingsForm() {
     setChecked('update-auto-install-check', s.ui.auto_install_updates === true);
     setChecked('update-prerelease-check', s.ui.update_include_prerelease === true);
     setChecked('update-skip-ssl-check', s.ui.update_skip_ssl_verify === true);
+    // 借 SDM 下更新包：后端回包里没有这个键的时候，``undefined !== false``
+    // 会让勾选框永远显示成勾上的，用户取消勾看着像没生效。
     setChecked('update-use-sdm-check', s.ui.update_use_sdm !== false);
     const threads = document.getElementById('update-threads-select');
     if (threads) threads.value = String(Number(s.ui.update_threads) || 8);
+
+    // pixiv
+    // 这一段以前完全没填：控件停在 HTML 的默认值上，用户点保存就把
+    // 默认值写回去（adult 内容模式被写成 hide，R-18 开关被写成 false）。
+    const pixiv = s.pixiv || {};
+    setValue('pixiv-nsfw-mode', pixiv.nsfw_mode || 'hide');
+    setChecked('pixiv-include-r18', pixiv.include_r18 === true);
+    setChecked('pixiv-hide-ai', pixiv.hide_ai === true);
+    setValue('pixiv-quality', pixiv.quality || 'original');
+    setChecked('pixiv-bm-private', pixiv.bookmark_private === true);
+    setValue('pixiv-page-size', String(Number(pixiv.page_size) || 48));
+    const pixivTemplate = document.getElementById('pixiv-template');
+    if (pixivTemplate && document.activeElement !== pixivTemplate) {
+        pixivTemplate.value = pixiv.template || '';
+    }
 
     // desktop lyrics
     setValue('desktop-lyrics-font-size', s.ui.desktop_lyrics_font_size || 18);
@@ -7726,12 +7743,10 @@ function bindStaticEvents() {
     document.getElementById('btn-cancel').addEventListener('click', cancelDownload);
     document.getElementById('btn-open-folder').addEventListener('click', openFolder);
     document.getElementById('btn-settings').addEventListener('click', () => {
-        openModal('settings-modal');
+        openSettingsModal();
         updateLocalStatsText();
         updatePlayStatsText();
         refreshCacheStats();
-        // Pixiv 那页的设置值来自后端，不先拉一次就是一片空白。
-        if (window.PixivUI) PixivUI.refreshState();
     });
     document.getElementById('btn-theme').addEventListener('click', cycleTheme);
     // One button for both accounts now; it opens the account center.
@@ -8667,11 +8682,23 @@ function openHomeEntry(entry, byKeyboard) {
         return;
     }
     if (entry === 'settings') {
-        openModal('settings-modal');
+        openSettingsModal();
         updateLocalStatsText();
         updatePlayStatsText();
         refreshCacheStats();
     }
+}
+
+/**
+ * 打开设置弹窗。
+ *
+ * **打开之前要重新拉一次设置并填表**：弹窗里的控件是从 HTML 默认值
+ * 起步的，不拉就填，屏幕上显示的是上一次的残留值——用户看到的
+ * 勾选框状态和后端存的不一样，点保存就把错的写回去。
+ */
+function openSettingsModal() {
+    openModal('settings-modal');
+    loadSettings().catch(() => { /* 后端没连上：弹窗照常开着 */ });
 }
 
 /**

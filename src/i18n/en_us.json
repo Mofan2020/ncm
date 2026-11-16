@@ -854,7 +854,10 @@
     "type_ugoira": "Ugoira",
     "unbookmark": "Remove bookmark",
     "unbookmark_done": "Bookmark removed.",
-    "unfollow": "Unfollow"
+    "unfollow": "Unfollow",
+    "viewer_failed": "This image could not be loaded.",
+    "viewer_loading": "Loading…",
+    "viewer_reset": "Fit to window"
   },
   "player": {
     "add_failed": "Add failed",

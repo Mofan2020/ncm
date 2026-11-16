@@ -4165,3 +4165,96 @@ Pixiv 一开始是自带一套东西的：自己的登录框、自己的设置�
 
 `tests/test_i18n.py::test_no_dotted_keys_at_the_top_level` 就是挡这个的：顶层键
 带点直接红。加文案一律按 `data[family][key]` 写。
+
+## 设置存不进去：根因在三处，不在一处（2026-11-16）
+
+用户报了两个存不住的设置：自动更新里的「借 SDM 下载更新包」，Pixiv 设置里的
+「搜索时向服务器请求素材（R-18）」。
+
+看着像前端问题，实际三处都在别的地方，**只修一处不生效**：
+
+1. **`src/gui/bridge.py` 的保存白名单漏键**。`update_settings("ui", ...)` 有一份
+   自己的允许键集合，`update_use_sdm` 和 `update_threads` 不在里面，`_clean` 把
+   它们当未知字段丢掉。前端发过去了，后端静默扔掉，界面上的值纹丝不动。
+2. **`get_settings()` 缺 `pixiv` 顶层段**。回包里没有这一段，前端打开设置
+   弹窗时拿不到真值，只能拿 HTML 的默认值填表——用户点保存，把默认值写回去。
+   这就是「怎么改都存不住」的完整链条。
+3. **`src/config/settings.py::_normalize()` 把 `include_r18` 清零**。
+   `nsfw_mode == "hide"` 时无条件 `pixiv.include_r18 = False`，用户显式勾选
+   被静默改写。
+
+还有一条容易漏的：**设置弹窗每次打开都要重新拉一次**。控件是从 HTML 默认值
+起步的，不重拉就填，屏幕上显示的是上一次的残留值。现在两个入口都走
+`openSettingsModal()`，它会调 `loadSettings()`。
+
+**`include_r18` 和 `nsfw_mode` 从此解耦**：前者管「要不要向服务器要 R-18」，
+后者管「拿到了怎么显示」。hide 模式下底层 `_search_mode()` 仍然返回 `safe`，
+所以保留 `include_r18 = True` 不会绕过隐藏。之前那条「hide 就强制清零」的规则
+是在替用户做决定，改掉之后显式选择才不会被吃掉。
+
+## 测「设置存不进去」不能只测后端（2026-11-16）
+
+上面三个根因里，第 2、3 条都发生在浏览器里，只测 Python 抓不到。所以前端
+也要有行为测试，做法是**从真实源码里把函数抠出来跑**，不另写一份 mock：
+
+- `scripts/check-settings-form.mjs`：按花括号配平从 `app.js` 里抠出
+  `setValue` / `setChecked` / `fillSettingsForm` / `saveSettings` /
+  `openSettingsModal` / `loadSettings`，喂一份假的服务器回包，断言控件真的
+  被填成回包里的值、真的把字段发出去、真的在打开弹窗时重拉。
+- `scripts/check-settings-form-mutations.mjs`：11 种坏实现，改的是**临时目录
+  里的副本**，源码树不动。
+
+抠函数有两个坑：`async function` 要连 `async` 一起抠（否则里面的 `await`
+语法错）；`vm` 里顶层 `const` 不在 sandbox global 上，要显式注入。
+
+## Pixiv 全屏查看器（2026-11-16）
+
+点详情页的大图进全屏。三条要求各有各的坑：
+
+**等比例放大**。前景图片用 `max-width/max-height: 100%` + `object-fit: contain`
+吃满窗口，长宽比不变，占不满的地方留白。留白处不是纯黑：背景层放同一张图，
+`cover` + `blur(28px)`，所以暗色图也不会显得突兀。
+
+**缩放要用 transform**。改 `width`/`height` 会让浏览器每帧重排，滚轮和拖动
+都会掉帧。`translate(x, y) scale(s)` 走 GPU 合成层，拖起来是顺的。
+缩放值 1 表示「按窗口适配」，范围 0.1 ~ 12。
+
+**缩放锚点**。光标下的那个点必须钉住不动。屏幕坐标和图像坐标是两套，
+混用会让图在缩放时往一边漂：
+
+```
+screenX = clientX - 舞台中心X
+imageX  = screenX - offsetX          （offsetX 是缩放前的偏移）
+缩放后   offsetX = screenX - imageX * ratio
+```
+
+**滚轮和触控板要分开算**。鼠标滚轮一格 deltaY 约 120，触控板捏合只有几，
+用同一个除数要么滚轮太猛、要么捏合几乎没反应。捏合在浏览器里报成
+`ctrl+wheel`，按 `event.ctrlKey` 分流。单次缩放的幅度还要封顶（0.5 ~ 2）：
+触控板甩一下的 delta 能到几百，不封顶的话一甩就直接顶到最大倍率。
+
+**换页必须先撤旧图**。`image.removeAttribute('src')` + 显示「加载中」，
+新图 `onload` 了才显示新图。直接覆盖 src 的话，旧图会一直挂在新图到达之前，
+用户看着就像翻页没生效。顺便说一句：只改 src 不撤掉旧图这个区别，用
+「src 等于新值」这种断言是测不出来的——得单独断言旧 src 被**移除**过。
+
+**键盘不能两套一起管**。查看器开着的时候，详情页的 keydown 监听器要直接
+return，不然一次方向键既翻查看器又翻详情页。
+
+行为测试在 `scripts/check-pixiv-viewer.mjs`（真实 `pixiv.js` 加载进 vm 驱动），
+变异脚本 `scripts/check-pixiv-viewer-mutations.mjs` 14 种坏实现全抓。
+界面的契约（元素 id、文案键、样式、z-index）在 `tests/test_pixiv_viewer.py`。
+
+## 变异脚本改副本，不改源码树（2026-11-16）
+
+`scripts/check-*-mutations.mjs` 把源码复制到临时目录再改，跑完删掉。
+不碰源码树，所以跑到一半被杀也不会留下改坏的代码——上一轮用「临时改源码
+再还原」的方案就踩过这个坑，被用户明确拒绝过。
+
+改副本之后要盯一件事：**片段必须还能在源码里找到**。重构改了那一段，脚本
+会报 `the snippet is not in ...`，整轮一条都没跑。脚本对这种失败要单独报
+（`[SKIP]` + 非零退出），不能混进「抓到」里——量具坏了不是「没抓到」。
+
+另外，断言不能从被测的状态反推自己。锚点那条我一开始写成
+「用 state.offsetX 反推 imageX 再算回来」——那等于把被测公式重排一遍，
+改成什么样都对。得在测试里**独立算出期望值**再比。

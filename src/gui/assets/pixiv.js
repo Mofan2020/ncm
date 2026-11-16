@@ -222,6 +222,19 @@ const PixivUI = {
 
         const close = pixivEl('btn-pixiv-detail-close');
         if (close) close.addEventListener('click', () => this.closeDetail());
+        // 点大图进全屏查看器：详情里那张是缩在面板里的，看不清细节。
+        const stageImage = pixivEl('pixiv-detail-image');
+        if (stageImage) {
+            stageImage.addEventListener('click', () => {
+                const work = pixivState.detail || {};
+                const pages = work.pages || [];
+                if (!pages.length) return;
+                if (window.PixivViewer) {
+                    PixivViewer.open(pages, pixivState.detailPage || 0);
+                }
+            });
+        }
+        if (window.PixivViewer) PixivViewer.bind();
         const prev = pixivEl('btn-pixiv-page-prev');
         if (prev) prev.addEventListener('click', () => this.stepPage(-1));
         const next = pixivEl('btn-pixiv-page-next');
@@ -285,6 +298,9 @@ const PixivUI = {
         document.addEventListener('keydown', (event) => {
             const panel = pixivEl('pixiv-detail');
             if (!panel || panel.hidden) return;
+            // 全屏查看器开着的时候，方向键和 Esc 归它管：不然一次按键
+            // 既翻查看器又翻详情页。
+            if (window.PixivViewer && PixivViewer.state.open) return;
             if (event.key === 'Escape') this.closeDetail();
             else if (event.key === 'ArrowLeft') this.stepPage(-1);
             else if (event.key === 'ArrowRight') this.stepPage(1);
@@ -871,6 +887,8 @@ const PixivUI = {
                 || work.regular || work.thumb_proxy || work.thumb || '';
             image.src = src || '';
             image.hidden = !src;
+            // 点大图进全屏查看器。cursor: zoom-in 提示这里能点。
+            image.classList.toggle('is-zoomable', !!src);
         }
         const pager = pixivEl('pixiv-detail-pager');
         if (pager) {
@@ -1127,4 +1145,320 @@ const PixivUI = {
     }
 };
 
+/* ================================================================
+   图片全屏查看器
+   ================================================================
+   点作品详情里的大图进来，等比放大到全屏，可以随便缩放、拖动、
+   翻到下一张。
+
+   **缩放用 transform 而不是改 width/height**：改尺寸会让浏览器
+   每帧重排，拖起来一顿一顿的；transform 走合成层，手感是顺的。
+   缩放倍数是相对「刚好铺满屏幕」的那个尺寸算的，所以 1 倍就是
+   等比铺满，长宽比永远不变。
+
+   **换页时先撤掉旧图**：新图还没到之前留着旧图，用户会以为
+   翻页没生效（而且两张图长得像的时候根本看不出来）。所以
+   换页立刻清空 src + 显示「加载中」，新图 onload 了再显示。
+   */
+
+/** 查看器的状态。** */
+const pixivViewer = {
+    open: false,
+    pages: [],
+    index: 0,
+    /** 相对「铺满屏幕」的缩放倍数。1 = 刚好铺满。 */
+    scale: 1,
+    /** 拖动出来的偏移，屏幕坐标（px）。 */
+    offsetX: 0,
+    offsetY: 0,
+    /** 拖动过程中用：起点和当时的指针位置。 */
+    dragFrom: null,
+    /** 当前这张图的地址，换页时用来判断有没有换。 */
+    currentSrc: '',
+    bound: false,
+};
+
+/** 最小/最大缩放倍数。太大了就没法拖回来了。 */
+const VIEWER_MIN_SCALE = 0.1;
+const VIEWER_MAX_SCALE = 12;
+
+/** 这一页的图片地址：优先原图，其次 regular。 */
+function pixivViewerSrc(index) {
+    const pages = pixivViewer.pages || [];
+    const page = pages[index] || {};
+    return page.proxy || page.regular || page.original || '';
+}
+
+/**
+ * 缩放倍数上限之外还要看「能拖的范围」：图放大到比屏幕还小的时候
+ * 拖出去就是一片空白，所以拖动范围按当前倍数算。
+ */
+function pixivViewerClampScale(value) {
+    return Math.max(VIEWER_MIN_SCALE, Math.min(VIEWER_MAX_SCALE, value));
+}
+
+/** 把缩放和位移写到图上。 */
+function pixivViewerApply() {
+    const image = pixivEl('pixiv-viewer-image');
+    if (!image) return;
+    image.style.transform =
+        `translate(${pixivViewer.offsetX}px, ${pixivViewer.offsetY}px) scale(${pixivViewer.scale})`;
+    const zoom = pixivEl('pixiv-viewer-zoom');
+    if (zoom) zoom.textContent = Math.round(pixivViewer.scale * 100) + '%';
+}
+
+/** 复位：回到刚好铺满，偏移清零。 */
+function pixivViewerReset() {
+    pixivViewer.scale = 1;
+    pixivViewer.offsetX = 0;
+    pixivViewer.offsetY = 0;
+    pixivViewerApply();
+}
+
+/**
+ * 以某个屏幕点为锚点缩放。
+ *
+ * 滚轮缩放时手指/光标底下的那个点不能跑掉——不然放大的方向总是
+ * 偏的，看着像失灵。这里把锚点换算成缩放前的偏移，再用新倍数
+ * 还原回去。
+ */
+function pixivViewerZoomAt(factor, clientX, clientY) {
+    const stage = pixivEl('pixiv-viewer-stage');
+    if (!stage) return;
+    const box = stage.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+
+    // 锚点在屏幕上的位置（相对舞台中心）。图以中心对齐舞台，
+    // 所以屏幕坐标和图像坐标差一个偏移。
+    const screenX = clientX - (box.left + box.width / 2);
+    const screenY = clientY - (box.top + box.height / 2);
+    // 锚点在图上的位置（图像坐标）。
+    const imageX = screenX - pixivViewer.offsetX;
+    const imageY = screenY - pixivViewer.offsetY;
+
+    const next = pixivViewerClampScale(pixivViewer.scale * factor);
+    const ratio = next / pixivViewer.scale;
+
+    // 缩放前后锚点的屏幕位置要一样：
+    //   imageX * scale + offset = screenX
+    // 解出新的 offset = screenX - imageX * ratio。
+    pixivViewer.offsetX = screenX - imageX * ratio;
+    pixivViewer.offsetY = screenY - imageY * ratio;
+    pixivViewer.scale = next;
+    pixivViewerApply();
+}
+
+/**
+ * 显示第几张。
+ *
+ * **换页时旧图先撤掉**：新图没加载出来之前留着旧图，用户会以为
+ * 没翻页。所以这里先把 src 清空、显示「加载中」，等新图 onload
+ * 再显示出来。
+ */
+function pixivViewerShow(index) {
+    const pages = pixivViewer.pages || [];
+    if (!pages.length) return;
+    const clamped = Math.max(0, Math.min(pages.length - 1, index));
+    pixivViewer.index = clamped;
+
+    const image = pixivEl('pixiv-viewer-image');
+    const loading = pixivEl('pixiv-viewer-loading');
+    const src = pixivViewerSrc(clamped);
+
+    // 旧图撤下来：留着它，新图没到的时候屏幕上还是上一张。
+    pixivViewer.currentSrc = '';
+    if (image) {
+        image.removeAttribute('src');
+        image.style.transform = '';
+    }
+    pixivViewer.scale = 1;
+    pixivViewer.offsetX = 0;
+    pixivViewer.offsetY = 0;
+    if (loading) loading.hidden = false;
+
+    const pager = pixivEl('pixiv-viewer-pager');
+    if (pager) {
+        pager.textContent = pages.length > 1
+            ? t('pixiv.page_of', { index: clamped + 1, total: pages.length }) : '';
+    }
+    const prev = pixivEl('btn-pixiv-viewer-prev');
+    const next = pixivEl('btn-pixiv-viewer-next');
+    const many = pages.length > 1;
+    if (prev) prev.hidden = !many;
+    if (next) next.hidden = !many;
+
+    if (!src) {
+        if (loading) loading.hidden = false;
+        return;
+    }
+
+    // 换页之后复位：新图从「铺满」开始。
+    const onLoad = () => {
+        if (pixivViewer.currentSrc !== src) return;
+        if (loading) loading.hidden = true;
+        pixivViewerApply();
+    };
+    if (image) {
+        image.onload = onLoad;
+        image.onerror = () => {
+            if (pixivViewer.currentSrc !== src) return;
+            if (loading) loading.hidden = true;
+            pixivToast('error', t('pixiv.viewer_failed'));
+        };
+        pixivViewer.currentSrc = src;
+        image.src = src;
+    }
+    const bg = pixivEl('pixiv-viewer-bg');
+    if (bg) bg.style.backgroundImage = `url("${src}")`;
+}
+
+/** 打开查看器。pages 是这个作品的所有页。 */
+function pixivViewerOpen(pages, index) {
+    const viewer = pixivEl('pixiv-viewer');
+    if (!viewer) return;
+    pixivViewer.pages = (pages || []).slice();
+    if (!pixivViewer.pages.length) return;
+    pixivViewer.open = true;
+    viewer.hidden = false;
+    document.body.classList.add('is-pixiv-viewing');
+    pixivViewerShow(index || 0);
+}
+
+/** 关闭查看器。 */
+function pixivViewerClose() {
+    const viewer = pixivEl('pixiv-viewer');
+    if (!viewer) return;
+    pixivViewer.open = false;
+    pixivViewer.pages = [];
+    viewer.hidden = true;
+    document.body.classList.remove('is-pixiv-viewing');
+    const image = pixivEl('pixiv-viewer-image');
+    if (image) {
+        image.removeAttribute('src');
+        image.onload = null;
+        image.onerror = null;
+    }
+    pixivViewer.currentSrc = '';
+}
+
+/** 接线。点一次就绑一次，别重复绑。 */
+function pixivViewerBind() {
+    if (pixivViewer.bound) return;
+    pixivViewer.bound = true;
+
+    const close = pixivEl('btn-pixiv-viewer-close');
+    if (close) close.addEventListener('click', pixivViewerClose);
+    const reset = pixivEl('btn-pixiv-viewer-reset');
+    if (reset) reset.addEventListener('click', pixivViewerReset);
+    const prev = pixivEl('btn-pixiv-viewer-prev');
+    if (prev) {
+        prev.addEventListener('click', () => pixivViewerShow(pixivViewer.index - 1));
+    }
+    const next = pixivEl('btn-pixiv-viewer-next');
+    if (next) {
+        next.addEventListener('click', () => pixivViewerShow(pixivViewer.index + 1));
+    }
+
+    // 点背景空白处关闭：点在图上不关（那是拖动）。
+    const viewer = pixivEl('pixiv-viewer');
+    if (viewer) {
+        viewer.addEventListener('click', (event) => {
+            if (event.target === viewer || event.target.id === 'pixiv-viewer-stage') {
+                pixivViewerClose();
+            }
+        });
+    }
+
+    // 滚轮缩放。ctrl+wheel 是触控板捏合，浏览器把它也报成 wheel。
+    const stage = pixivEl('pixiv-viewer-stage');
+    if (stage) {
+        stage.addEventListener('wheel', (event) => {
+            if (!pixivViewer.open) return;
+            event.preventDefault();
+            // 捏合的 deltaY 比滚轮小得多，步长要按来源分开算，
+            // 不然触控板一捏就飞到 10 倍。
+            const delta = event.deltaY;
+            if (delta === 0) return;
+            // 鼠标滚轮一格约 120，触控板捏合只有几；用同一个除数，
+            // 要么滚轮太猛、要么捏合几乎没反应。
+            const divisor = event.ctrlKey ? 40 : 320;
+            // 单次缩放的幅度必须封顶：触控板甩一下的 delta 能到几百，
+            // 不封顶的话一甩就直接顶到最大倍率。
+            const factor = Math.max(0.5, Math.min(2, Math.exp(-delta / divisor)));
+            pixivViewerZoomAt(factor, event.clientX, event.clientY);
+        }, { passive: false });
+    }
+
+    // 拖动。用 pointer 事件：鼠标、触控板、触屏一套代码。
+    const image = pixivEl('pixiv-viewer-image');
+    if (image) {
+        image.addEventListener('pointerdown', (event) => {
+            if (!pixivViewer.open) return;
+            pixivViewer.dragFrom = {
+                x: event.clientX,
+                y: event.clientY,
+                offsetX: pixivViewer.offsetX,
+                offsetY: pixivViewer.offsetY,
+            };
+            image.setPointerCapture(event.pointerId);
+            image.classList.add('is-dragging');
+        });
+        image.addEventListener('pointermove', (event) => {
+            const from = pixivViewer.dragFrom;
+            if (!from) return;
+            pixivViewer.offsetX = from.offsetX + (event.clientX - from.x);
+            pixivViewer.offsetY = from.offsetY + (event.clientY - from.y);
+            pixivViewerApply();
+        });
+        const endDrag = (event) => {
+            if (!pixivViewer.dragFrom) return;
+            pixivViewer.dragFrom = null;
+            image.classList.remove('is-dragging');
+            try {
+                image.releasePointerCapture(event.pointerId);
+            } catch (err) {
+                /* 指针已经没了：没什么可放的 */
+            }
+        };
+        image.addEventListener('pointerup', endDrag);
+        image.addEventListener('pointercancel', endDrag);
+        // 双击回到铺满。
+        image.addEventListener('dblclick', pixivViewerReset);
+    }
+
+    // 键盘：左右翻页、Esc 关闭、加减缩放。
+    document.addEventListener('keydown', (event) => {
+        if (!pixivViewer.open) return;
+        if (event.key === 'Escape') {
+            pixivViewerClose();
+            event.stopPropagation();
+        } else if (event.key === 'ArrowLeft') {
+            pixivViewerShow(pixivViewer.index - 1);
+            event.preventDefault();
+            event.stopPropagation();
+        } else if (event.key === 'ArrowRight') {
+            pixivViewerShow(pixivViewer.index + 1);
+            event.preventDefault();
+            event.stopPropagation();
+        } else if (event.key === '+' || event.key === '=') {
+            pixivViewerZoomAt(1.2, window.innerWidth / 2, window.innerHeight / 2);
+            event.preventDefault();
+        } else if (event.key === '-' || event.key === '_') {
+            pixivViewerZoomAt(1 / 1.2, window.innerWidth / 2, window.innerHeight / 2);
+            event.preventDefault();
+        }
+    });
+}
+
 window.PixivUI = PixivUI;
+window.PixivViewer = {
+    open: pixivViewerOpen,
+    close: pixivViewerClose,
+    bind: pixivViewerBind,
+    state: pixivViewer,
+    // 这几个也对外：翻页和缩放要能被外面调到（比如详情页的翻页
+    // 按钮在查看器里也能用），测试也要驱动它们。
+    show: pixivViewerShow,
+    zoomAt: pixivViewerZoomAt,
+    reset: pixivViewerReset,
+};

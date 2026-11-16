@@ -33,6 +33,8 @@ CHECKS = (
     ("check-bili-collection-paging.mjs", "the paging of the subscribed collections"),
     ("check-bili-fav-paging.mjs", "the paging of the favourite folders"),
     ("check-bangumi-js.mjs", "the Bangumi page"),
+    ("check-pixiv-viewer.mjs", "the Pixiv full-screen image viewer"),
+    ("check-settings-form.mjs", "the settings form"),
 )
 
 NODE = shutil.which("node")

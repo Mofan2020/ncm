@@ -672,10 +672,12 @@ class Settings:
         pixiv = self._data.pixiv
         mode = str(pixiv.nsfw_mode or "").strip().lower()
         pixiv.nsfw_mode = mode if mode in ("hide", "blur", "show") else "hide"
-        # **hide 就不该偷偷带 R-18。** 两个开关各管一处，任一个说 hide，
-        # 请求就按 safe 发，免得「设了隐藏但搜索里还是冒出来」。
-        if pixiv.nsfw_mode == "hide":
-            pixiv.include_r18 = False
+        # **这里不再把 include_r18 清零。** 以前「hide 就清掉」看着合理，
+        # 其实把两件事混成了一件：nsfw_mode 管的是「显示出不显示」，
+        # include_r18 管的是「请求时要不要问服务器要」。用户在设置里
+        # 亲手勾上的开关被静默改掉，比不生效更气人——而且清零之后
+        # 请求层照样按 safe 发（见 _search_mode），所以清零根本没改变
+        # 任何行为，只是把用户的选择弄丢了。
         quality = str(pixiv.quality or "").strip().lower()
         pixiv.quality = quality if quality in ("original", "regular") else "original"
         pixiv.hide_ai = _as_bool(pixiv.hide_ai)
@@ -752,6 +754,10 @@ class Settings:
     @property
     def pixiv(self) -> PixivSettings:
         return self._data.pixiv
+
+    @property
+    def bangumi(self) -> BangumiSettings:
+        return self._data.bangumi
 
     def local_playlists(self) -> LocalPlaylistSettings:
         return self._data.local_playlists

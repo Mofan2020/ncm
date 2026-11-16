@@ -1459,6 +1459,33 @@
 </div>
 </div>
 
+<!-- ============ Pixiv 图片全屏查看器 ============ -->
+<!-- 盖住整个窗口，所以放在所有 view 外面。 -->
+<div class="pixiv-viewer" id="pixiv-viewer" hidden>
+    <!-- 模糊背景：图太宽或太高时占不满，露出的空白用这张糊掉的图填上。 -->
+    <div class="pixiv-viewer-bg" id="pixiv-viewer-bg"></div>
+    <div class="pixiv-viewer-stage" id="pixiv-viewer-stage">
+        <img id="pixiv-viewer-image" alt="" draggable="false">
+        <!-- 换页时的新图还没加载出来：先撤掉旧图，这里显示「加载中」。 -->
+        <div class="pixiv-viewer-loading" id="pixiv-viewer-loading" hidden>
+            <span class="pixiv-viewer-spinner" aria-hidden="true"></span>
+            <span data-i18n="pixiv.viewer_loading"></span>
+        </div>
+    </div>
+    <button class="btn btn-icon pixiv-viewer-close" type="button" id="btn-pixiv-viewer-close"
+            data-icon="close" data-i18n-title="common.close" aria-label="close"></button>
+    <button class="btn btn-icon pixiv-viewer-nav is-prev" type="button" id="btn-pixiv-viewer-prev"
+            data-icon="prev" data-i18n-title="pixiv.prev_page" aria-label="prev"></button>
+    <button class="btn btn-icon pixiv-viewer-nav is-next" type="button" id="btn-pixiv-viewer-next"
+            data-icon="next" data-i18n-title="pixiv.next_page" aria-label="next"></button>
+    <div class="pixiv-viewer-bar">
+        <span class="pixiv-viewer-pager" id="pixiv-viewer-pager"></span>
+        <span class="pixiv-viewer-zoom" id="pixiv-viewer-zoom"></span>
+        <button class="btn btn-sm btn-ghost" type="button" id="btn-pixiv-viewer-reset"
+                data-i18n="pixiv.viewer_reset"></button>
+    </div>
+</div>
+
 <!-- ============ settings modal ============ -->
 <div class="modal" id="user-playlists-modal" hidden>
     <div class="modal-backdrop" data-close="user-playlists-modal"></div>

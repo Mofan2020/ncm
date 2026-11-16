@@ -3576,6 +3576,9 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     display: block;
 }
 
+/* 能点开全屏的那张：光标给个提示，不然用户不知道可以点。 */
+.pixiv-stage img.is-zoomable { cursor: zoom-in; }
+
 /* 翻页按钮浮在画面上，不再占一列：占一列的时候窄窗口会把图挤成一条。 */
 .pixiv-stage-nav {
     position: absolute;
@@ -3620,6 +3623,126 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     padding: 20px;
     backdrop-filter: blur(6px);
 }
+
+/* ================================================================
+   Pixiv 图片全屏查看器
+   ================================================================ */
+
+/* 盖住整个窗口。z-index 比设置弹窗还高：用户在弹窗里点开一张图
+ * 也能进全屏。 */
+.pixiv-viewer {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    background: rgba(6, 8, 12, 0.94);
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* 模糊背景：图占不满屏幕时露出的空白用这张糊掉的图填上，
+ * 免得四周一圈死黑。cover + blur 是最省事的一招。 */
+.pixiv-viewer-bg {
+    position: absolute;
+    inset: -8%;
+    background-position: center;
+    background-size: cover;
+    background-repeat: no-repeat;
+    filter: blur(28px) saturate(1.2);
+    opacity: 0.34;
+    transform: scale(1.06);
+}
+
+.pixiv-viewer-stage {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+/* 图本身用 transform 缩放：改 width/height 会让浏览器每帧重排，
+ * 拖动和滚轮都会掉帧；transform 走合成层，手感是顺的。 */
+.pixiv-viewer-stage img {
+    max-width: 100%;
+    max-height: 100%;
+    display: block;
+    transform-origin: center center;
+    will-change: transform;
+    cursor: grab;
+}
+
+.pixiv-viewer-stage img.is-dragging { cursor: grabbing; }
+
+/* 「加载中」：换页时旧图已经撤掉，这块占住位置。 */
+.pixiv-viewer-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 13px;
+    pointer-events: none;
+}
+
+.pixiv-viewer-spinner {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.22);
+    border-top-color: rgba(255, 255, 255, 0.86);
+    animation: pixiv-viewer-spin 0.8s linear infinite;
+}
+
+@keyframes pixiv-viewer-spin {
+    to { transform: rotate(360deg); }
+}
+
+.pixiv-viewer-close {
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    z-index: 2;
+}
+
+.pixiv-viewer-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 2;
+    opacity: 0.85;
+}
+
+.pixiv-viewer-nav:hover { opacity: 1; }
+
+.pixiv-viewer-nav.is-prev { left: 16px; }
+.pixiv-viewer-nav.is-next { right: 16px; }
+
+/* 底栏：页码、当前缩放比例、复位按钮。 */
+.pixiv-viewer-bar {
+    position: absolute;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 7px 14px;
+    border-radius: 999px;
+    background: rgba(10, 12, 16, 0.68);
+    color: #fff;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    backdrop-filter: blur(12px);
+}
+
+.pixiv-viewer-pager:empty { display: none; }
+.pixiv-viewer-zoom { opacity: 0.72; }
 
 .pixiv-detail-side {
     display: flex;

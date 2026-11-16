@@ -326,7 +326,33 @@ class GuiBridge:
                 # 永远是默认值，用户勾了像没勾。
                 "update_include_prerelease": self.settings.ui.update_include_prerelease,
                 "update_skip_ssl_verify": self.settings.ui.update_skip_ssl_verify,
+                # 借 SDM 下更新包这两个也是：漏了的话「借 SDM 下载更新包」
+                # 存下去还是默认开着，用户以为没生效。
+                "update_use_sdm": self.settings.ui.update_use_sdm,
+                "update_threads": self.settings.ui.update_threads,
                 "skipped_update_versions": list(self.settings.ui.skipped_update_versions or []),
+            },
+            # Pixiv 的设置以前不在这个回包里：设置弹窗读回来永远是
+            # 默认值，用户改完点保存，看着像生效了，其实什么都没存。
+            "pixiv": {
+                "nsfw_mode": self.settings.pixiv.nsfw_mode,
+                "include_r18": self.settings.pixiv.include_r18,
+                "hide_ai": self.settings.pixiv.hide_ai,
+                "quality": self.settings.pixiv.quality,
+                "bookmark_private": self.settings.pixiv.bookmark_private,
+                "template": self.settings.pixiv.template,
+                "page_size": self.settings.pixiv.page_size,
+                "download_dir": self.settings.pixiv.download_dir or "",
+            },
+            "bangumi": {
+                "api_host": self.settings.bangumi.api_host,
+                "web_host": self.settings.bangumi.web_host,
+                "request_interval": self.settings.bangumi.request_interval,
+                "skip_ssl_verify": self.settings.bangumi.skip_ssl_verify,
+                "download_dir": self.settings.bangumi.download_dir,
+                "mirrors": [dict(item) for item in (self.settings.bangumi.mirrors or [])],
+                "resource_sites": [dict(item)
+                                   for item in (self.settings.bangumi.resource_sites or [])],
             },
             "auth": {
                 "remember_login": self.settings.auth.remember_login,
@@ -395,6 +421,9 @@ class GuiBridge:
                     # 自动更新：同样要在白名单里，否则开关点了也存不下。
                     "check_updates_on_start", "auto_install_updates",
                     "update_include_prerelease", "update_skip_ssl_verify",
+                    # 借 SDM 下更新包 + 分片数：这两个漏了，勾选框存下去
+                    # 还是默认开着，用户看着像没生效。
+                    "update_use_sdm", "update_threads",
                     "skipped_update_versions"}))
                 if "language" in data:
                     self.i18n.set_language(str(data["language"]))

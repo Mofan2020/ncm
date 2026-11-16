@@ -854,7 +854,10 @@
     "type_ugoira": "动图",
     "unbookmark": "取消收藏",
     "unbookmark_done": "已取消收藏。",
-    "unfollow": "取消关注"
+    "unfollow": "取消关注",
+    "viewer_failed": "这张图加载不出来。",
+    "viewer_loading": "加载中…",
+    "viewer_reset": "适应窗口"
   },
   "player": {
     "add_failed": "添加失败",
