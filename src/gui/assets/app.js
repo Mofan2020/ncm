@@ -841,6 +841,7 @@ function fillSettingsForm() {
     const bili = s.bili || {};
     setValue('bili-quality-select', String(bili.quality || 0));
     setChecked('bili-danmaku-check', bili.danmaku_enabled !== false);
+    setChecked('bili-hires-check', bili.hires_enabled === true);
     setValue('bili-danmaku-size', String(bili.danmaku_font_size || 18));
     setValue('bili-danmaku-opacity', String(Math.round((bili.danmaku_opacity ?? 0.9) * 100)));
     setChecked('bili-download-audio-check', bili.download_audio !== false);
@@ -1118,6 +1119,7 @@ async function saveSettings() {
         },
         bili: {
             quality: parseInt(document.getElementById('bili-quality-select').value, 10) || 0,
+            hires_enabled: document.getElementById('bili-hires-check').checked,
             danmaku_enabled: document.getElementById('bili-danmaku-check').checked,
             danmaku_font_size: parseInt(document.getElementById('bili-danmaku-size').value, 10),
             danmaku_opacity: parseInt(document.getElementById('bili-danmaku-opacity').value, 10) / 100,
@@ -10052,7 +10054,9 @@ const biliPlayer = {
     quality: 0,
     title: '',
     author: '',
-    authorMid: ''
+    authorMid: '',
+    /** What the user switched to for this video (null = follow the setting). */
+    hiresOverride: null
 };
 
 /** The value of one of the login inputs. */
@@ -11498,7 +11502,11 @@ function renderBiliQualityBadges(streams) {
         box.appendChild(badge);
     };
     if (streams.dolby || names.indexOf('dolby') >= 0) add('bili.dolby');
-    if (streams.flac || names.indexOf('flac') >= 0
+    // The badge follows "the video has a lossless track", not "this account
+    // may play it": a member-less account should still see that the video
+    // has one, otherwise the switch below it never shows up.
+    if (streams.hires_available || streams.flac
+        || names.indexOf('flac') >= 0
         || names.indexOf('hi-res') >= 0 || names.indexOf('hires') >= 0) add('bili.hires');
     if (streams.hd || names.indexOf('hd') >= 0 || names.indexOf('1080') >= 0
         || names.indexOf('4k') >= 0) add('bili.hd');
@@ -11531,6 +11539,60 @@ function renderBiliQualities(streams) {
     else if (played !== '0' && offered.indexOf(played) >= 0) select.value = played;
     else select.value = '0';
     renderBiliQualityBadges(streams);
+}
+
+/**
+ * The Hi-Res switch of the inline player.
+ *
+ * It only appears when the video carries a lossless track.  A video that has
+ * one but the account may not have it (the track is a member privilege)
+ * shows the switch greyed out with the reason.
+ */
+function renderBiliHires(streams) {
+    const field = document.getElementById('bili-hires-field');
+    const box = document.getElementById('bili-hires-on');
+    if (!field || !box) return;
+    const available = !!(streams && streams.hires_available);
+    const granted = !!(streams && streams.hires_granted);
+    field.hidden = !available;
+    if (!available) {
+        box.checked = false;
+        box.disabled = true;
+        return;
+    }
+    box.disabled = !granted;
+    const wanted = biliPlayer.hiresOverride === null
+        ? !!(state.settings && state.settings.bili && state.settings.bili.hires_enabled)
+        : biliPlayer.hiresOverride;
+    box.checked = !!wanted && granted;
+    const label = document.getElementById('bili-hires-label');
+    if (label) {
+        label.setAttribute('data-i18n', granted ? 'bili.hires_on' : 'bili.hires_needs_member');
+        label.textContent = t(granted ? 'bili.hires_on' : 'bili.hires_needs_member');
+    }
+}
+
+/** Whether the next playback should use the lossless track. */
+function biliHiresWanted() {
+    const wanted = biliPlayer.hiresOverride === null
+        ? !!(state.settings && state.settings.bili && state.settings.bili.hires_enabled)
+        : biliPlayer.hiresOverride;
+    return !!wanted;
+}
+
+/** Switch the lossless track on or off and start over with it. */
+async function changeBiliHires(checked) {
+    const track = biliPlayer.track;
+    const videoEl = document.getElementById('bili-video');
+    if (!track || !track.bvid || !videoEl) return;
+    biliPlayer.hiresOverride = !!checked;
+    const position = videoEl.currentTime || 0;
+    const restore = () => {
+        try { videoEl.currentTime = position; } catch (err) { /* 还没准备好 */ }
+    };
+    videoEl.addEventListener('loadedmetadata', restore, { once: true });
+    await loadBiliStreams(track.bvid, biliPlayer.quality || 0);
+    if (position) restore();
 }
 
 /**
@@ -11587,9 +11649,11 @@ async function loadBiliStreams(bvid, quality) {
             biliPlayer.author = result.author || '';
             biliPlayer.authorMid = result.author_mid || '';
             renderBiliQualities(result);
+            renderBiliHires(result);
         },
         // If the user enabled "resume playback", check the watch history
         // and seek to the last position.
+        hires: biliHiresWanted(),
         resumePlayback: !!(state.settings && state.settings.bili
             && state.settings.bili.resume_playback)
     });
@@ -13795,6 +13859,8 @@ function bindSectionEvents() {
     // The player: the quality picker and the two ways to leave it.
     const quality = document.getElementById('bili-quality');
     if (quality) quality.addEventListener('change', () => changeBiliQuality(quality.value));
+    const hiresOn = document.getElementById('bili-hires-on');
+    if (hiresOn) hiresOn.addEventListener('change', () => changeBiliHires(hiresOn.checked));
     document.querySelectorAll('[data-close="account-center-modal"]').forEach((el) => {
         el.addEventListener('click', () => stopBiliLoginPolling());
     });

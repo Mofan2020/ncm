@@ -107,6 +107,44 @@ B站对同一 IP 的写操作频控很紧。收藏夹的写入（建夹、加视
 - **`SourceBuffer.remove()` 是异步的**，必须等 `updateend`。没等就
   `appendBuffer()`，WebKit 回 `InvalidStateError`，画面同样会废。
 
+## Hi-Res 音轨
+
+- **「视频有没有」和「账号能不能要」是两个问题。** `dash.flac` 里
+  `display` 表示这条视频带无损音轨，`audio` 数组里才是音轨本身。
+  无损是大会员权益，所以非大会员账号拿到的是
+  `{"display": true, "audio": null}`——视频有，账号拿不到。
+  代码里分两个字段报：`hires_available`（视频支不支持）和
+  `hires_granted`（这个账号能不能用）。只找一个的话，
+  「这个视频没有」和「你不能听」会混成同一个回答。
+- **音轨的 id 是 `id`，不是 `codecid`。** `codecid` 这个字段服务端恒为 0，
+  什么都不说明。真正的标识在 `id` 上，而且**不按音质排序**：
+  30216 / 30232 / 30280 是三档普通 AAC（64K / 132K / 192K），
+  30250 是杜比全景声，**30258 才是无损 FLAC**。
+  以前把 `codecid` 当判据，等于这段判断从来没生效过；
+  而且 30280 会被当成杜比，普通 AAC 音轨因此被误报成「杜比」。
+- **FLAC 进不了 MSE。** 真实 WKWebView 里实测
+  `MediaSource.isTypeSupported('audio/mp4; codecs="flac"')` 是 `false`，
+  `audio/flac; codecs="flac"` 也是 `false`；同一次实测里
+  `mp4a.40.2`、`ec-3`、`ac-3` 都是 `true`。
+  所以无损音轨**不能**跟画面一样塞进 SourceBuffer。
+- **原生 `<audio>` 元素能播 FLAC-in-MP4。** 用 ffmpeg 造的样本试，
+  `readyState` 到 4、duration 读得出来。
+  于是无损的走法是：画面照旧走 MSE，声音另开一个 `<audio>` 元素。
+- **两条时钟要对齐。** 画面是提前缓冲的，所以声音通常比画面慢一点。
+  实测这个差是**固定偏移**而不是漂移：合成样本上 10 次采样读到的偏移
+  一次没变（一次 0.282 秒，另一次 0.219 秒），也就是差多少不会随时间长大。
+  实现是开播时测一次偏移，之后每秒校正一次，差值超过 0.12 秒才动
+  `currentTime`；因为偏移是恒定的，这一步平时不会触发。
+- **整条无损播放链路在真实 WebView 里验过**：画面走 MSE、声音走独立的
+  `<audio>`，两边 `readyState` 都到 4，测完偏移自动解除静音。
+  探针用的样本必须是 **fragmented MP4**（`ftyp` + `moov` + 一串
+  `moof`/`mdat`）；普通 MP4 的 `moov` 在文件末尾、只有一个大的 `mdat`，
+  SourceBuffer 直接报 `buffer failed`。B 站的 DASH 流本来就是分片的，
+  所以生产代码不受这个影响。
+- **合并流（`fnval=1`）带着普通音轨，所以开了无损就不能用它。**
+  `play()` 里先判无损：开了就走 MSE 画面 + 独立声音元素，
+  没开才走合并流那条老路。
+
 ## 收藏夹
 
 - 收藏夹列表：`/x/v3/fav/folder/created/list-all?up_mid=<mid>`。

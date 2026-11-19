@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,8 @@ CHECKS = (
     ("check-lyrics-scroll.mjs", "the scrolling of the lyrics"),
     ("check-backup-js.mjs", "the backup window"),
     ("check-bili-stream-loader.mjs", "the shared Bilibili stream loader"),
+    ("check-bili-hires.mjs", "the Hi-Res track of a Bilibili video"),
+    ("check-bili-hires-switch.mjs", "the Hi-Res switch of the Bilibili player"),
     ("check-bili-recommend-paging.mjs", "the paging of the recommendation feed"),
     ("check-bili-default-quality.mjs", "the default quality reaching playback"),
     ("check-bili-collection-paging.mjs", "the paging of the subscribed collections"),
@@ -56,6 +59,28 @@ def test_the_node_check_passes(script: str, subject: str) -> None:
     )
     output = (done.stdout or "") + (done.stderr or "")
     assert done.returncode == 0, f"{script} failed:\n{output}"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_the_hires_check_catches_a_broken_fix() -> None:
+    """The Hi-Res check has to go red when the code it guards is broken.
+
+    The script breaks the implementation once per rule -- on a copy, so
+    the source tree is never touched -- and expects the check to notice.
+    """
+    script = SCRIPTS / "check-hires-mutations.py"
+    if not script.exists():
+        pytest.skip("the mutation script is not there")
+    done = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        cwd=str(ROOT),
+    )
+    output = (done.stdout or "") + (done.stderr or "")
+    assert done.returncode == 0, f"a mutation slipped through:\n{output}"
+    assert "all mutations were caught" in output
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")

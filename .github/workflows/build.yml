@@ -50,6 +50,8 @@ jobs:
           node scripts/check-bili-recommend-paging.mjs
           node scripts/check-bili-default-quality.mjs
           node scripts/check-bili-stream-loader.mjs
+          node scripts/check-bili-hires.mjs
+          node scripts/check-bili-hires-switch.mjs
           node scripts/check-bili-folder-and-relations.mjs
           node scripts/check-bangumi-js.mjs
 

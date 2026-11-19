@@ -55,6 +55,10 @@
         session = null;
         if (!current) return;
         current.cancelled = true;
+        if (current.syncTimer) {
+            try { clearInterval(current.syncTimer); } catch (err) { /* 已经停了 */ }
+            current.syncTimer = null;
+        }
         if (current.audio) {
             try { current.audio.pause(); } catch (err) { /* 已经停了 */ }
             current.audio = null;
@@ -166,6 +170,153 @@
             if (time >= start - 0.35 && time <= end) return end - time;
         }
         return 0;
+    }
+
+    /**
+     * The Hi-Res track plays beside the picture, not inside it.
+     *
+     * The lossless track is FLAC, and a MediaSource SourceBuffer refuses it
+     * (measured on this webview: `isTypeSupported('audio/mp4;
+     * codecs="flac"')` is false), so the sound cannot be appended to a
+     * SourceBuffer the way the ordinary track is.  A plain <audio> element
+     * does decode the file, so the picture goes through MSE alone and the
+     * sound goes through its own element.
+     *
+     * Two independent clocks then have to be kept together: the picture is
+     * buffered ahead of the play head, so it usually runs a little ahead of
+     * the sound.  The offset is measured when the playback starts and
+     * corrected while it runs.
+     */
+    const HIRES_SYNC_TOLERANCE = 0.12;
+    const HIRES_SYNC_INTERVAL = 1000;
+
+    /**
+     * Play the picture (MSE) and the lossless sound (a plain <audio>).
+     *
+     * @param {HTMLVideoElement} videoEl the element that shows the picture
+     * @param {Object} streams the answer of get_bilibili_video_streams
+     * @param {Function} status the status callback
+     * @returns {Promise<boolean>} true when something is playing
+     */
+    async function playWithHires(videoEl, streams, status) {
+        if (!window.MediaSource || !window.MediaSource.isTypeSupported) return false;
+        const videoMime = buildMime(streams.video);
+        if (!videoMime || !window.MediaSource.isTypeSupported(videoMime)) return false;
+        const track = streams.flac;
+        if (!track || !track.url) return false;
+
+        const mediaSource = new window.MediaSource();
+        const objectUrl = URL.createObjectURL(mediaSource);
+        const current = {
+            mediaSource: mediaSource,
+            objectUrl: objectUrl,
+            buffers: [],
+            cancelled: false,
+            videoEl: videoEl,
+            duration: Number(streams.duration) || 0
+        };
+        session = current;
+        videoEl.src = objectUrl;
+
+        await new Promise((resolve) => {
+            if (mediaSource.readyState === 'open') { resolve(); return; }
+            let settled = false;
+            const done = () => { if (!settled) { settled = true; resolve(); } };
+            mediaSource.addEventListener('sourceopen', done, { once: true });
+            setTimeout(done, 3000);
+        });
+        if (current.cancelled) return false;
+        if (mediaSource.readyState !== 'open') return false;
+
+        const videoBuffer = mediaSource.addSourceBuffer(videoMime);
+        current.buffers = [videoBuffer];
+        try { videoBuffer.mode = 'segments'; } catch (err) { /* 旧内核不认这个模式 */ }
+
+        if (current.duration) {
+            try { mediaSource.duration = current.duration; } catch (err) { /* 让浏览器自己算 */ }
+        }
+
+        // The sound lives in its own element.  It is muted at first and
+        // unmuted when the two clocks are together, so the user never hears
+        // the lossless track running ahead of the picture.
+        const sound = new Audio();
+        sound.src = track.url;
+        sound.muted = true;
+        sound.preload = 'auto';
+        current.audio = sound;
+        current.hires = true;
+        sound.addEventListener('error', () => {
+            // The FLAC file did not play.  The picture is still fine, so the
+            // sound is simply left out rather than taking the video down.
+            if (!current.cancelled) {
+                try { sound.muted = true; } catch (err) { /* 已经停了 */ }
+                current.hiresFailed = true;
+            }
+        });
+
+        // A seek past what is buffered cannot be served from the picture
+        // alone, and the sound has to follow it.  Handing the picture over
+        // to the merged file gives up the lossless track -- the merged
+        // file carries the ordinary sound -- and stops the separate
+        // element, so there is one sound and not two.
+        current.seekHandler = () => {
+            const time = videoEl.currentTime;
+            if (!isBuffered(videoBuffer, time)) {
+                switchToMuxed(videoEl, streams, time);
+                return;
+            }
+            try { sound.currentTime = time; } catch (err) { /* 还没准备好 */ }
+            current.syncOffset = 0;
+        };
+        videoEl.addEventListener('seeking', current.seekHandler);
+
+        const feed = feedTrack(videoBuffer, streams.video, current).catch((err) => {
+            if (!current.cancelled) console.error('bilibili hires video track failed:', err);
+        });
+
+        status('buffering');
+        const started = await waitForStart(current);
+        if (!started || current.cancelled) return false;
+        try { await sound.play(); } catch (err) { /* 自动播放被拦下时用户自己点 */ }
+        status('ready');
+        try { await videoEl.play(); } catch (err) { /* 自动播放被拦下时用户自己点 */ }
+        feed.catch(() => {});
+        current.syncTimer = setInterval(() => syncHires(current), HIRES_SYNC_INTERVAL);
+        return true;
+    }
+
+    /**
+     * Keep the lossless sound at the same place as the picture.
+     *
+     * The picture is buffered ahead of the play head, so the sound tends to
+     * lag behind it by a fixed amount.  The offset is measured once, when
+     * the two start together, and the sound is moved by it; while it plays
+     * the offset is measured again and corrected when it grew.
+     */
+    function syncHires(current) {
+        if (!current || current.cancelled || !current.hires) return;
+        const videoEl = current.videoEl;
+        const sound = current.audio;
+        if (!videoEl || !sound || sound.paused) return;
+        const videoTime = Number(videoEl.currentTime) || 0;
+        const soundTime = Number(sound.currentTime) || 0;
+        if (!videoTime) return;
+        const offset = soundTime - videoTime;
+        if (!current.syncOffset) {
+            // The first reading is the offset the two start with.
+            current.syncOffset = offset;
+            try { sound.muted = false; } catch (err) { /* 已经停了 */ }
+            return;
+        }
+        const drift = offset - current.syncOffset;
+        if (Math.abs(drift) < HIRES_SYNC_TOLERANCE) return;
+        const target = videoTime + current.syncOffset;
+        try {
+            sound.currentTime = target;
+        } catch (err) {
+            // The element refuses the seek (it is not seekable yet); the
+            // next round measures the offset again.
+        }
     }
 
     /**
@@ -351,14 +502,6 @@
     }
 
     /**
-     * Play a video.
-     *
-     * @param {HTMLVideoElement} videoEl the element that shows the video
-     * @param {Object} streams the answer of get_bilibili_video_streams
-     * @param {Object} [options] {onStatus: function (code)}
-     * @returns {Promise<boolean>} true when something is playing
-     */
-    /**
      * Is there actually a picture on the screen?
      *
      * The DOM cannot tell a black frame from a good one: a decoder that
@@ -457,7 +600,7 @@
      *
      * @param {HTMLVideoElement} videoEl the element that shows the video
      * @param {Object} streams the answer of get_bilibili_video_streams
-     * @param {Object} [options] {onStatus: function (code)}
+     * @param {Object} [options] {onStatus: function (code), hires: boolean}
      * @returns {Promise<boolean>} true when something is playing
      */
     async function play(videoEl, streams, options) {
@@ -480,12 +623,31 @@
         // plays, the picture stays black" even though the decoder had
         // already produced frames (canvas.drawImage read a normal picture).
         // Quality tops out at 720P here, which is the price of a picture.
-        if (streams.muxed && streams.muxed.url) {
+        //
+        // The Hi-Res track is the exception: the merged file carries the
+        // ordinary sound, so using it would throw the lossless track away.
+        const wantHires = !!(options && options.hires)
+            && !!(streams.flac && streams.flac.url);
+        if (streams.muxed && streams.muxed.url && !wantHires) {
             videoEl.src = streams.muxed.url;
             try { await videoEl.play(); } catch (err) { /* 自动播放被拦下 */ }
             status('ready');
             watchPicture(videoEl, streams, status, 'muxed').catch(() => {});
             return true;
+        }
+        if (wantHires && streams.video && streams.video.url) {
+            try {
+                const played = await playWithHires(videoEl, streams, status);
+                if (played) {
+                    watchPicture(videoEl, streams, status, 'mse').catch(() => {});
+                    return true;
+                }
+            } catch (err) {
+                // The lossless route failed: fall through to the ordinary
+                // one rather than leaving the user without a picture.
+                console.error('bilibili Hi-Res playback failed:', err);
+            }
+            stopSession();
         }
         if (streams.video && streams.audio) {
             try {

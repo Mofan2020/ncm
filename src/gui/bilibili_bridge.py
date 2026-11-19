@@ -855,6 +855,12 @@ class BilibiliBridge:
             "muxed": self._proxied(streams.get("muxed")),
             "flac": self._proxied(streams.get("flac")),
             "dolby": self._proxied(streams.get("dolby")),
+            # Whether the video carries a Hi-Res track, and whether this
+            # account may play it.  The player shows the switch when the
+            # first is true, and refuses it when the second is false.
+            "hires_available": bool(streams.get("hires_available")),
+            "hires_granted": bool(streams.get("hires_granted")),
+            "dolby_available": bool(streams.get("dolby_available")),
             "message": "",
         }
         return answer

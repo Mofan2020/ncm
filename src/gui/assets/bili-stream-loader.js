@@ -85,6 +85,8 @@
      * has no bvid), so it cannot go through `load()`; it still has to go
      * through the same playback, which is what this is for.
      *
+     * @param {boolean} [options.hires] play the lossless track beside the
+     *   picture instead of inside it
      * @returns {Promise<boolean>} true when something is playing
      */
     async function play(videoEl, streams, options) {
@@ -96,7 +98,10 @@
             return false;
         }
         try {
-            const played = await window.playBiliVideo(videoEl, streams, {onStatus: onStatus});
+            const played = await window.playBiliVideo(videoEl, streams, {
+                onStatus: onStatus,
+                hires: !!opts.hires
+            });
             if (!played) onStatus('error');
             return !!played;
         } catch (err) {
@@ -117,6 +122,8 @@
      * @param {Function} [options.onStreams] called with the streams, before
      *   the playback starts, so the caller can fill its own labels
      * @param {boolean} [options.resumePlayback] jump to the last position
+     * @param {boolean} [options.hires] play the lossless track when the
+     *   video has one
      * @param {number} [options.timeoutMs]
      * @returns {Promise<Object>} {ok, error, result, resumed}
      *   error is one of: no_video, timeout, network, no_stream
@@ -157,7 +164,14 @@
 
         if (typeof opts.onStreams === 'function') opts.onStreams(result);
 
-        const played = await play(videoEl, result, {onStatus: onStatus});
+        // The lossless track is only played when the video has one and the
+        // account may have it: the server leaves the section empty for an
+        // account without the membership, and asking for it anyway would
+        // only cost a request.
+        const hires = !!opts.hires
+            && !!(result.flac && result.flac.url)
+            && result.hires_granted !== false;
+        const played = await play(videoEl, result, {onStatus: onStatus, hires: hires});
         if (!played) {
             return {ok: false, error: 'no_stream', result: result, resumed: 0};
         }
@@ -166,7 +180,7 @@
         if (opts.resumePlayback) {
             resumed = await resume(api, bvid, videoEl);
         }
-        return {ok: true, error: '', result: result, resumed: resumed};
+        return {ok: true, error: '', result: result, resumed: resumed, hires: hires};
     }
 
     window.BiliStreamLoader = {

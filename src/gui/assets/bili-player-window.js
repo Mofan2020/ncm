@@ -29,6 +29,10 @@
         danmakuSize: 18,
         danmakuOpacity: 0.9,
         resumePlayback: true,
+        /** Whether the lossless track is wanted for the next playback. */
+        hiresDefault: false,
+        /** What the user switched to for this video (null = follow the setting). */
+        hiresOverride: null,
         stat: {},
         liked: false,
         coinGiven: 0,
@@ -259,6 +263,59 @@
     }
 
     /**
+     * The Hi-Res switch.
+     *
+     * It only appears when the video carries a lossless track.  A video that
+     * has one but the account may not have it (the track is a member
+     * privilege) shows the switch greyed out with the reason, so the user
+     * learns why the sound is not the one they asked for.
+     */
+    function renderHires(streams) {
+        const field = el('bp-hires-field');
+        const box = el('bp-hires-on');
+        if (!field || !box) return;
+        const available = !!(streams && streams.hires_available);
+        const granted = !!(streams && streams.hires_granted);
+        field.hidden = !available;
+        if (!available) {
+            box.checked = false;
+            box.disabled = true;
+            return;
+        }
+        box.disabled = !granted;
+        const wanted = state.hiresOverride === null
+            ? state.hiresDefault : state.hiresOverride;
+        box.checked = !!wanted && granted;
+        const label = el('bp-hires-label');
+        if (label) {
+            label.textContent = granted
+                ? t('bili.hires_on')
+                : t('bili.hires_needs_member');
+        }
+    }
+
+    /** Whether the next playback should use the lossless track. */
+    function hiresWanted() {
+        const wanted = state.hiresOverride === null
+            ? state.hiresDefault : state.hiresOverride;
+        return !!wanted;
+    }
+
+    /** Switch the lossless track on or off and start over with it. */
+    async function changeHires(checked) {
+        state.hiresOverride = !!checked;
+        const videoEl = el('bp-video');
+        if (!videoEl || !state.bvid) return;
+        const position = videoEl.currentTime || 0;
+        const restore = () => {
+            try { videoEl.currentTime = position; } catch (err) { /* 还没准备好 */ }
+        };
+        videoEl.addEventListener('loadedmetadata', restore, { once: true });
+        await loadStreams(state.quality, state.cid);
+        if (position) restore();
+    }
+
+    /**
      * The episode list (分P / 合集).
      *
      * 普通投稿也能有多集：合集投稿和「分P」在接口里是同一个 `pages`
@@ -342,8 +399,10 @@
                 el('bp-title').textContent = result.title || state.bvid;
                 el('bp-sub').textContent = result.author || '';
                 renderQualities(result);
+                renderHires(result);
                 renderPages(result);
             },
+            hires: hiresWanted(),
             resumePlayback: !!state.resumePlayback
         });
         if (outcome.ok) {
@@ -1184,6 +1243,7 @@
         // Whether a video continues from where it was left off.  This has to
         // be remembered here: the window has no settings object of its own.
         state.resumePlayback = bili.resume_playback !== false;
+        state.hiresDefault = bili.hires_enabled === true;
         const on = el('bp-danmaku-on');
         if (on) on.checked = state.danmakuOn;
         const size = el('bp-danmaku-size');
@@ -1334,6 +1394,10 @@
         const quality = el('bp-quality');
         if (quality) {
             quality.addEventListener('change', () => changeQuality(quality.value));
+        }
+        const hiresOn = el('bp-hires-on');
+        if (hiresOn) {
+            hiresOn.addEventListener('change', () => changeHires(hiresOn.checked));
         }
         const danmakuOn = el('bp-danmaku-on');
         if (danmakuOn) {

@@ -370,6 +370,8 @@ class GuiBridge:
                 # 用户点保存看着像生效了，其实什么都没存。
                 "report_playback": self.settings.bili.report_playback,
                 "resume_playback": self.settings.bili.resume_playback,
+                # 无损音轨的开关：漏掉的话设置面板读回来永远是「没勾选」。
+                "hires_enabled": self.settings.bili.hires_enabled,
                 "interest_tags": list(self.settings.bili.interest_tags),
                 "blocked_tags": list(self.settings.bili.blocked_tags),
             },
@@ -391,7 +393,9 @@ class GuiBridge:
                     "download_dir", "separate_player_window",
                     # 少了这几个，播放上报、续播的开关和两个关键词栏点保存就没反应。
                     "report_playback", "resume_playback",
-                    "interest_tags", "blocked_tags"}))
+                    "interest_tags", "blocked_tags",
+                    # Hi-Res 开关：不在这张表里的话，设置里勾了也不生效。
+                    "hires_enabled"}))
             elif category == "bangumi":
                 self.settings.update_bangumi(**self._clean(data, {
                     "api_host", "web_host", "request_interval",

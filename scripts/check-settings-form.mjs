@@ -282,7 +282,8 @@ const SAVE_READS = [
     'bili-download-audio-check', 'bili-merge-audio-check',
     'bili-separate-window-check', 'bili-report-playback-check',
     'bili-resume-playback-check', 'bili-download-dir', 'bili-interest-tags',
-    'bili-blocked-tags', 'pixiv-nsfw-mode', 'pixiv-include-r18',
+    'bili-blocked-tags', 'bili-hires-check',
+    'pixiv-nsfw-mode', 'pixiv-include-r18',
     'pixiv-hide-ai', 'pixiv-quality', 'pixiv-bm-private', 'pixiv-template',
     'pixiv-page-size',
 ];
@@ -298,6 +299,9 @@ elements.get('pixiv-page-size').value = '30';
 elements.get('pixiv-template').value = 'https://example.test/{id}';
 elements.get('pixiv-hide-ai').checked = true;
 elements.get('pixiv-bm-private').checked = true;
+// The Hi-Res switch is a boolean, and a boolean that is never read on the
+// way out is a switch that does nothing.
+elements.get('bili-hires-check').checked = true;
 
 vm.runInContext(
     extract('splitTagWords') + '\n' + extract('saveSettings') +
@@ -314,6 +318,8 @@ check('the Pixiv settings are sent to the backend',
     sent.pixiv.nsfw_mode === 'blur');
 check('the Pixiv section is sent at all',
     sent && Object.prototype.hasOwnProperty.call(sent, 'pixiv'));
+check('the Hi-Res switch is sent to the backend',
+    sent && sent.bili && sent.bili.hires_enabled === true);
 
 /* --------------------------------------------- opening the modal again */
 

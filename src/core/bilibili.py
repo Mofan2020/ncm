@@ -246,6 +246,15 @@ _STRIP_CHARS = str.maketrans("", "", "!'()*")
 #: ``fnval`` asking for DASH (16) plus the extra formats the API may attach.
 _FNVAL_DASH = 4048
 
+#: The ids the server puts on the audio tracks.  They are not in the order
+#: of their quality: the three AAC ones are the bitrates, and the two above
+#: them are the Dolby Atmos and the lossless track.
+_AUDIO_ID_AAC_64 = 30216
+_AUDIO_ID_AAC_132 = 30232
+_AUDIO_ID_AAC_192 = 30280
+_AUDIO_ID_DOLBY = 30250
+_AUDIO_ID_FLAC = 30258
+
 
 def mixin_key(img_key: str, sub_key: str) -> str:
     """Return the 32 character WBI mixin key for an image/sub key pair."""
@@ -1664,6 +1673,13 @@ class BiliClient:
             "muxed": None,
             "flac": None,
             "dolby": None,
+            # Whether the video carries a Hi-Res track at all, and whether
+            # this account may play it.  The two differ: the track is a
+            # member privilege, so a video can have one and still not hand
+            # it to an account that has not paid for it.
+            "hires_available": False,
+            "hires_granted": False,
+            "dolby_available": False,
             "message": "",
         }
         if not bvid:
@@ -1747,16 +1763,29 @@ class BiliClient:
         got_ids = {int(item.get("id") or 0) for item in video_entries if item.get("id")}
         result["qualities"] = self._build_qualities(data, got_ids)
 
-        # The Hi-Res track lives in its own section; when it does not, the
-        # codec id of a regular audio entry may still name it.
-        flac_section = (dash.get("flac") or {}).get("audio") or []
-        dolby_section = (dash.get("dolby") or {}).get("audio") or []
+        # The Hi-Res track lives in its own section of the answer; the id
+        # of an ordinary audio entry may still name it, so the fallback
+        # below looks there too.
+        flac_block = dash.get("flac")
+        flac_block = flac_block if isinstance(flac_block, dict) else {}
+        flac_section = flac_block.get("audio") or []
+        dolby_block = dash.get("dolby")
+        dolby_block = dolby_block if isinstance(dolby_block, dict) else {}
+        dolby_section = dolby_block.get("audio") or []
         result["flac"] = self._pick_audio(flac_section) or self._pick_special_audio(
             dash.get("audio") or [], flac=True
         )
         result["dolby"] = self._pick_audio(dolby_section) or self._pick_special_audio(
             dash.get("audio") or [], flac=False
         )
+        # ``display`` says the *video* carries a Hi-Res track, and the
+        # section carries the track itself only when the account may have
+        # it.  The two are separate questions: a video without the track
+        # answers ``display`` false, and a video with it answers ``display``
+        # true with an empty list when the account is not a member.
+        result["hires_available"] = bool(flac_block.get("display")) or bool(result["flac"])
+        result["hires_granted"] = bool(result["flac"])
+        result["dolby_available"] = bool(dolby_block.get("type")) or bool(result["dolby"])
 
         durl = data.get("durl") or []
         if durl and isinstance(durl[0], dict):
@@ -1789,17 +1818,32 @@ class BiliClient:
         return self._stream_payload(best)
 
     def _pick_special_audio(self, entries: list[Any], flac: bool) -> dict[str, Any] | None:
-        """Return the lossless or the Dolby audio entry of a DASH answer."""
+        """Return the lossless or the Dolby audio entry of a DASH answer.
+
+        The two live in their own section of the answer (``dash.flac`` and
+        ``dash.dolby``); this is the fallback for the servers that put them
+        into the ordinary ``dash.audio`` list instead.
+
+        What identifies them is the ``id`` of the entry, and the ids are not
+        in the order of their quality: 30216 / 30232 / 30280 are the ordinary
+        AAC tracks (64 / 132 / 192 kbps), 30250 is the Dolby Atmos track and
+        30258 is the lossless one.  Reading the id as a codec id is what
+        made an ordinary track answer as Dolby -- 30280 is "192 kbps AAC",
+        not FLAC.
+
+        The ``codecid`` field is not used: the server leaves it at 0 on the
+        ordinary tracks, so it says nothing about the codec.
+        """
         best: dict[str, Any] | None = None
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            codecid = int(entry.get("codecid") or 0)
+            entry_id = int(entry.get("id") or 0)
             codecs = str(entry.get("codecs") or "").lower()
             if flac:
-                match = codecid == 30280 or "flac" in codecs
+                match = entry_id == _AUDIO_ID_FLAC or "flac" in codecs
             else:
-                match = codecid in (30250, 30251) or "mp4a.40.5" in codecs
+                match = entry_id == _AUDIO_ID_DOLBY or "ec-3" in codecs or "ac-3" in codecs
             if not match:
                 continue
             if best is None or int(entry.get("bandwidth") or 0) > int(best.get("bandwidth") or 0):
@@ -4040,6 +4084,13 @@ class BiliClient:
             "muxed": None,
             "flac": None,
             "dolby": None,
+            # Whether the video carries a Hi-Res track at all, and whether
+            # this account may play it.  The two differ: the track is a
+            # member privilege, so a video can have one and still not hand
+            # it to an account that has not paid for it.
+            "hires_available": False,
+            "hires_granted": False,
+            "dolby_available": False,
             "message": "",
         }
         season = _as_int(season_id)
@@ -4087,10 +4138,21 @@ class BiliClient:
         if not result["picked_quality"]:
             result["picked_quality"] = _as_int(block.get("quality"))
         result["audio"] = self._pick_audio(dash.get("audio") or [])
-        flac_section = (dash.get("flac") or {}).get("audio") or []
-        dolby_section = (dash.get("dolby") or {}).get("audio") or []
-        result["flac"] = self._pick_audio(flac_section)
-        result["dolby"] = self._pick_audio(dolby_section)
+        flac_block = dash.get("flac")
+        flac_block = flac_block if isinstance(flac_block, dict) else {}
+        dolby_block = dash.get("dolby")
+        dolby_block = dolby_block if isinstance(dolby_block, dict) else {}
+        flac_section = flac_block.get("audio") or []
+        dolby_section = dolby_block.get("audio") or []
+        result["flac"] = self._pick_audio(flac_section) or self._pick_special_audio(
+            dash.get("audio") or [], flac=True
+        )
+        result["dolby"] = self._pick_audio(dolby_section) or self._pick_special_audio(
+            dash.get("audio") or [], flac=False
+        )
+        result["hires_available"] = bool(flac_block.get("display")) or bool(result["flac"])
+        result["hires_granted"] = bool(result["flac"])
+        result["dolby_available"] = bool(dolby_block.get("type")) or bool(result["dolby"])
 
         got_ids = {_as_int(item.get("id")) for item in video_entries if item.get("id")}
         result["qualities"] = self._pgc_qualities(block, got_ids)

@@ -127,6 +127,12 @@ class BiliSettings:
     #: Quality asked for when playing or downloading a video.  0 means
     #: "the best the account may watch" -- the account decides.
     quality: int = 0
+    #: Play the Hi-Res (lossless) track whenever the video has one.
+    #: Off by default: the track needs a member account, and the webview
+    #: plays it beside the picture instead of inside it, which is a little
+    #: more work than the ordinary track.  When it is on, a video that has
+    #: the track uses it -- the user can still switch it off for one video.
+    hires_enabled: bool = False
     #: Show the danmaku over the picture.
     danmaku_enabled: bool = True
     #: Font size of the danmaku (12-40).
@@ -644,7 +650,8 @@ class Settings:
         bili.danmaku_font_size = self._clamp_range(bili.danmaku_font_size, 12, 40, 18)
         bili.danmaku_opacity = self._clamp_float(bili.danmaku_opacity, 0.2, 1.0, 0.9)
         for flag in ("danmaku_enabled", "download_audio", "separate_player_window",
-                     "merge_audio", "report_playback", "resume_playback"):
+                     "merge_audio", "report_playback", "resume_playback",
+                     "hires_enabled"):
             setattr(bili, flag, _as_bool(getattr(bili, flag)))
         bili.download_dir = str(bili.download_dir or "")
         for name in ("interest_tags", "blocked_tags"):

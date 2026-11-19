@@ -1824,6 +1824,11 @@
                     </select>
                 </label>
                 <label class="option checkbox">
+                    <input type="checkbox" id="bili-hires-check">
+                    <span data-i18n="bili.settings_hires"></span>
+                </label>
+                <p class="muted" data-i18n="bili.settings_hires_hint"></p>
+                <label class="option checkbox">
                     <input type="checkbox" id="bili-danmaku-check">
                     <span data-i18n="bili.settings_danmaku"></span>
                 </label>
@@ -2468,6 +2473,10 @@
                     <label class="option" for="bili-quality">
                         <span data-i18n="bili.quality"></span>
                         <select id="bili-quality" class="filter-select"></select>
+                    </label>
+                    <label class="option checkbox" id="bili-hires-field" hidden>
+                        <input type="checkbox" id="bili-hires-on">
+                        <span id="bili-hires-label" data-i18n="bili.hires_on"></span>
                     </label>
                     <span class="bili-quality-badges" id="bili-quality-badges"></span>
                 </div>
