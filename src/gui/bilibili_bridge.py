@@ -1353,6 +1353,22 @@ class BilibiliBridge:
         return {"success": bool(result.get("success")),
                 "message": str(result.get("message") or "")}
 
+    def send_image_message(self, talker_id: str, image_path: str,
+                           session_id: str = "") -> dict[str, Any]:
+        """Send a picture as a private message.
+
+        The picture is uploaded first and then sent as a ``msg_type=2``
+        message, so this is two round trips to Bilibili.
+        """
+        helper = self._helper("BiliIm")
+        if helper is None:
+            return {"success": False, "message": "私信模块不可用"}
+        result = helper.send_image(str(talker_id or ""), str(image_path or ""),
+                                   session_id=str(session_id or ""))
+        return {"success": bool(result.get("success")),
+                "message": str(result.get("message") or ""),
+                "image_url": str(result.get("image_url") or "")}
+
     # ------------------------------------------------------------------ 投稿
     def upload_categories(self) -> dict[str, Any]:
         """The categories a video can be posted to."""

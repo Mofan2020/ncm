@@ -3293,6 +3293,12 @@ class GuiBridge:
         """Send one Bilibili private message."""
         return self.bilibili.send_message(talker_id, text, session_id=session_id)
 
+    def bili_send_image_message(self, talker_id: str, image_path: str,
+                                session_id: str = "") -> dict[str, Any]:
+        """Send a picture as a Bilibili private message."""
+        return self.bilibili.send_image_message(talker_id, image_path,
+                                                 session_id=session_id)
+
     # -- bilibili uploading -----------------------------------------------------
     def get_bilibili_upload_categories(self) -> dict[str, Any]:
         """The categories a Bilibili video can be posted to."""

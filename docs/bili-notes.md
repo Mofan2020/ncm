@@ -252,6 +252,29 @@ B站对同一 IP 的写操作频控很紧。收藏夹的写入（建夹、加视
 - **`content` 是 JSON 字符串**，里面再包一层 `{"content": "文字"}`。
   系统通知（登录提醒一类）没有 `content`，正文在 `text`、标题在 `title`。
 
+### 图片私信
+
+图片私信是**两步**，而且图片走的是**第三个网关** `customerservice.bilibili.com`
+（不在 `api.vc.bilibili.com` 上，那儿没有这条路由，POST 过去是 404）：
+
+1. `POST https://customerservice.bilibili.com/x/custom/msg_svr/v1/upload`
+   —— multipart，文件部分的字段名是 `file`，另外带 `filename`、`mid`、
+   `build`、`mobi_app`、`csrf` 五个普通字段。回答在 `data` 里：
+   `image_url`、`image_width`、`image_height`、`img_size`。
+2. `POST /session_svr/v1/session_svr/send_msg`，`msg_type=2`，`content` 是
+   **JSON 字符串** `{"url": …, "width": …, "height": …, "size": …, "original": 1}`。
+
+读侧：图片消息的 `msg_type` 也是 `2`，`content` 解出来是上面那个对象，
+字段名是 `url`（不是 `image_url`）。**`content` 里有 `url` 才算图片**，
+别的卡片消息（`{"title": …, "text": …}`）照样按普通消息处理。
+
+这几条是从 B 站私信应用自己的前端代码里读出来的
+（`message.bilibili.com` 的打包文件），路由、字段名、`msg_type` 的取值
+都对着它的实现抄的。**没有拿真实账号打过这些接口**，所以只验证到
+「路由和参数名对得上」这一层：匿名 POST 上传路由回的是
+`code 1200201 获取用户信息失败`，说明路由和 multipart 的字段名是对的，
+只差登录态。
+
 ## 投稿
 
 投稿在 `member.bilibili.com`，跟主站 API 完全是两套，而且是**三步**：

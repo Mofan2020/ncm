@@ -21,6 +21,8 @@ class FakeSession:
     def __init__(self, responses: dict | None = None) -> None:
         self.gets: list[tuple[str, dict]] = []
         self.posts: list[tuple[str, dict]] = []
+        #: multipart 上传：记下 ``(url, 普通字段, 文件字段名)``。
+        self.uploads: list[tuple[str, dict, dict]] = []
         self.responses = responses or {}
         self.raise_on_request = False
 
@@ -38,7 +40,12 @@ class FakeSession:
         return self._reply(url)
 
     def post(self, url: str, data: dict | None = None, headers: dict | None = None,
-             timeout=None) -> FakeResponse:
+             timeout=None, files: dict | None = None) -> FakeResponse:
+        if files is not None:
+            # 上传：文件部分只记字段名，不读文件内容。
+            self.uploads.append((url, dict(data or {}),
+                                 {name: value[0] for name, value in files.items()}))
+            return self._reply(url)
         self.posts.append((url, dict(data or {})))
         return self._reply(url)
 
@@ -336,3 +343,231 @@ def test_network_exception_returns_failure_instead_of_raising() -> None:
                    im.send("123", "在吗")):
         assert result["success"] is False
         assert result["message"]
+
+
+# --------------------------------------------------------------------- 图片私信
+#: 图片消息的 content：地址 + 尺寸 + 体积，JSON 字符串。
+IMAGE_CONTENT = json.dumps({
+    "url": "https://i0.hdslb.com/bfs/im/abc.jpg",
+    "width": 800,
+    "height": 600,
+    "size": 20480,
+    "original": 1,
+})
+
+IMAGE_MESSAGES_PAYLOAD = {
+    "code": 0,
+    "message": "0",
+    "data": {
+        "messages": [
+            {
+                "msg_type": 2,
+                "msg_key": "pic-1",
+                "sender_uid": 123,
+                "content": IMAGE_CONTENT,
+                "timestamp": 1700000400,
+                "talker_id": 42,
+                "session_id": 900,
+            },
+            {
+                "msg_type": 1,
+                "msg_key": "txt-1",
+                "sender_uid": 42,
+                "content": json.dumps({"content": "收到"}),
+                "timestamp": 1700000500,
+                "talker_id": 123,
+                "session_id": 900,
+            },
+        ],
+    },
+}
+
+
+def test_messages_read_a_picture_message() -> None:
+    """图片消息要带出地址和尺寸，正文不显示成 JSON。"""
+    session = FakeSession({
+        "/svr_sync/v1/svr_sync/fetch_session_msgs": IMAGE_MESSAGES_PAYLOAD})
+    result = BiliIm(FakeClient(session)).messages("900", "123")
+
+    assert result["success"] is True
+    picture, text = result["items"]
+    assert picture["msg_type"] == 2
+    assert picture["image_url"] == "https://i0.hdslb.com/bfs/im/abc.jpg"
+    assert picture["image_width"] == 800
+    assert picture["image_height"] == 600
+    assert picture["image_size"] == 20480
+    # 图片消息没有文字正文，不能把 JSON 显示给用户
+    assert picture["content"] == ""
+    # 文字消息不受影响
+    assert text["content"] == "收到"
+    assert text["image_url"] == ""
+
+
+def test_conversations_show_a_placeholder_for_a_picture() -> None:
+    """会话列表里最后一条是图片时，显示 [图片] 而不是一串 JSON。"""
+    payload = {
+        "code": 0,
+        "data": {
+            "session_list": [{
+                "talker_id": 123,
+                "session_type": 1,
+                "unread_count": 0,
+                "account_info": {"name": "小明"},
+                "last_msg": {
+                    "sender_uid": 123,
+                    "msg_type": 2,
+                    "msg_key": "pic-1",
+                    "content": IMAGE_CONTENT,
+                    "timestamp": 1700000400,
+                },
+            }],
+        },
+    }
+    session = FakeSession({"/session_svr/v1/session_svr/get_sessions": payload})
+    result = BiliIm(FakeClient(session)).conversations()
+    assert result["success"] is True
+    item = result["items"][0]
+    assert item["last_message"] == "[图片]"
+    assert item["msg_type"] == 2
+    assert item["image_url"] == "https://i0.hdslb.com/bfs/im/abc.jpg"
+
+
+def test_upload_image_posts_multipart_and_returns_the_url(tmp_path) -> None:
+    """上传走客服域名上的 multipart 接口，字段名是 file。"""
+    picture = tmp_path / "shot.png"
+    picture.write_bytes(b"\x89PNG\r\n\x1a\n not really a png")
+    session = FakeSession({
+        "/x/custom/msg_svr/v1/upload": {
+            "code": 0,
+            "message": "0",
+            "data": {
+                "image_url": "https://i0.hdslb.com/bfs/im/up.jpg",
+                "image_width": 1024,
+                "image_height": 768,
+                "img_size": 40960,
+            },
+        },
+    })
+    result = BiliIm(FakeClient(session)).upload_image(str(picture))
+
+    assert result["success"] is True
+    assert result["url"] == "https://i0.hdslb.com/bfs/im/up.jpg"
+    assert result["width"] == 1024
+    assert result["height"] == 768
+    assert result["size"] == 40960
+
+    url, fields, files = session.uploads[0]
+    assert url == ("https://customerservice.bilibili.com"
+                   "/x/custom/msg_svr/v1/upload")
+    assert "file" in files
+    assert files["file"] == "shot.png"
+    assert fields["filename"] == "shot.png"
+    assert fields["mid"] == "42"
+    assert fields["csrf"] == "csrf-token"
+
+
+def test_send_image_uploads_first_then_sends_a_picture_message(tmp_path) -> None:
+    """发图片是两步：先上传，再以 msg_type=2 发出去。"""
+    picture = tmp_path / "shot.png"
+    picture.write_bytes(b"\x89PNG\r\n\x1a\n")
+    session = FakeSession({
+        "/x/custom/msg_svr/v1/upload": {
+            "code": 0,
+            "data": {
+                "image_url": "https://i0.hdslb.com/bfs/im/up.jpg",
+                "image_width": 1024,
+                "image_height": 768,
+                "img_size": 40960,
+            },
+        },
+        "/session_svr/v1/session_svr/send_msg": {"code": 0, "data": {}},
+    })
+    result = BiliIm(FakeClient(session)).send_image("123", str(picture))
+
+    assert result["success"] is True
+    assert result["image_url"] == "https://i0.hdslb.com/bfs/im/up.jpg"
+    # 上传在前，发消息在后
+    assert len(session.uploads) == 1
+    assert len(session.posts) == 1
+
+    url, form = session.posts[0]
+    assert url.endswith("/session_svr/v1/session_svr/send_msg")
+    assert form["talker_id"] == "123"
+    assert form["msg_type"] == 2
+    content = json.loads(form["content"])
+    assert content["url"] == "https://i0.hdslb.com/bfs/im/up.jpg"
+    assert content["width"] == 1024
+    assert content["height"] == 768
+    assert content["size"] == 40960
+    assert content["original"] == 1
+
+
+def test_send_image_does_not_send_when_the_upload_fails(tmp_path) -> None:
+    """上传失败就不能再发消息，否则对方收到一条空图片。"""
+    picture = tmp_path / "shot.png"
+    picture.write_bytes(b"\x89PNG\r\n\x1a\n")
+    session = FakeSession({
+        "/x/custom/msg_svr/v1/upload": {"code": -400, "message": "文件不合法"},
+        "/session_svr/v1/session_svr/send_msg": {"code": 0, "data": {}},
+    })
+    result = BiliIm(FakeClient(session)).send_image("123", str(picture))
+
+    assert result["success"] is False
+    assert result["message"]
+    assert session.posts == [], "上传失败之后不应该再发消息"
+
+
+def test_send_image_reports_a_failed_send(tmp_path) -> None:
+    """上传成功但发送失败时，必须报失败，不能当成发出去了。"""
+    picture = tmp_path / "shot.png"
+    picture.write_bytes(b"\x89PNG\r\n\x1a\n")
+    session = FakeSession({
+        "/x/custom/msg_svr/v1/upload": {
+            "code": 0,
+            "data": {"image_url": "https://i0.hdslb.com/bfs/im/up.jpg",
+                     "image_width": 10, "image_height": 10, "img_size": 10},
+        },
+        "/session_svr/v1/session_svr/send_msg": {"code": -352, "message": "风控"},
+    })
+    result = BiliIm(FakeClient(session)).send_image("123", str(picture))
+    assert result["success"] is False
+    assert result["message"]
+
+
+def test_upload_image_rejects_a_missing_file() -> None:
+    session = FakeSession()
+    result = BiliIm(FakeClient(session)).upload_image("/tmp/没有这个文件.png")
+    assert result["success"] is False
+    assert "找不到" in result["message"]
+    assert session.uploads == []
+
+
+def test_upload_image_needs_a_login() -> None:
+    session = FakeSession()
+    im = BiliIm(FakeClient(session, signed_in=False))
+    result = im.upload_image("/tmp/whatever.png")
+    assert result["success"] is False
+    assert "登录" in result["message"]
+    assert session.uploads == []
+
+
+def test_picture_message_without_a_url_is_not_an_image() -> None:
+    """content 里有 url 才算图片；别的卡片消息按普通消息处理。"""
+    payload = {
+        "code": 0,
+        "data": {
+            "messages": [{
+                "msg_type": 2,
+                "sender_uid": 123,
+                "content": json.dumps({"title": "一个卡片", "text": "正文"}),
+                "timestamp": 1700000400,
+            }],
+        },
+    }
+    session = FakeSession({
+        "/svr_sync/v1/svr_sync/fetch_session_msgs": payload})
+    result = BiliIm(FakeClient(session)).messages("900", "123")
+    item = result["items"][0]
+    assert item["image_url"] == ""
+    # 卡片消息的正文照旧给出来
+    assert "正文" in item["content"]

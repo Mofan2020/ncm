@@ -6,6 +6,8 @@ and a translated ``error_key`` when something goes wrong.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src.core.bili_cache import BiliCache
@@ -151,10 +153,14 @@ class FakeSession:
             return FakeResponse(self.default)
         return FakeResponse({"code": -404, "message": "no route"}, status_code=404)
 
-    def post(self, url, data=None, headers=None, timeout=None):
+    def post(self, url, data=None, headers=None, timeout=None, files=None):
         """写操作：收藏、取消收藏、移出。"""
-        self.calls.append({"url": url, "params": dict(data or {}), "headers": headers,
-                           "timeout": timeout})
+        record = {"url": url, "params": dict(data or {}), "headers": headers,
+                  "timeout": timeout}
+        if files is not None:
+            # 上传：文件部分只记字段名，不读文件内容。
+            record["files"] = sorted(files)
+        self.calls.append(record)
         for fragment, payload in self.routes.items():
             if fragment in url:
                 if isinstance(payload, Exception):
@@ -660,3 +666,54 @@ def test_removing_a_video_drops_the_cache_too():
 
     assert bridge._cache.get("folders", "all") is None
     assert bridge._cache.get("folder_items", "1331779786|1|30") is None
+
+
+# ------------------------------------------------------------------- 私信图片
+def test_send_image_message_returns_the_picture_url(tmp_path):
+    """桥接层要把图片地址带回去：界面上要用它显示刚发出去的那张图。"""
+    picture = tmp_path / "shot.png"
+    picture.write_bytes(b"\x89PNG\r\n\x1a\n")
+    bridge, session = make_bridge({
+        "/x/custom/msg_svr/v1/upload": {
+            "code": 0,
+            "data": {
+                "image_url": "https://i0.hdslb.com/bfs/im/up.jpg",
+                "image_width": 1024,
+                "image_height": 768,
+                "img_size": 40960,
+            },
+        },
+        "/session_svr/v1/session_svr/send_msg": {"code": 0, "data": {}},
+    })
+    bridge._client.set_cookie(
+        "SESSDATA=x; bili_jct=csrf; DedeUserID=42; buvid3=B")
+
+    result = bridge.send_image_message("123", str(picture), session_id="900")
+
+    assert result["success"] is True
+    assert result["message"] == ""
+    assert result["image_url"] == "https://i0.hdslb.com/bfs/im/up.jpg"
+    # 上传走 multipart，文件部分的字段名是 file
+    uploads = [call for call in session.calls if "msg_svr/v1/upload" in call["url"]]
+    assert uploads, "应该上传过一次"
+    assert uploads[0]["files"] == ["file"]
+    # 消息是以图片类型发出去的
+    sends = [call for call in session.calls if "send_msg" in call["url"]]
+    assert sends
+    assert sends[-1]["params"]["msg_type"] == 2
+    assert json.loads(sends[-1]["params"]["content"])["url"] == (
+        "https://i0.hdslb.com/bfs/im/up.jpg")
+
+
+def test_send_image_message_reports_a_failure():
+    bridge, _session = make_bridge({
+        "/x/custom/msg_svr/v1/upload": {"code": -400, "message": "文件不合法"},
+        "/session_svr/v1/session_svr/send_msg": {"code": 0, "data": {}},
+    })
+    bridge._client.set_cookie(
+        "SESSDATA=x; bili_jct=csrf; DedeUserID=42; buvid3=B")
+
+    result = bridge.send_image_message("123", "/tmp/没有这个文件.png")
+
+    assert result["success"] is False
+    assert result["message"]

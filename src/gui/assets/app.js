@@ -13343,9 +13343,20 @@ function renderBiliMessages() {
                 const row = document.createElement('div');
                 row.className = message.is_self
                     ? 'bili-im-message is-self' : 'bili-im-message';
-                const text = document.createElement('span');
-                text.textContent = message.content || '';
-                row.appendChild(text);
+                if (message.image_url) {
+                    // 图片消息：正文是图片本身，没有文字。
+                    const pic = document.createElement('img');
+                    pic.className = 'bili-im-image';
+                    pic.alt = '';
+                    pic.loading = 'lazy';
+                    pic.src = biliImageSrc(message.image_url);
+                    pic.addEventListener('error', () => { pic.remove(); });
+                    row.appendChild(pic);
+                } else {
+                    const text = document.createElement('span');
+                    text.textContent = message.content || '';
+                    row.appendChild(text);
+                }
                 messages.appendChild(row);
             });
         }
@@ -13388,6 +13399,48 @@ async function sendBiliMessage() {
         });
     } catch (err) {
         showToast('error', t('bili.message_failed'));
+    }
+}
+
+/**
+ * Send a picture as a private message.
+ *
+ * The picture goes through the file dialog and is uploaded right away:
+ * Bilibili takes a picture in two steps (upload, then send), and there is
+ * no draft to keep.
+ */
+async function sendBiliImageMessage() {
+    if (!biliIm.talkerId) {
+        showToast('error', t('bili.message_failed'));
+        return;
+    }
+    if (!bridgeHas('choose_file') || !bridgeHas('bili_send_image_message')) {
+        showToast('error', t('error.unknown'));
+        return;
+    }
+    let picked;
+    try {
+        picked = await state.api.choose_file('image');
+    } catch (err) {
+        showToast('error', t('bili.message_image_failed'));
+        return;
+    }
+    if (!picked || !picked.success || !picked.path) return;
+    try {
+        const result = await state.api.bili_send_image_message(
+            biliIm.talkerId, picked.path, biliIm.sessionId);
+        if (!result || !result.success) {
+            showToast('error', biliFailure(result, 'bili.message_image_failed'));
+            return;
+        }
+        showToast('success', t('bili.message_image_sent'));
+        await openBiliConversation({
+            session_id: biliIm.sessionId,
+            talker_id: biliIm.talkerId,
+            name: biliIm.name
+        });
+    } catch (err) {
+        showToast('error', t('bili.message_image_failed'));
     }
 }
 
@@ -13801,6 +13854,8 @@ function bindSectionEvents() {
     if (spaceMore) spaceMore.addEventListener('click', () => loadBiliSpaceVideos(false));
     const imSend = document.getElementById('btn-bili-im-send');
     if (imSend) imSend.addEventListener('click', sendBiliMessage);
+    const imImage = document.getElementById('btn-bili-im-image');
+    if (imImage) imImage.addEventListener('click', sendBiliImageMessage);
     const uploadVideo = document.getElementById('btn-bili-upload-video');
     if (uploadVideo) uploadVideo.addEventListener('click', pickBiliUploadVideo);
     const uploadCover = document.getElementById('btn-bili-upload-cover');

@@ -1,4 +1,4 @@
-"""B站私信：会话列表、某个会话的消息、发消息。
+"""B站私信：会话列表、某个会话的消息、发消息（文字 + 图片）。
 
 私信接口不在 ``api.bilibili.com`` 上，而在 ``api.vc.bilibili.com``：
 
@@ -8,6 +8,12 @@
 
 这三个接口都要登录态（``SESSDATA``），两个写接口还要 ``csrf``（cookie 里的
 ``bili_jct``），少了会回 ``-111``。``buvid3`` 也要带上，缺了容易被风控。
+
+图片私信是另一套：图片要先上传到 ``customerservice.bilibili.com``，拿到
+``image_url`` 之后才能作为一条 ``msg_type=2`` 的消息发出去。
+
+* ``POST /x/custom/msg_svr/v1/upload``  上传图片（multipart）
+* 发消息时 ``content`` = ``{"url":…, "width":…, "height":…, …}``
 
 回答里的 ``content`` 是一个 **JSON 字符串**（例如 ``{"content": "你好"}``），
 不解析就只会看到一串花括号，所以这里统一解一次；解不出来就把原文当文字，
@@ -19,18 +25,33 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
+from pathlib import Path
 from typing import Any
 
-__all__ = ["BiliIm", "BILI_IM_BASE"]
+__all__ = ["BiliIm", "BILI_IM_BASE", "BILI_IM_UPLOAD_BASE"]
 
 log = logging.getLogger(__name__)
 
 #: 私信接口的宿主。它和 ``api.bilibili.com`` 是两套网关，路由前缀也不同。
 BILI_IM_BASE = "https://api.vc.bilibili.com"
 
+#: 私信图片上传的宿主。又是另一套网关：``api.vc.bilibili.com`` 上没有
+#: 这个路由（404），网页端的私信应用是把它放在客服域名下的。
+BILI_IM_UPLOAD_BASE = "https://customerservice.bilibili.com"
+
 #: 站内私信。
 MSG_TYPE_TEXT = 1
+
+#: 图片私信。网页端的私信应用里 ``EN_MSG_TYPE_PIC = 2``。
+MSG_TYPE_IMAGE = 2
+
+#: 上传图片时 B 站给的字段名（multipart 的文件部分）。
+_UPLOAD_FILE_FIELD = "file"
+
+#: 图片私信 ``content`` 里图片地址的字段名。网页端发的时候写的是 ``url``。
+_IMAGE_URL_KEY = "url"
 
 #: 服务端错误码 -> 给用户看的中文短句。
 _ERROR_TEXT: dict[int, str] = {
@@ -56,17 +77,7 @@ def _parse_content(raw: Any) -> str:
 
     解不出来就用原文兜底：宁可给用户看一串花括号，也不要把一条消息弄丢。
     """
-    if raw is None:
-        return ""
-    if isinstance(raw, dict | list):
-        return json.dumps(raw, ensure_ascii=False)
-    text = str(raw)
-    if not text:
-        return ""
-    try:
-        parsed = json.loads(text)
-    except (ValueError, TypeError):
-        return text
+    parsed = _parse_content_obj(raw)
     if isinstance(parsed, dict):
         content = parsed.get("content")
         if isinstance(content, str):
@@ -81,10 +92,52 @@ def _parse_content(raw: Any) -> str:
             if isinstance(title, str) and title.strip():
                 return f"{title.strip()}\n{text_body.strip()}"
             return text_body.strip()
-        return text
+        return str(raw)
     if isinstance(parsed, str):
         return parsed
-    return text
+    return str(raw) if raw is not None else ""
+
+
+def _parse_content_obj(raw: Any) -> Any:
+    """把 ``content`` 解成对象。解不出来返回 ``None``。
+
+    图片私信的 ``content`` 解出来是一个带 ``url`` 的对象，文字私信是一个带
+    ``content`` 的对象。两者都要能拿到，所以这一步只负责解 JSON。
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict | list):
+        return raw
+    text = str(raw)
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        return None
+
+
+def _image_info(parsed: Any) -> dict[str, Any]:
+    """从一条消息的 ``content`` 里取出图片信息。
+
+    图片私信的 ``content`` 解出来是 ``{"url": …, "width": …, "height": …,
+    "size": …, "original": 1}``。字段名是从 B 站私信应用自己的代码里读出来
+    的：发的时候写 ``url``，宽度写 ``width``，高度写 ``height``。
+
+    取不到 ``url`` 就返回空字典——那不是图片消息（或者是另一种卡片），
+    界面上就按普通消息处理。
+    """
+    if not isinstance(parsed, dict):
+        return {}
+    url = parsed.get(_IMAGE_URL_KEY)
+    if not isinstance(url, str) or not url.strip():
+        return {}
+    return {
+        "url": url.strip(),
+        "width": _as_int(parsed.get("width")),
+        "height": _as_int(parsed.get("height")),
+        "size": _as_int(parsed.get("size")),
+    }
 
 
 def _as_int(value: Any) -> int:
@@ -306,16 +359,21 @@ class BiliIm:
             last = entry.get("last_msg")
             last = last if isinstance(last, dict) else {}
             name = _as_text(info.get("name")) or talker_id
+            last_parsed = _parse_content_obj(last.get("content"))
+            last_image = _image_info(last_parsed)
             items.append({
                 # 会话由「聊天对象 + 会话类型」确定。
                 "session_id": f"{talker_id}_{session_type}",
                 "talker_id": talker_id,
                 "name": name,
                 "face": _as_text(info.get("pic_url")),
-                "last_message": _parse_content(last.get("content")),
+                # 最后一条是图片时，列表里给个占位文字，不能显示成一串 JSON。
+                "last_message": ("[图片]" if last_image
+                                 else _parse_content(last.get("content"))),
                 "unread": _as_int(entry.get("unread_count")),
                 "last_time": _as_int(last.get("timestamp")),
                 "msg_type": _as_int(last.get("msg_type")),
+                "image_url": last_image.get("url", ""),
             })
 
         # 名字还是 uid、或者没有头像的，一次批量补齐。
@@ -385,17 +443,140 @@ class BiliIm:
             if not isinstance(entry, dict):
                 continue
             sender_id = _as_text(entry.get("sender_uid"))
+            msg_type = _as_int(entry.get("msg_type"))
+            parsed = _parse_content_obj(entry.get("content"))
+            image = _image_info(parsed)
+            if image:
+                # 图片消息没有文字正文，content 里就是图片本身。
+                content = ""
+            else:
+                content = _parse_content(entry.get("content"))
             items.append({
                 "sender_id": sender_id,
                 "is_self": bool(mid) and sender_id == mid,
-                "content": _parse_content(entry.get("content")),
+                "content": content,
                 "timestamp": _as_int(entry.get("timestamp")),
-                "msg_type": _as_int(entry.get("msg_type")),
+                "msg_type": msg_type,
                 "msg_key": _as_text(entry.get("msg_key")),
+                # 图片消息带这三项；文字消息是空字典，界面上按文字处理。
+                "image_url": image.get("url", ""),
+                "image_width": image.get("width", 0),
+                "image_height": image.get("height", 0),
+                "image_size": image.get("size", 0),
             })
         return {"success": True, "items": items, "count": len(items), "message": ""}
 
     # -------------------------------------------------------------------- writing
+    def _post_multipart(self, path: str, fields: dict[str, Any],
+                        file_path: str) -> dict[str, Any] | None:
+        """上传一个文件（multipart/form-data）。失败返回 ``None``。
+
+        私信的图片走的是客服域名上的 ``/x/custom/msg_svr/v1/upload``，
+        文件部分的字段名是 ``file``，另外还要带 ``filename`` / ``mid`` /
+        ``build`` / ``mobi_app`` 四个普通字段。
+        """
+        path_obj = Path(file_path)
+        try:
+            handle = path_obj.open("rb")
+        except OSError as exc:
+            log.warning("bili im upload: cannot open %s: %s", file_path, exc)
+            return None
+        headers = self._headers()
+        headers.pop("Content-Type", None)   # requests 要自己带 multipart 的 boundary
+        # 上一次请求的状态码不能留到这一次：网络故障时它会被误读成「路没了」。
+        self._last_status = 0
+        try:
+            with handle, self._lock():
+                files = {_UPLOAD_FILE_FIELD: (path_obj.name, handle,
+                                              "application/octet-stream")}
+                response = self._client.session.post(
+                    BILI_IM_UPLOAD_BASE + path, data=fields, files=files,
+                    headers=headers, timeout=(10, 120),
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bili im upload failed (%s): %s", path, exc)
+            return None
+        return self._parse(response, path)
+
+    def upload_image(self, image_path: str) -> dict[str, Any]:
+        """上传一张图片，返回它的地址和尺寸。
+
+        图片私信是两步：先上传拿到 ``image_url``，再把它作为一条
+        ``msg_type=2`` 的消息发出去。这一步只做前半段。
+
+        失败时返回 ``{"success": False, "message": "给用户看的中文"}``。
+        """
+        if not self._logged_in():
+            return {"success": False, "message": "请先登录 B站账号"}
+        path = str(image_path or "").strip()
+        if not path:
+            return {"success": False, "message": "没有选择图片"}
+        if not os.path.isfile(path):
+            return {"success": False, "message": "找不到这个图片文件"}
+        csrf = self._csrf()
+        if not csrf:
+            return {"success": False, "message": "缺少 csrf，请重新登录 B站账号"}
+        fields = {
+            "filename": os.path.basename(path),
+            "mid": self._uid(),
+            "build": "0",
+            "mobi_app": "web",
+            "csrf": csrf,
+        }
+        body = self._post_multipart("/x/custom/msg_svr/v1/upload", fields, path)
+        if body is None:
+            if self._last_status == 404:
+                return {"success": False, "message": "B站现在没有开放私信图片上传接口"}
+            return {"success": False, "message": "网络请求失败，图片没有上传成功"}
+        code = body.get("code")
+        if code != 0:
+            return {"success": False,
+                    "message": _error_text(code, "图片没有上传成功")}
+        data = body.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        url = _as_text(data.get("image_url"))
+        if not url:
+            return {"success": False, "message": "图片上传成功，但没有拿到图片地址"}
+        return {
+            "success": True,
+            "message": "",
+            "url": url,
+            "width": _as_int(data.get("image_width")),
+            "height": _as_int(data.get("image_height")),
+            "size": _as_int(data.get("img_size")),
+        }
+
+    def send_image(self, talker_id: str, image_path: str,
+                   session_id: str = "") -> dict[str, Any]:
+        """发一张图片私信：先上传，再按 ``msg_type=2`` 发出去。
+
+        图片消息的 ``content`` 是一个 JSON 字符串，里面是图片的地址和尺寸。
+        """
+        if not self._logged_in():
+            return {"success": False, "message": "请先登录 B站账号"}
+        talker_id = _as_text(talker_id).strip()
+        if not talker_id:
+            return {"success": False, "message": "对方 id 是空的"}
+
+        uploaded = self.upload_image(image_path)
+        if not uploaded.get("success"):
+            return {"success": False,
+                    "message": str(uploaded.get("message") or "图片没有上传成功")}
+
+        payload = {
+            _IMAGE_URL_KEY: str(uploaded.get("url") or ""),
+            "width": int(uploaded.get("width") or 0),
+            "height": int(uploaded.get("height") or 0),
+            "size": int(uploaded.get("size") or 0),
+            "original": 1,
+        }
+        sent = self._send(talker_id, MSG_TYPE_IMAGE, payload, session_id)
+        if not sent.get("success"):
+            return sent
+        return {"success": True, "message": "",
+                "image_url": str(uploaded.get("url") or "")}
+
     def send(self, talker_id: str, text: str,
              session_id: str = "") -> dict[str, Any]:
         """发一条站内私信。
@@ -411,6 +592,11 @@ class BiliIm:
             return {"success": False, "message": "对方 id 是空的"}
         if not text:
             return {"success": False, "message": "消息内容是空的"}
+        return self._send(talker_id, MSG_TYPE_TEXT, {"content": text}, session_id)
+
+    def _send(self, talker_id: str, msg_type: int, payload: dict[str, Any],
+              session_id: str = "") -> dict[str, Any]:
+        """发消息的共同部分：拼表单、POST、把错误码翻成中文。"""
         csrf = self._csrf()
         if not csrf:
             return {"success": False, "message": "缺少 csrf，请重新登录 B站账号"}
@@ -418,10 +604,10 @@ class BiliIm:
         data = {
             "talker_id": talker_id,
             "session_type": 1,
-            "msg_type": MSG_TYPE_TEXT,
+            "msg_type": msg_type,
             "group_id": "",
             "uid": self._uid(),
-            "content": json.dumps({"content": text}, ensure_ascii=False),
+            "content": json.dumps(payload, ensure_ascii=False),
             "client_key": uuid.uuid4().hex,
             "buvid": _as_text(cookies.get("buvid3")),
             "csrf": csrf,

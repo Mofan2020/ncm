@@ -3017,6 +3017,12 @@ overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 13px; color: var(--text); word-break: break-word;
 }
 .bili-im-message.is-self { align-self: flex-end; background: var(--bili-soft); }
+/* A picture message carries no text: the bubble only holds the image. */
+.bili-im-image {
+    display: block; max-width: 240px; max-height: 240px; width: auto; height: auto;
+    border-radius: var(--radius-sm); border: 1px solid var(--border);
+    object-fit: contain; cursor: zoom-in;
+}
 
 /* --- bilibili: the upload ------------------------------------------- */
 .bili-upload-row { display: flex; align-items: center; gap: 8px; }
