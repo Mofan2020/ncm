@@ -368,6 +368,7 @@
     "message_placeholder": "说点什么…",
     "message_send": "发送",
     "message_send_image": "图片",
+    "message_sending": "正在发送…",
     "message_unread": "{count} 条未读",
     "messages": "私信",
     "method_cookie": "Cookie 登录",

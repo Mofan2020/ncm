@@ -73,6 +73,10 @@ _ERROR_TEXT: dict[int, str] = {
     -400: "请求参数有误",
 }
 
+#: 图片私信的大小上限。B 站的私信应用自己也是这么挡的（20 MB）。
+#: 更大的图会被服务端拒掉，到时候报的还是一句看不懂的话。
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
 
 def _error_text(code: Any, fallback: str = "") -> str:
     """把服务端的 ``code`` 翻成一句中文。"""
@@ -496,6 +500,9 @@ class BiliIm:
                 "image_height": image.get("height", 0),
                 "image_size": image.get("size", 0),
             })
+        # 服务端给的是**最新在前**，网页端把这一串 reverse 之后才显示。
+        # 这里直接倒过来，界面上就是最旧在上、最新在下。
+        items.reverse()
         return {"success": True, "items": items, "count": len(items), "message": ""}
 
     # -------------------------------------------------------------------- writing
@@ -544,6 +551,14 @@ class BiliIm:
             return {"success": False, "message": "没有选择图片"}
         if not os.path.isfile(path):
             return {"success": False, "message": "找不到这个图片文件"}
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            log.warning("bili im upload: cannot size %s: %s", path, exc)
+            size = 0
+        if size > MAX_IMAGE_BYTES:
+            return {"success": False,
+                    "message": "图片太大，私信图片不能超过 20 MB"}
         csrf = self._csrf()
         if not csrf:
             return {"success": False, "message": "缺少 csrf，请重新登录 B站账号"}
@@ -559,6 +574,10 @@ class BiliIm:
             return {"success": False, "message": "网络请求失败，图片没有上传成功"}
         code = body.get("code")
         if code != 0:
+            # 服务端的话要写进日志：光看「图片没有上传成功」谁也查不出
+            # 是哪一步被拒的。
+            log.warning("bili im upload answered code %s: %s",
+                        code, body.get("message") or body.get("msg"))
             return {"success": False,
                     "message": _error_text(code, "图片没有上传成功")}
         data = body.get("data") or {}
@@ -566,6 +585,8 @@ class BiliIm:
             data = {}
         url = _as_text(data.get("image_url"))
         if not url:
+            log.warning("bili im upload answered without an image url: %s",
+                        sorted(data))
             return {"success": False, "message": "图片上传成功，但没有拿到图片地址"}
         return {
             "success": True,

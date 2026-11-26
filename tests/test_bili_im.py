@@ -212,7 +212,8 @@ def test_messages_parses_json_content_and_marks_own_messages() -> None:
 
     assert result["success"] is True
     assert result["count"] == 3
-    mine, theirs, raw = result["items"]
+    # 服务端给的是最新在前，这里倒过来：最旧的那条排在最前面。
+    raw, theirs, mine = result["items"]
     assert mine["content"] == "我发的"
     assert mine["is_self"] is True
     assert mine["sender_id"] == "42"
@@ -393,6 +394,32 @@ IMAGE_MESSAGES_PAYLOAD = {
 }
 
 
+def test_messages_come_back_oldest_first() -> None:
+    """服务端给的是最新在前，界面要的是最旧在上。
+
+    不倒过来的话，刚发出去的那条会顶到最上面，看着像顺序乱了。
+    """
+    payload = {
+        "code": 0,
+        "data": {
+            "messages": [
+                {"msg_type": 1, "sender_uid": 42, "timestamp": 300,
+                 "content": json.dumps({"content": "第三条"})},
+                {"msg_type": 1, "sender_uid": 42, "timestamp": 200,
+                 "content": json.dumps({"content": "第二条"})},
+                {"msg_type": 1, "sender_uid": 42, "timestamp": 100,
+                 "content": json.dumps({"content": "第一条"})},
+            ],
+        },
+    }
+    session = FakeSession({
+        "/svr_sync/v1/svr_sync/fetch_session_msgs": payload})
+    result = BiliIm(FakeClient(session)).messages("900", "123")
+    assert [item["content"] for item in result["items"]] == [
+        "第一条", "第二条", "第三条"]
+    assert [item["timestamp"] for item in result["items"]] == [100, 200, 300]
+
+
 def test_messages_read_a_picture_message() -> None:
     """图片消息要带出地址和尺寸，正文不显示成 JSON。"""
     session = FakeSession({
@@ -400,7 +427,8 @@ def test_messages_read_a_picture_message() -> None:
     result = BiliIm(FakeClient(session)).messages("900", "123")
 
     assert result["success"] is True
-    picture, text = result["items"]
+    # 倒过来之后，最新的一条（图片）在最后。
+    text, picture = result["items"]
     assert picture["msg_type"] == 2
     assert picture["image_url"] == "https://i0.hdslb.com/bfs/im/abc.jpg"
     assert picture["image_width"] == 800

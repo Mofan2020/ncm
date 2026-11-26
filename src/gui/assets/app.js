@@ -13224,7 +13224,15 @@ const biliIm = {
     name: '',
     messages: [],
     loading: false,
-    error: ''
+    error: '',
+    // How many text messages are still on their way out.  Used for the
+    // hint only -- the text path does not need a lock: the input is
+    // cleared the moment the message is handed over, so a second click
+    // has nothing left to send.
+    sending: 0,
+    // True while the picture flow is busy.  This one does need a lock:
+    // the file dialog would open a second time.
+    sendingImage: false
 };
 
 /** Open the private messages. */
@@ -13395,8 +13403,14 @@ function renderBiliMessages() {
         if (biliIm.error) {
             box.appendChild(buildStateBlock('close', t('bili.error_title'),
                 t('bili.error_hint', { message: biliIm.error })));
+        } else if (biliIm.sending > 0 || biliIm.sendingImage) {
+            box.appendChild(buildStateBlock('clock', t('bili.message_sending'), ''));
         }
     }
+    // The picture button stays disabled while a picture is on its way: a
+    // second click would open a second file dialog.
+    const imageButton = document.getElementById('btn-bili-im-image');
+    if (imageButton) imageButton.disabled = !!biliIm.sendingImage;
 }
 
 /** Send a private message. */
@@ -13412,22 +13426,52 @@ async function sendBiliMessage() {
         showToast('error', t('error.unknown'));
         return;
     }
+    // The input is cleared the moment the message is handed over, and the
+    // message goes onto the screen right away.  That is what keeps a
+    // second click from sending a second message: there is nothing left
+    // in the input to send.
+    if (input) input.value = '';
+    const local = {
+        sender_id: '',
+        is_self: true,
+        content: text,
+        timestamp: Math.floor(Date.now() / 1000),
+        msg_type: 1,
+        image_url: ''
+    };
+    biliIm.messages.push(local);
+    biliIm.sending += 1;
+    renderBiliMessages();
     try {
         const result = await state.api.bili_send_message(
             biliIm.talkerId, text, biliIm.sessionId);
         if (!result || !result.success) {
-            showToast('error', biliFailure(result, 'bili.message_failed'));
+            biliIm.messages = biliIm.messages.filter((item) => item !== local);
+            if (input) input.value = text;
+            biliIm.error = biliFailure(result, 'bili.message_failed');
+            showToast('error', biliIm.error);
             return;
         }
-        if (input) input.value = '';
         showToast('success', t('bili.message_send'));
         await openBiliConversation({
             session_id: biliIm.sessionId,
             talker_id: biliIm.talkerId,
             name: biliIm.name
         });
+        // The server may not have counted the message in yet.  Keep the
+        // local one then, or the message the user just sent disappears.
+        if (!biliIm.messages.some((item) => item.content === text)) {
+            biliIm.messages.push(local);
+            renderBiliMessages();
+        }
     } catch (err) {
-        showToast('error', t('bili.message_failed'));
+        biliIm.messages = biliIm.messages.filter((item) => item !== local);
+        if (input) input.value = text;
+        biliIm.error = t('bili.message_failed');
+        showToast('error', biliIm.error);
+    } finally {
+        biliIm.sending = Math.max(0, biliIm.sending - 1);
+        renderBiliMessages();
     }
 }
 
@@ -13439,6 +13483,9 @@ async function sendBiliMessage() {
  * no draft to keep.
  */
 async function sendBiliImageMessage() {
+    // A second click would open a second file dialog and send the picture
+    // twice, so this one really does need a lock.
+    if (biliIm.sendingImage) return;
     if (!biliIm.talkerId) {
         showToast('error', t('bili.message_failed'));
         return;
@@ -13447,19 +13494,30 @@ async function sendBiliImageMessage() {
         showToast('error', t('error.unknown'));
         return;
     }
+    biliIm.sendingImage = true;
+    renderBiliMessages();
     let picked;
     try {
         picked = await state.api.choose_file('image');
     } catch (err) {
         showToast('error', t('bili.message_image_failed'));
+        biliIm.sendingImage = false;
+        renderBiliMessages();
         return;
     }
-    if (!picked || !picked.success || !picked.path) return;
+    if (!picked || !picked.success || !picked.path) {
+        biliIm.sendingImage = false;
+        renderBiliMessages();
+        return;
+    }
     try {
         const result = await state.api.bili_send_image_message(
             biliIm.talkerId, picked.path, biliIm.sessionId);
         if (!result || !result.success) {
-            showToast('error', biliFailure(result, 'bili.message_image_failed'));
+            // The reason is shown here as well as in the toast: a toast
+            // that is gone before it is read is no feedback at all.
+            biliIm.error = biliFailure(result, 'bili.message_image_failed');
+            showToast('error', biliIm.error);
             return;
         }
         showToast('success', t('bili.message_image_sent'));
@@ -13469,7 +13527,11 @@ async function sendBiliImageMessage() {
             name: biliIm.name
         });
     } catch (err) {
-        showToast('error', t('bili.message_image_failed'));
+        biliIm.error = t('bili.message_image_failed');
+        showToast('error', biliIm.error);
+    } finally {
+        biliIm.sendingImage = false;
+        renderBiliMessages();
     }
 }
 

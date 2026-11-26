@@ -368,6 +368,7 @@
     "message_placeholder": "Say something…",
     "message_send": "Send",
     "message_send_image": "Picture",
+    "message_sending": "Sending…",
     "message_unread": "{count} unread",
     "messages": "Messages",
     "method_cookie": "Cookie",

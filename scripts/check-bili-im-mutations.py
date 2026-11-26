@@ -61,6 +61,14 @@ MUTATIONS: list[tuple[str, str, str]] = [
         '_IMAGE_URL_KEY = "link"',
     ),
     (
+        "the messages are not turned around",
+        """        # 服务端给的是**最新在前**，网页端把这一串 reverse 之后才显示。
+        # 这里直接倒过来，界面上就是最旧在上、最新在下。
+        items.reverse()""",
+        """        # 服务端给的是**最新在前**，网页端把这一串 reverse 之后才显示。
+        # 这里直接倒过来，界面上就是最旧在上、最新在下。""",
+    ),
+    (
         "the picture is uploaded to the wrong host",
         'BILI_UPLOAD_BASE = "https://api.bilibili.com"',
         'BILI_UPLOAD_BASE = "https://api.vc.bilibili.com"',

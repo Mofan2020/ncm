@@ -160,7 +160,7 @@ function check(name, ok, detail) {
  * outside.
  */
 function load({ messages = [], talkerId = '123', sessionId = '900',
-    api = {}, name = '小明' } = {}) {
+    api = {}, name = '小明', sendingImage = false } = {}) {
     const elements = makeElements();
     const toasts = [];
     const refreshed = [];
@@ -187,6 +187,8 @@ function load({ messages = [], talkerId = '123', sessionId = '900',
             messages,
             loading: false,
             error: '',
+            sending: 0,
+            sendingImage,
         },
         t: (key) => key,
         showToast: (kind, text) => { toasts.push({ kind, text }); },
@@ -198,6 +200,13 @@ function load({ messages = [], talkerId = '123', sessionId = '900',
         },
         openBiliConversation: (session) => {
             refreshed.push(session);
+            // The server answers with the messages it knows about.  When
+            // the test puts a list here, the panel is filled with it --
+            // that is how "the server has not counted the message in yet"
+            // is reproduced.
+            if (Array.isArray(context.biliIm.serverMessages)) {
+                context.biliIm.messages = context.biliIm.serverMessages.slice();
+            }
         },
     };
     context.globalThis = context;
@@ -206,6 +215,7 @@ function load({ messages = [], talkerId = '123', sessionId = '900',
         extract('biliImageSrc'),
         extract('biliFailure'),
         extract('renderBiliMessages'),
+        extract('sendBiliMessage'),
         extract('sendBiliImageMessage'),
     ].join('\n\n');
     vm.createContext(context);
@@ -324,6 +334,127 @@ function load({ messages = [], talkerId = '123', sessionId = '900',
     await context.sendBiliImageMessage();
     check('without the bridge method nothing is sent',
         !elements.get('bili-im-messages').children.length);
+}
+
+// 8. a second click while the first one is on its way sends nothing
+{
+    const sent = [];
+    let release = null;
+    const { context } = load({
+        api: {
+            choose_file: async () => ({ success: true, path: '/tmp/shot.png' }),
+            bili_send_image_message: async (...args) => {
+                sent.push(args);
+                // Hold the answer until the test lets it go.
+                await new Promise((resolve) => { release = resolve; });
+                return { success: true };
+            },
+        },
+    });
+    const first = context.sendBiliImageMessage();
+    const second = context.sendBiliImageMessage();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    check('a second click does not send a second message', sent.length === 1,
+        `sent ${sent.length} times`);
+    if (release) release();
+    await first;
+    await second;
+}
+
+// 9. the same for a text message
+{
+    const sent = [];
+    let release = null;
+    const { context } = load({
+        api: {
+            bili_send_message: async (...args) => {
+                sent.push(args);
+                await new Promise((resolve) => { release = resolve; });
+                return { success: true };
+            },
+        },
+    });
+    const input = new El('input');
+    input.value = '晚上好';
+    context.document.getElementById = (id) => (id === 'bili-im-input' ? input : null);
+    const first = context.sendBiliMessage();
+    const second = context.sendBiliMessage();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    check('a second click does not send a second text message', sent.length === 1,
+        `sent ${sent.length} times`);
+    if (release) release();
+    await first;
+    await second;
+}
+
+// 10. the message shows up right away, before the server answers
+{
+    const { context, toasts } = load({
+        api: {
+            bili_send_message: async () => {
+                // The answer never comes before the check looks.
+                await new Promise(() => {});
+                return { success: true };
+            },
+        },
+    });
+    const input = new El('input');
+    input.value = '晚上好';
+    context.document.getElementById = (id) => (id === 'bili-im-input' ? input : null);
+    context.sendBiliMessage();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    check('the message shows up before the answer arrives',
+        context.biliIm.messages.length === 1
+        && context.biliIm.messages[0].content === '晚上好',
+        JSON.stringify(context.biliIm.messages));
+    check('the input is cleared right away', input.value === '');
+}
+
+// 11. the message stays on the screen when the server has not counted it in
+{
+    const { context } = load({
+        api: {
+            bili_send_message: async () => ({ success: true }),
+        },
+    });
+    context.biliIm.serverMessages = [{ content: '对方发的', is_self: false }];
+    const input = new El('input');
+    input.value = '晚上好';
+    context.document.getElementById = (id) => (id === 'bili-im-input' ? input : null);
+    await context.sendBiliMessage();
+    check('the sent message stays visible',
+        context.biliIm.messages.some((item) => item.content === '晚上好'),
+        JSON.stringify(context.biliIm.messages));
+}
+
+// 12. a failed send puts the reason where it can be read
+{
+    const { context } = load({
+        api: {
+            bili_send_message: async () => ({ success: false, message: '被风控了' }),
+        },
+    });
+    const input = new El('input');
+    input.value = '晚上好';
+    context.document.getElementById = (id) => (id === 'bili-im-input' ? input : null);
+    await context.sendBiliMessage();
+    check('a failed send says why', context.biliIm.error === '被风控了',
+        String(context.biliIm.error));
+    check('a failed send puts the text back',
+        input.value === '晚上好', input.value);
+}
+
+// 13. a failed picture says why, too
+{
+    const { context } = load({
+        api: {
+            choose_file: async () => ({ success: true, path: '/tmp/shot.png' }),
+            bili_send_image_message: async () => ({ success: false, message: '图片太大' }),
+        },
+    });
+    await context.sendBiliImageMessage();
+    check('a failed picture says why', context.biliIm.error === '图片太大',
+        String(context.biliIm.error));
 }
 
 console.log();
