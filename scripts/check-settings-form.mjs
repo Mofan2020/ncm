@@ -132,6 +132,9 @@ const sandbox = {
     renderFolderList: stub('renderFolderList'),
     setTheme: stub('setTheme'),
     applyAppearance: stub('applyAppearance'),
+    // The card size is drawn on <body>; the check is about the values the
+    // form ends up with, so the drawing is only recorded.
+    applyCardSize: stub('applyCardSize'),
     player: { lyricsScrollIdleSeconds: 4 },
 };
 
@@ -265,7 +268,8 @@ sandbox.openModal = stub('openModal');
 /// Every control saveSettings() reads, by name.  A missing one throws
 /// right here -- that is the point: the form and the code have to agree.
 const SAVE_READS = [
-    'language-select', 'theme-select', 'background-blur', 'background-dim',
+    'language-select', 'theme-select', 'card-size-select',
+    'background-blur', 'background-dim',
     'glass-check', 'accent-check', 'desktop-lyrics-font-size',
     'desktop-lyrics-color', 'desktop-lyrics-opacity',
     'desktop-lyrics-translation-check', 'desktop-lyrics-background',
@@ -292,6 +296,8 @@ for (const id of SAVE_READS) {
 }
 elements.get('update-use-sdm-check').checked = false;
 elements.get('update-threads-select').value = '16';
+// The card size the user picked.
+elements.get('card-size-select').value = 'large';
 elements.get('pixiv-include-r18').checked = true;
 elements.get('pixiv-nsfw-mode').value = 'blur';
 elements.get('pixiv-quality').value = 'original';
@@ -320,6 +326,8 @@ check('the Pixiv section is sent at all',
     sent && Object.prototype.hasOwnProperty.call(sent, 'pixiv'));
 check('the Hi-Res switch is sent to the backend',
     sent && sent.bili && sent.bili.hires_enabled === true);
+check('the card size is sent to the backend',
+    sent && sent.ui && sent.ui.card_size === 'large');
 
 /* --------------------------------------------- opening the modal again */
 

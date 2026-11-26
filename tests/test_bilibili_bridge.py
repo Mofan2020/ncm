@@ -153,7 +153,8 @@ class FakeSession:
             return FakeResponse(self.default)
         return FakeResponse({"code": -404, "message": "no route"}, status_code=404)
 
-    def post(self, url, data=None, headers=None, timeout=None, files=None):
+    def post(self, url, data=None, headers=None, timeout=None, files=None,
+             params=None):
         """写操作：收藏、取消收藏、移出。"""
         record = {"url": url, "params": dict(data or {}), "headers": headers,
                   "timeout": timeout}
@@ -674,7 +675,7 @@ def test_send_image_message_returns_the_picture_url(tmp_path):
     picture = tmp_path / "shot.png"
     picture.write_bytes(b"\x89PNG\r\n\x1a\n")
     bridge, session = make_bridge({
-        "/x/custom/msg_svr/v1/upload": {
+        "/x/dynamic/feed/draw/upload_bfs": {
             "code": 0,
             "data": {
                 "image_url": "https://i0.hdslb.com/bfs/im/up.jpg",
@@ -683,7 +684,7 @@ def test_send_image_message_returns_the_picture_url(tmp_path):
                 "img_size": 40960,
             },
         },
-        "/session_svr/v1/session_svr/send_msg": {"code": 0, "data": {}},
+        "/web_im/v1/web_im/send_msg": {"code": 0, "data": {}},
     })
     bridge._client.set_cookie(
         "SESSDATA=x; bili_jct=csrf; DedeUserID=42; buvid3=B")
@@ -693,22 +694,22 @@ def test_send_image_message_returns_the_picture_url(tmp_path):
     assert result["success"] is True
     assert result["message"] == ""
     assert result["image_url"] == "https://i0.hdslb.com/bfs/im/up.jpg"
-    # 上传走 multipart，文件部分的字段名是 file
-    uploads = [call for call in session.calls if "msg_svr/v1/upload" in call["url"]]
+    # 上传走 multipart，文件部分的字段名是 file_up
+    uploads = [call for call in session.calls if "upload_bfs" in call["url"]]
     assert uploads, "应该上传过一次"
-    assert uploads[0]["files"] == ["file"]
+    assert uploads[0]["files"] == ["file_up"]
     # 消息是以图片类型发出去的
     sends = [call for call in session.calls if "send_msg" in call["url"]]
     assert sends
-    assert sends[-1]["params"]["msg_type"] == 2
-    assert json.loads(sends[-1]["params"]["content"])["url"] == (
+    assert sends[-1]["params"]["msg[msg_type]"] == "2"
+    assert json.loads(sends[-1]["params"]["msg[content]"])["url"] == (
         "https://i0.hdslb.com/bfs/im/up.jpg")
 
 
 def test_send_image_message_reports_a_failure():
     bridge, _session = make_bridge({
-        "/x/custom/msg_svr/v1/upload": {"code": -400, "message": "文件不合法"},
-        "/session_svr/v1/session_svr/send_msg": {"code": 0, "data": {}},
+        "/x/dynamic/feed/draw/upload_bfs": {"code": -400, "message": "文件不合法"},
+        "/web_im/v1/web_im/send_msg": {"code": 0, "data": {}},
     })
     bridge._client.set_cookie(
         "SESSDATA=x; bili_jct=csrf; DedeUserID=42; buvid3=B")

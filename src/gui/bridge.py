@@ -311,6 +311,7 @@ class GuiBridge:
                 "desktop_lyrics_background": self.settings.ui.desktop_lyrics_background,
                 "desktop_lyrics_text_style": self.settings.ui.desktop_lyrics_text_style,
                 "theme": self.settings.ui.theme,
+                "card_size": self.settings.ui.card_size,
                 "remember_window_size": self.settings.ui.remember_window_size,
                 "background_image": self.settings.ui.background_image,
                 "background_url": self.background_url(),
@@ -416,6 +417,9 @@ class GuiBridge:
                     "language", "theme", "remember_window_size", "background_image",
                     "background_blur", "background_dim", "glass",
                     "accent_from_background",
+                    # 作品卡片的大小：B 站和 Pixiv 的作品列表一起变。
+                    # 不在这张表里的话，下拉框选了也存不下来。
+                    "card_size",
                     # The desktop-lyrics options are part of the UI settings
                     # too; without them in the allowlist they were silently
                     # dropped and never persisted.

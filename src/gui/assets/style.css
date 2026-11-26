@@ -2634,6 +2634,12 @@ input[type="range"]::-webkit-slider-thumb {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     column-gap: var(--grid-gap); row-gap: 18px;
 }
+/* How big a work card is.  B站 and Pixiv share this grid, so one setting
+   moves both.  The class sits on <body>. */
+body.is-card-small .bili-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+body.is-card-large .bili-grid { grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); }
+body.is-card-small .video-card .vc-title { font-size: 12.5px; }
+body.is-card-large .video-card .vc-title { font-size: 14.5px; }
 .video-card {
     display: flex; flex-direction: column; gap: 8px; min-width: 0;
     border: none; background: none; padding: 0; cursor: pointer;

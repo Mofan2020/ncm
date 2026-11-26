@@ -233,6 +233,9 @@ class UISettings:
 
     language: str = "zh_cn"          # zh_cn|en_us
     theme: str = "system"            # light|dark|system
+    #: 作品卡片显示多大：``small`` / ``medium`` / ``large``。
+    #: B 站和 Pixiv 的作品列表都用同一个网格，所以这一项两边一起变。
+    card_size: str = "medium"
     window_width: int = 1080
     window_height: int = 720
     remember_window_size: bool = True
@@ -595,6 +598,9 @@ class Settings:
             ui.desktop_lyrics_background = "dark"
         if ui.desktop_lyrics_text_style not in ("transparent", "translucent", "white"):
             ui.desktop_lyrics_text_style = "white"
+        # 卡片大小只有三档。手改过的配置文件里写了别的值，就当是中号。
+        if ui.card_size not in ("small", "medium", "large"):
+            ui.card_size = "medium"
         ui.background_blur = self._clamp_range(ui.background_blur, 0, 40, 24)
         ui.background_dim = self._clamp_range(ui.background_dim, 0, 80, 30)
         for flag in ("remember_window_size", "glass", "accent_from_background",

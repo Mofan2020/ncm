@@ -20,7 +20,7 @@ class FakeSession:
 
     def __init__(self, responses: dict | None = None) -> None:
         self.gets: list[tuple[str, dict]] = []
-        self.posts: list[tuple[str, dict]] = []
+        self.posts: list[tuple[str, dict, dict]] = []
         #: multipart 上传：记下 ``(url, 普通字段, 文件字段名)``。
         self.uploads: list[tuple[str, dict, dict]] = []
         self.responses = responses or {}
@@ -40,13 +40,14 @@ class FakeSession:
         return self._reply(url)
 
     def post(self, url: str, data: dict | None = None, headers: dict | None = None,
-             timeout=None, files: dict | None = None) -> FakeResponse:
+             timeout=None, files: dict | None = None,
+             params: dict | None = None) -> FakeResponse:
         if files is not None:
             # 上传：文件部分只记字段名，不读文件内容。
             self.uploads.append((url, dict(data or {}),
                                  {name: value[0] for name, value in files.items()}))
             return self._reply(url)
-        self.posts.append((url, dict(data or {})))
+        self.posts.append((url, dict(data or {}), dict(params or {})))
         return self._reply(url)
 
 
@@ -249,7 +250,7 @@ def test_messages_fall_back_to_the_legacy_route() -> None:
     assert result["success"] is True
     assert result["count"] == 3
     assert session.posts, "老路由应该被试一次"
-    url, form = session.posts[0]
+    url, form, _params = session.posts[0]
     assert url.endswith("/session_svr/v1/session_svr/fetch_session_msgs")
     assert form["csrf"] == "csrf-token"
 
@@ -286,23 +287,32 @@ def test_conversations_fill_in_missing_names_and_faces() -> None:
 # --------------------------------------------------------------------- 发消息
 def test_send_posts_json_content_and_required_fields() -> None:
     session = FakeSession({
-        "/session_svr/v1/session_svr/send_msg": {"code": 0, "message": "0", "data": {}},
+        "/web_im/v1/web_im/send_msg": {"code": 0, "message": "0", "data": {}},
     })
     result = BiliIm(FakeClient(session)).send("123", "晚上好")
 
     assert result["success"] is True
     assert result["message"] == ""
-    url, form = session.posts[0]
-    assert url.endswith("/session_svr/v1/session_svr/send_msg")
-    assert form["talker_id"] == "123"
+    url, form, params = session.posts[0]
+    assert url.endswith("/web_im/v1/web_im/send_msg")
+    # 表单里每个字段都带 msg[...] 前缀，传裸字段名服务端不认
+    assert form["msg[receiver_id]"] == "123"
+    assert form["msg[msg_type]"] == "1"
+    assert form["msg[sender_uid]"] == "42"
+    assert form["msg[receiver_type]"] == "1"
+    assert form["msg[msg_status]"] == "0"
+    assert form["msg[new_face_version]"] == "0"
+    assert form["msg[timestamp]"]
+    assert form["msg[dev_id]"]
     assert form["csrf"] == "csrf-token"
-    assert form["msg_type"] == 1
-    assert form["uid"] == "42"
-    assert form["buvid"] == "BUVID3-123"
-    assert form["client_key"]
+    assert form["mobi_app"] == "web"
     # content 必须是 JSON 字符串
-    assert isinstance(form["content"], str)
-    assert json.loads(form["content"]) == {"content": "晚上好"}
+    assert isinstance(form["msg[content]"], str)
+    assert json.loads(form["msg[content]"]) == {"content": "晚上好"}
+    # 查询串里要带这三个
+    assert params["w_sender_uid"] == "42"
+    assert params["w_receiver_id"] == "123"
+    assert params["w_dev_id"] == form["msg[dev_id]"]
 
 
 def test_send_rejects_empty_text() -> None:
@@ -327,7 +337,7 @@ def test_error_codes_are_translated() -> None:
     session = FakeSession({
         "/session_svr/v1/session_svr/get_sessions": {"code": -101, "message": "账号未登录"},
         "/svr_sync/v1/svr_sync/fetch_session_msgs": {"code": -111, "message": "csrf 校验失败"},
-        "/session_svr/v1/session_svr/send_msg": {"code": -352, "message": "风控校验失败"},
+        "/web_im/v1/web_im/send_msg": {"code": -352, "message": "风控校验失败"},
     })
     im = BiliIm(FakeClient(session))
     assert "登录" in im.conversations()["message"]
@@ -433,11 +443,11 @@ def test_conversations_show_a_placeholder_for_a_picture() -> None:
 
 
 def test_upload_image_posts_multipart_and_returns_the_url(tmp_path) -> None:
-    """上传走客服域名上的 multipart 接口，字段名是 file。"""
+    """上传走主站的 multipart 接口，文件字段名是 file_up。"""
     picture = tmp_path / "shot.png"
     picture.write_bytes(b"\x89PNG\r\n\x1a\n not really a png")
     session = FakeSession({
-        "/x/custom/msg_svr/v1/upload": {
+        "/x/dynamic/feed/draw/upload_bfs": {
             "code": 0,
             "message": "0",
             "data": {
@@ -457,12 +467,10 @@ def test_upload_image_posts_multipart_and_returns_the_url(tmp_path) -> None:
     assert result["size"] == 40960
 
     url, fields, files = session.uploads[0]
-    assert url == ("https://customerservice.bilibili.com"
-                   "/x/custom/msg_svr/v1/upload")
-    assert "file" in files
-    assert files["file"] == "shot.png"
-    assert fields["filename"] == "shot.png"
-    assert fields["mid"] == "42"
+    assert url == "https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs"
+    assert "file_up" in files
+    assert files["file_up"] == "shot.png"
+    assert fields["biz"] == "im"
     assert fields["csrf"] == "csrf-token"
 
 
@@ -471,7 +479,7 @@ def test_send_image_uploads_first_then_sends_a_picture_message(tmp_path) -> None
     picture = tmp_path / "shot.png"
     picture.write_bytes(b"\x89PNG\r\n\x1a\n")
     session = FakeSession({
-        "/x/custom/msg_svr/v1/upload": {
+        "/x/dynamic/feed/draw/upload_bfs": {
             "code": 0,
             "data": {
                 "image_url": "https://i0.hdslb.com/bfs/im/up.jpg",
@@ -480,7 +488,7 @@ def test_send_image_uploads_first_then_sends_a_picture_message(tmp_path) -> None
                 "img_size": 40960,
             },
         },
-        "/session_svr/v1/session_svr/send_msg": {"code": 0, "data": {}},
+        "/web_im/v1/web_im/send_msg": {"code": 0, "data": {}},
     })
     result = BiliIm(FakeClient(session)).send_image("123", str(picture))
 
@@ -490,16 +498,19 @@ def test_send_image_uploads_first_then_sends_a_picture_message(tmp_path) -> None
     assert len(session.uploads) == 1
     assert len(session.posts) == 1
 
-    url, form = session.posts[0]
-    assert url.endswith("/session_svr/v1/session_svr/send_msg")
-    assert form["talker_id"] == "123"
-    assert form["msg_type"] == 2
-    content = json.loads(form["content"])
+    url, form, params = session.posts[0]
+    assert url.endswith("/web_im/v1/web_im/send_msg")
+    assert params["w_receiver_id"] == "123"
+    assert form["msg[receiver_id]"] == "123"
+    assert form["msg[msg_type]"] == "2"
+    content = json.loads(form["msg[content]"])
     assert content["url"] == "https://i0.hdslb.com/bfs/im/up.jpg"
     assert content["width"] == 1024
     assert content["height"] == 768
     assert content["size"] == 40960
     assert content["original"] == 1
+    # 图片格式是文件的小写扩展名
+    assert content["imageType"] == "png"
 
 
 def test_send_image_does_not_send_when_the_upload_fails(tmp_path) -> None:
@@ -507,8 +518,8 @@ def test_send_image_does_not_send_when_the_upload_fails(tmp_path) -> None:
     picture = tmp_path / "shot.png"
     picture.write_bytes(b"\x89PNG\r\n\x1a\n")
     session = FakeSession({
-        "/x/custom/msg_svr/v1/upload": {"code": -400, "message": "文件不合法"},
-        "/session_svr/v1/session_svr/send_msg": {"code": 0, "data": {}},
+        "/x/dynamic/feed/draw/upload_bfs": {"code": -400, "message": "文件不合法"},
+        "/web_im/v1/web_im/send_msg": {"code": 0, "data": {}},
     })
     result = BiliIm(FakeClient(session)).send_image("123", str(picture))
 
@@ -522,12 +533,12 @@ def test_send_image_reports_a_failed_send(tmp_path) -> None:
     picture = tmp_path / "shot.png"
     picture.write_bytes(b"\x89PNG\r\n\x1a\n")
     session = FakeSession({
-        "/x/custom/msg_svr/v1/upload": {
+        "/x/dynamic/feed/draw/upload_bfs": {
             "code": 0,
             "data": {"image_url": "https://i0.hdslb.com/bfs/im/up.jpg",
                      "image_width": 10, "image_height": 10, "img_size": 10},
         },
-        "/session_svr/v1/session_svr/send_msg": {"code": -352, "message": "风控"},
+        "/web_im/v1/web_im/send_msg": {"code": -352, "message": "风控"},
     })
     result = BiliIm(FakeClient(session)).send_image("123", str(picture))
     assert result["success"] is False

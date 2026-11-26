@@ -812,6 +812,8 @@ function fillSettingsForm() {
     setValue('default-quality-select', s.download.quality);
     setValue('max-concurrent-select', String(s.download.max_concurrent));
     setValue('theme-select', s.ui.theme);
+    setValue('card-size-select', s.ui.card_size || 'medium');
+    applyCardSize(s.ui.card_size || 'medium');
     setChecked('overwrite-files-check', s.download.overwrite);
     setChecked('download-lyrics-check', s.download.download_lyrics);
     setChecked('lyrics-translation-check', s.download.lyrics_translation);
@@ -1097,6 +1099,7 @@ async function saveSettings() {
         ui: {
             language: document.getElementById('language-select').value,
             theme: document.getElementById('theme-select').value,
+            card_size: document.getElementById('card-size-select').value,
             background_blur: parseInt(document.getElementById('background-blur').value, 10),
             background_dim: parseInt(document.getElementById('background-dim').value, 10),
             glass: document.getElementById('glass-check').checked,
@@ -7814,6 +7817,16 @@ function bindStaticEvents() {
     document.getElementById('theme-select').addEventListener('change', (event) => {
         setTheme(event.target.value, true);
     });
+    document.getElementById('card-size-select').addEventListener('change', async (event) => {
+        // Draw first, then store: the picture has to move before the
+        // request goes out, otherwise the change looks like it did nothing.
+        // Only this one key is written -- saving the whole form would
+        // push the half-filled fields along with it.
+        const size = event.target.value;
+        applyCardSize(size);
+        if (state.settings && state.settings.ui) state.settings.ui.card_size = size;
+        if (state.api) await state.api.update_settings('ui', { card_size: size });
+    });
     document.getElementById('btn-open-homepage').addEventListener('click', async () => {
         if (state.appInfo) await state.api.open_external(state.appInfo.homepage);
     });
@@ -13271,6 +13284,22 @@ async function openBiliConversation(session) {
         biliIm.error = t('error.network');
     }
     renderBiliMessages();
+}
+
+/**
+ * How big the work cards are.
+ *
+ * The class sits on <body> so one setting moves every list -- B站 and
+ * Pixiv share the same grid.  The middle size is the default, so the
+ * medium class is not written at all: without any class the grid is
+ * already the middle size.
+ */
+function applyCardSize(size) {
+    const wanted = ['small', 'large'].includes(size) ? size : 'medium';
+    const body = document.body;
+    if (!body) return;
+    body.classList.remove('is-card-small', 'is-card-medium', 'is-card-large');
+    if (wanted !== 'medium') body.classList.add('is-card-' + wanted);
 }
 
 /** Draw the conversations and the messages. */

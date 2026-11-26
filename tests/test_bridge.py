@@ -364,3 +364,26 @@ def test_the_resume_switch_is_on_by_default(bridge):
     """A video should continue from where it was left off unless the user
     says otherwise."""
     assert bridge.get_settings()["bili"]["resume_playback"] is True
+
+
+# ---------------------------------------------------------- card size
+def test_the_card_size_travels_through_the_bridge(bridge):
+    """The size of the work cards is read by the frontend and written back
+    through update_settings('ui', ...).  A key that the bridge drops stays
+    at its default and the dropdown jumps back."""
+    assert bridge.get_settings()["ui"]["card_size"] == "medium"
+
+    result = bridge.update_settings("ui", {"card_size": "large"})
+    assert result["success"] is True
+    assert result["settings"]["ui"]["card_size"] == "large"
+    assert bridge.get_settings()["ui"]["card_size"] == "large"
+
+    result = bridge.update_settings("ui", {"card_size": "small"})
+    assert result["settings"]["ui"]["card_size"] == "small"
+
+
+def test_an_unknown_card_size_falls_back_to_the_middle(bridge):
+    """A hand-edited settings file may hold anything.  The dropdown only
+    knows three sizes, so the unknown one becomes the middle one."""
+    result = bridge.update_settings("ui", {"card_size": "enormous"})
+    assert result["settings"]["ui"]["card_size"] == "medium"

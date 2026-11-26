@@ -54,6 +54,7 @@ jobs:
           node scripts/check-bili-hires-switch.mjs
           node scripts/check-bili-folder-and-relations.mjs
           node scripts/check-bili-im-picture.mjs
+          node scripts/check-card-size.mjs
           node scripts/check-bangumi-js.mjs
 
   # --------------------------------------------------------------- macOS

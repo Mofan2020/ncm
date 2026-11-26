@@ -178,7 +178,8 @@ Full reference: `docs/bili-notes.md`. The endpoints in use:
 | Uploader profile | `/x/space/wbi/acc/info` + `/x/space/wbi/arc/search` + `/x/space/upstat` | the first two are WBI signed, `upstat` is not |
 | Follow / unfollow | `/x/relation/modify` + `/x/relation` | `act` = 1 / 2 on the same route |
 | Followings / followers | `/x/relation/followings` + `/x/relation/followers` | `vmid`, `pn`, `ps`; WBI signed |
-| Private messages | `api.vc.bilibili.com/session_svr/v1/session/notify_fetch` + `sess_svr/v1/sess/get_messages` + `sess_svr/v1/sess/send_msg` | a **different gateway**, no WBI |
+| Private messages | `api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions` + `svr_sync/v1/svr_sync/fetch_session_msgs` + `web_im/v1/web_im/send_msg` | a **different gateway**, no WBI. The send form uses `msg[...]` field names and `w_*` query params |
+| Private message pictures | `api.bilibili.com/x/dynamic/feed/draw/upload_bfs` | the **main** gateway, multipart field `file_up`, `biz=im` |
 | Uploading | `member.bilibili.com/x/vuweb/pre` + `/x/vuweb/add` | pre-upload first, then the file, then the form |
 
 ---
@@ -275,6 +276,12 @@ Full reference: `docs/bili-notes.md`. The endpoints in use:
   hand-written on purpose (no new dependency).
 - **Private messages live on another gateway.** `api.vc.bilibili.com` does not
   take the WBI signature, and the `content` field is a JSON **string**.
+- **Sending a private message uses `web_im`, and every form field is named
+  `msg[...]`.** The old `/session_svr/v1/session_svr/send_msg` answers 404.
+  The query string carries `w_sender_uid` / `w_receiver_id` / `w_dev_id`.
+- **A private message picture is uploaded to the main gateway**, not to the
+  message one: `api.bilibili.com/x/dynamic/feed/draw/upload_bfs`, multipart
+  field `file_up`, `biz=im`.
 - **Uploading is a three-step dance.** pre-upload (`/x/vuweb/pre`) → upload the
   file to the address it returns → submit the form (`/x/vuweb/add`). The
   addresses and the field names come out of the pre-upload answer; never hardcode

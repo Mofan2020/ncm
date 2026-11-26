@@ -61,14 +61,45 @@ MUTATIONS: list[tuple[str, str, str]] = [
         '_IMAGE_URL_KEY = "link"',
     ),
     (
-        "the uploaded file is sent under the wrong field name",
-        '_UPLOAD_FILE_FIELD = "file"',
-        '_UPLOAD_FILE_FIELD = "image"',
+        "the picture is uploaded to the wrong host",
+        'BILI_UPLOAD_BASE = "https://api.bilibili.com"',
+        'BILI_UPLOAD_BASE = "https://api.vc.bilibili.com"',
     ),
     (
-        "the picture is uploaded to the wrong host",
-        'BILI_IM_UPLOAD_BASE = "https://customerservice.bilibili.com"',
-        'BILI_IM_UPLOAD_BASE = "https://api.vc.bilibili.com"',
+        "the uploaded file is sent under the wrong field name",
+        '_UPLOAD_FILE_FIELD = "file_up"',
+        '_UPLOAD_FILE_FIELD = "file"',
+    ),
+    (
+        "the upload loses the biz marker",
+        '            "biz": _UPLOAD_BIZ,\n',
+        "",
+    ),
+    (
+        "the upload is sent without a csrf",
+        """            "biz": _UPLOAD_BIZ,
+            "csrf": csrf,
+        }
+        body = self._post_multipart(""",
+        """            "biz": _UPLOAD_BIZ,
+        }
+        body = self._post_multipart(""",
+    ),
+    (
+        "the message goes to the route that is gone",
+        'body = self._post("/web_im/v1/web_im/send_msg", data, params=params)',
+        'body = self._post("/session_svr/v1/session_svr/send_msg", data, '
+        'params=params)',
+    ),
+    (
+        "the form fields lose the msg[] prefix",
+        '            "msg[receiver_id]": talker_id,',
+        '            "receiver_id": talker_id,',
+    ),
+    (
+        "the query string loses the device id",
+        '            "w_dev_id": dev_id,\n        }\n        body = self._post(',
+        '        }\n        body = self._post(',
     ),
     (
         "the size of the picture is left out",
@@ -91,16 +122,6 @@ MUTATIONS: list[tuple[str, str, str]] = [
         """                "last_message": ("[图片]" if last_image
                                  else _parse_content(last.get("content"))),""",
         """                "last_message": _parse_content(last.get("content")),""",
-    ),
-    (
-        "the upload is sent without a csrf",
-        """            "mobi_app": "web",
-            "csrf": csrf,
-        }
-        body = self._post_multipart(""",
-        """            "mobi_app": "web",
-        }
-        body = self._post_multipart(""",
     ),
 ]
 

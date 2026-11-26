@@ -235,10 +235,17 @@ B站对同一 IP 的写操作频控很紧。收藏夹的写入（建夹、加视
 - 某个会话的消息：`GET /svr_sync/v1/svr_sync/fetch_session_msgs`
   （`session_type=1`、`talker_id`、`session_id`、`size`、`build=0`、
   `mobi_app=web`、`platform=web`）
-- 发消息：`POST /session_svr/v1/session_svr/send_msg`，`content` 是 **JSON 字符串**
-  （`{"content": "文字"}`），`client_key` 用 UUID。
-  （这条路由代码里是这个写法，旧笔记记的是 `/sess_svr/v1/sess/send_msg`；
-  发消息是写操作，本轮没有拿真实账号试，两条都留着，谁先试通改另一条。）
+- 发消息：`POST /web_im/v1/web_im/send_msg`
+
+**发消息的路由是 `web_im` 开头的那条。** 老的
+`/session_svr/v1/session_svr/send_msg` 已经 404（回的是一整页 HTML），
+照着旧笔记写就会一直撞在「B站现在没有开放发私信的接口」上。
+
+**发消息的表单格式和一般的 B 站接口不一样**：每个字段都带 `msg[...]`
+前缀（`msg[receiver_id]`、`msg[msg_type]`、`msg[content]`……），另外还要在
+查询串里带上 `w_sender_uid` / `w_receiver_id` / `w_dev_id`。`dev_id` 是每个
+账号一个的设备标识（网页端存 localStorage，键是 `im_deviceid_<uid>`），
+这里由 uid 用 uuid5 推导，同一个账号每次都是同一个。
 
 2026-11-01 实测踩到的：
 
@@ -254,26 +261,26 @@ B站对同一 IP 的写操作频控很紧。收藏夹的写入（建夹、加视
 
 ### 图片私信
 
-图片私信是**两步**，而且图片走的是**第三个网关** `customerservice.bilibili.com`
-（不在 `api.vc.bilibili.com` 上，那儿没有这条路由，POST 过去是 404）：
+图片私信是**两步**，而且图片走的是**第三个网关** `api.bilibili.com`
+（不是私信那个网关，那儿没有这条路由，POST 过去是 404）：
 
-1. `POST https://customerservice.bilibili.com/x/custom/msg_svr/v1/upload`
-   —— multipart，文件部分的字段名是 `file`，另外带 `filename`、`mid`、
-   `build`、`mobi_app`、`csrf` 五个普通字段。回答在 `data` 里：
-   `image_url`、`image_width`、`image_height`、`img_size`。
-2. `POST /session_svr/v1/session_svr/send_msg`，`msg_type=2`，`content` 是
-   **JSON 字符串** `{"url": …, "width": …, "height": …, "size": …, "original": 1}`。
+1. `POST https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs`
+   —— multipart，文件部分的字段名是 **`file_up`**（不是 `file`），
+   另外带 `biz=im`。回答在 `data` 里：`image_url`、`image_width`、
+   `image_height`、`img_size`。
+2. `POST /web_im/v1/web_im/send_msg`，`msg[msg_type]=2`，`msg[content]` 是
+   **JSON 字符串** `{"url": …, "width": …, "height": …, "size": …,
+   "imageType": "png", "original": 1}`。`imageType` 是文件的小写扩展名。
 
-读侧：图片消息的 `msg_type` 也是 `2`，`content` 解出来是上面那个对象，
+读侧：图片消息的 `msg_type` 也是 `2`，`msg[content]` 解出来是上面那个对象，
 字段名是 `url`（不是 `image_url`）。**`content` 里有 `url` 才算图片**，
 别的卡片消息（`{"title": …, "text": …}`）照样按普通消息处理。
 
 这几条是从 B 站私信应用自己的前端代码里读出来的
 （`message.bilibili.com` 的打包文件），路由、字段名、`msg_type` 的取值
-都对着它的实现抄的。**没有拿真实账号打过这些接口**，所以只验证到
-「路由和参数名对得上」这一层：匿名 POST 上传路由回的是
-`code 1200201 获取用户信息失败`，说明路由和 multipart 的字段名是对的，
-只差登录态。
+都对着它的实现抄的。**没有拿真实账号打过这些接口**，只验证到
+「路由和参数名对得上」这一层：匿名 POST 发消息回的是
+`code -101 账号未登录`，说明路由和表单格式是对的，只差登录态。
 
 ## 投稿
 

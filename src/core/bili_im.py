@@ -3,17 +3,23 @@
 私信接口不在 ``api.bilibili.com`` 上，而在 ``api.vc.bilibili.com``：
 
 * ``GET  /session_svr/v1/session_svr/get_sessions``      会话列表
-* ``POST /session_svr/v1/session_svr/fetch_session_msgs``  某个会话的消息
-* ``POST /session_svr/v1/session_svr/send_msg``            发消息
+* ``GET  /svr_sync/v1/svr_sync/fetch_session_msgs``      某个会话的消息
+* ``POST /web_im/v1/web_im/send_msg``                    发消息
 
-这三个接口都要登录态（``SESSDATA``），两个写接口还要 ``csrf``（cookie 里的
-``bili_jct``），少了会回 ``-111``。``buvid3`` 也要带上，缺了容易被风控。
+发消息的路由是 ``web_im`` 开头的那条：老的
+``/session_svr/v1/session_svr/send_msg`` 已经 404（回的是一整页 HTML），
+照着老笔记写就会一直撞在「B站现在没有开放发私信的接口」上。
 
-图片私信是另一套：图片要先上传到 ``customerservice.bilibili.com``，拿到
-``image_url`` 之后才能作为一条 ``msg_type=2`` 的消息发出去。
+**发消息的表单格式和一般的 B 站接口不一样**：每个字段都带 ``msg[...]``
+前缀，另外还要在查询串里带上 ``w_sender_uid`` / ``w_receiver_id`` /
+``w_dev_id``。``dev_id`` 是每个账号一个的设备标识，网页端存在
+localStorage 里，这里由 uid 推导出来，同一个账号每次都是同一个。
 
-* ``POST /x/custom/msg_svr/v1/upload``  上传图片（multipart）
-* 发消息时 ``content`` = ``{"url":…, "width":…, "height":…, …}``
+图片私信是两段：图片要先传到 ``api.bilibili.com``（**不是**私信那个网关），
+拿到 ``image_url`` 之后才能作为一条 ``msg_type=2`` 的消息发出去。
+
+* ``POST /x/dynamic/feed/draw/upload_bfs``  上传图片（multipart，字段 ``file_up``）
+* 发消息时 ``content`` = ``{"url":…, "width":…, "height":…, "imageType":…, …}``
 
 回答里的 ``content`` 是一个 **JSON 字符串**（例如 ``{"content": "你好"}``），
 不解析就只会看到一串花括号，所以这里统一解一次；解不出来就把原文当文字，
@@ -26,20 +32,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-__all__ = ["BiliIm", "BILI_IM_BASE", "BILI_IM_UPLOAD_BASE"]
+__all__ = ["BiliIm", "BILI_IM_BASE", "BILI_UPLOAD_BASE"]
 
 log = logging.getLogger(__name__)
 
 #: 私信接口的宿主。它和 ``api.bilibili.com`` 是两套网关，路由前缀也不同。
 BILI_IM_BASE = "https://api.vc.bilibili.com"
 
-#: 私信图片上传的宿主。又是另一套网关：``api.vc.bilibili.com`` 上没有
-#: 这个路由（404），网页端的私信应用是把它放在客服域名下的。
-BILI_IM_UPLOAD_BASE = "https://customerservice.bilibili.com"
+#: 图片上传的宿主。**是主站那个网关**，不是私信网关：私信的
+#: ``api.vc.bilibili.com`` 上没有这条路由（404）。
+BILI_UPLOAD_BASE = "https://api.bilibili.com"
 
 #: 站内私信。
 MSG_TYPE_TEXT = 1
@@ -47,8 +54,12 @@ MSG_TYPE_TEXT = 1
 #: 图片私信。网页端的私信应用里 ``EN_MSG_TYPE_PIC = 2``。
 MSG_TYPE_IMAGE = 2
 
-#: 上传图片时 B 站给的字段名（multipart 的文件部分）。
-_UPLOAD_FILE_FIELD = "file"
+#: 上传图片时 B 站给的字段名（multipart 的文件部分）。私信应用传的是
+#: ``file_up``，不是常见的 ``file``。
+_UPLOAD_FILE_FIELD = "file_up"
+
+#: 上传图片时带的业务标记，私信应用写的是 ``im``。
+_UPLOAD_BIZ = "im"
 
 #: 图片私信 ``content`` 里图片地址的字段名。网页端发的时候写的是 ``url``。
 _IMAGE_URL_KEY = "url"
@@ -140,6 +151,15 @@ def _image_info(parsed: Any) -> dict[str, Any]:
     }
 
 
+def _image_type(image_path: str) -> str:
+    """图片的格式：小写的扩展名（``png``、``jpg``……）。
+
+    私信应用发图片的时候 ``content`` 里的 ``imageType`` 就是这个值。
+    """
+    suffix = Path(str(image_path or "")).suffix.lstrip(".").lower()
+    return suffix or "jpg"
+
+
 def _as_int(value: Any) -> int:
     try:
         return int(value)
@@ -215,14 +235,16 @@ class BiliIm:
             return None
         return self._parse(response, path)
 
-    def _post(self, path: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    def _post(self, path: str, data: dict[str, Any],
+              params: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """一次表单 POST，返回解析后的包封；失败返回 ``None``。"""
         headers = self._headers()
         headers["Content-Type"] = "application/x-www-form-urlencoded"
         try:
             with self._lock():
                 response = self._client.session.post(
-                    BILI_IM_BASE + path, data=data, headers=headers, timeout=(10, 30),
+                    BILI_IM_BASE + path, data=data, params=params,
+                    headers=headers, timeout=(10, 30),
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning("bili im write failed (%s): %s", path, exc)
@@ -281,6 +303,16 @@ class BiliIm:
         cookies = self._cookies()
         uid = _as_text(cookies.get("DedeUserID"))
         return uid or self._mid()
+
+    def _dev_id(self, uid: str) -> str:
+        """这个账号的设备标识。
+
+        私信应用在 localStorage 里存一个随机 UUID（键是 ``im_deviceid_<uid>``），
+        发消息时放进 ``w_dev_id`` 和 ``msg[dev_id]``。这里不另存一份状态，
+        直接由 uid 推导：同一个账号每次算出来都是同一个，换个账号就换一个。
+        """
+        key = str(uid or "anonymous")
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"skycmedia-im-{key}")).upper()
 
     def _cards(self, ids: list[str]) -> dict[str, dict[str, Any]]:
         """对方的资料：一次问一批，而不是一个会话问一次。
@@ -471,9 +503,8 @@ class BiliIm:
                         file_path: str) -> dict[str, Any] | None:
         """上传一个文件（multipart/form-data）。失败返回 ``None``。
 
-        私信的图片走的是客服域名上的 ``/x/custom/msg_svr/v1/upload``，
-        文件部分的字段名是 ``file``，另外还要带 ``filename`` / ``mid`` /
-        ``build`` / ``mobi_app`` 四个普通字段。
+        私信的图片传的是 **主站** 上的 ``/x/dynamic/feed/draw/upload_bfs``，
+        文件部分的字段名是 ``file_up``，另外带一个 ``biz=im``。
         """
         path_obj = Path(file_path)
         try:
@@ -490,7 +521,7 @@ class BiliIm:
                 files = {_UPLOAD_FILE_FIELD: (path_obj.name, handle,
                                               "application/octet-stream")}
                 response = self._client.session.post(
-                    BILI_IM_UPLOAD_BASE + path, data=fields, files=files,
+                    BILI_UPLOAD_BASE + path, data=fields, files=files,
                     headers=headers, timeout=(10, 120),
                 )
         except Exception as exc:  # noqa: BLE001
@@ -517,13 +548,11 @@ class BiliIm:
         if not csrf:
             return {"success": False, "message": "缺少 csrf，请重新登录 B站账号"}
         fields = {
-            "filename": os.path.basename(path),
-            "mid": self._uid(),
-            "build": "0",
-            "mobi_app": "web",
+            "biz": _UPLOAD_BIZ,
             "csrf": csrf,
         }
-        body = self._post_multipart("/x/custom/msg_svr/v1/upload", fields, path)
+        body = self._post_multipart("/x/dynamic/feed/draw/upload_bfs",
+                                    fields, path)
         if body is None:
             if self._last_status == 404:
                 return {"success": False, "message": "B站现在没有开放私信图片上传接口"}
@@ -569,6 +598,8 @@ class BiliIm:
             "width": int(uploaded.get("width") or 0),
             "height": int(uploaded.get("height") or 0),
             "size": int(uploaded.get("size") or 0),
+            # 图片格式：小写的扩展名，网页端发的时候也是这么写的。
+            "imageType": _image_type(image_path),
             "original": 1,
         }
         sent = self._send(talker_id, MSG_TYPE_IMAGE, payload, session_id)
@@ -582,7 +613,7 @@ class BiliIm:
         """发一条站内私信。
 
         ``content`` 必须是 JSON 字符串（``{"content": "文字"}``），直接传裸文字
-        会被服务端当成格式错误。``client_key`` 是一次性 id，用来防重放。
+        会被服务端当成格式错误。
         """
         if not self._logged_in():
             return {"success": False, "message": "请先登录 B站账号"}
@@ -596,27 +627,40 @@ class BiliIm:
 
     def _send(self, talker_id: str, msg_type: int, payload: dict[str, Any],
               session_id: str = "") -> dict[str, Any]:
-        """发消息的共同部分：拼表单、POST、把错误码翻成中文。"""
+        """发消息的共同部分：拼表单、POST、把错误码翻成中文。
+
+        表单里每个字段都带 ``msg[...]`` 前缀——私信应用的发送接口是这么收的，
+        传裸字段名会被当成缺参数。查询串里另外要带 ``w_sender_uid`` /
+        ``w_receiver_id`` / ``w_dev_id``。
+        """
         csrf = self._csrf()
         if not csrf:
             return {"success": False, "message": "缺少 csrf，请重新登录 B站账号"}
-        cookies = self._cookies()
+        uid = self._uid()
+        dev_id = self._dev_id(uid)
         data = {
-            "talker_id": talker_id,
-            "session_type": 1,
-            "msg_type": msg_type,
-            "group_id": "",
-            "uid": self._uid(),
-            "content": json.dumps(payload, ensure_ascii=False),
-            "client_key": uuid.uuid4().hex,
-            "buvid": _as_text(cookies.get("buvid3")),
-            "csrf": csrf,
+            "msg[sender_uid]": uid,
+            # 1 = 个人私信，2 = 群聊
+            "msg[receiver_type]": "1",
+            "msg[receiver_id]": talker_id,
+            "msg[msg_type]": str(msg_type),
+            "msg[msg_status]": "0",
+            "msg[content]": json.dumps(payload, ensure_ascii=False),
+            # 只有带表情的消息才是 1
+            "msg[new_face_version]": "0",
+            "msg[dev_id]": dev_id,
+            "msg[timestamp]": str(int(time.time())),
+            "from_firework": "0",
+            "build": "0",
             "mobi_app": "web",
-            "platform": "web",
+            "csrf": csrf,
         }
-        if session_id:
-            data["session_id"] = _as_text(session_id)
-        body = self._post("/session_svr/v1/session_svr/send_msg", data)
+        params = {
+            "w_sender_uid": uid,
+            "w_receiver_id": talker_id,
+            "w_dev_id": dev_id,
+        }
+        body = self._post("/web_im/v1/web_im/send_msg", data, params=params)
         if body is None:
             if self._last_status == 404:
                 return {"success": False,
