@@ -141,8 +141,8 @@ def main() -> int:
         # below is meaningless.
         code, output = run_tests(tree)
         if code != 0:
-            print("BASELINE FAILED (exit %s) -- the mutation run is "
-                  "meaningless:" % code)
+            print(f"BASELINE FAILED (exit {code}) -- the mutation run is "
+                  f"meaningless:")
             print(output[-3000:])
             return 2
         print("baseline: pass")
