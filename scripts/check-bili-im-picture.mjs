@@ -18,8 +18,8 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-// The mutation check runs this against a deliberately broken copy of
-// app.js, so the source can be pointed at another file.
+// The source can be pointed at another file, so this harness can be run
+// against a deliberately broken copy of app.js.
 const appPath = process.env.NCM_APP_JS
     ? path.resolve(process.env.NCM_APP_JS)
     : path.join(root, 'src', 'gui', 'assets', 'app.js');

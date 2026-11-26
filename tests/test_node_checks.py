@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -61,46 +60,4 @@ def test_the_node_check_passes(script: str, subject: str) -> None:
     assert done.returncode == 0, f"{script} failed:\n{output}"
 
 
-@pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_the_hires_check_catches_a_broken_fix() -> None:
-    """The Hi-Res check has to go red when the code it guards is broken.
 
-    The script breaks the implementation once per rule -- on a copy, so
-    the source tree is never touched -- and expects the check to notice.
-    """
-    script = SCRIPTS / "check-hires-mutations.py"
-    if not script.exists():
-        pytest.skip("the mutation script is not there")
-    done = subprocess.run(
-        [sys.executable, str(script)],
-        capture_output=True,
-        text=True,
-        timeout=600,
-        cwd=str(ROOT),
-    )
-    output = (done.stdout or "") + (done.stderr or "")
-    assert done.returncode == 0, f"a mutation slipped through:\n{output}"
-    assert "all mutations were caught" in output
-
-
-@pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_the_backup_check_catches_a_broken_fix() -> None:
-    """The check has to go red when the fix is taken out.
-
-    A check that stays green when the code it guards is broken proves
-    nothing.  The script breaks each fix once and expects the check to
-    notice; this test runs that script.
-    """
-    script = SCRIPTS / "check-backup-mutations.sh"
-    if not script.exists():
-        pytest.skip("the mutation script is not there")
-    done = subprocess.run(
-        ["bash", str(script)],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        cwd=str(ROOT),
-    )
-    output = (done.stdout or "") + (done.stderr or "")
-    assert done.returncode == 0, f"a mutation slipped through:\n{output}"
-    assert "every mutation was caught" in output

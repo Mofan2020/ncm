@@ -27,8 +27,8 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-// An optional file name lets the mutation check run this harness against a
-// deliberately broken copy of pixiv.js.
+// An optional file name lets this harness run against a different copy of
+// pixiv.js.
 const pixivPath = process.argv[2]
     ? path.resolve(process.argv[2])
     : path.join(root, 'src', 'gui', 'assets', 'pixiv.js');

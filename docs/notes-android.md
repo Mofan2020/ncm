@@ -571,7 +571,7 @@ old-css (no dvh)   app height 108, views 0,    tabbar 贴在标题下面（离�
 $ grep -rn ANDROID_PRIVATE /Users/mofan/android-toolchain/bv/lib/python3.11/site-packages/pythonforandroid/
 （0 命中）
 
-$ adb shell cat /proc/<pid>/environ | tr ' ' '
+$ adb shell cat /proc/<pid>/environ | tr '\x00' '
 ' | grep -E '^(HOME|ANDROID)'
 （只有 ANDROID_BOOTLOGO / ROOT / DATA / ASSETS / STORAGE 等系统变量，
   没有 HOME，也没有 ANDROID_PRIVATE）
